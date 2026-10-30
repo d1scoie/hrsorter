@@ -1,0 +1,72 @@
+{
+  "_comment": "კოპირე config.json-ად და შეცვალე. საიდუმლოებები (გასაღებები/პაროლები) აქ არ ჩაწერო — გამოიყენე: hrsorter secret set <name>",
+  "config_schema": 1,
+  "paths": {
+    "root": "C:/HRScan",
+    "types_file": "document_types.json"
+  },
+  "profiles": [
+    {
+      "id": "batch",
+      "inbox": "Inbox/Batch",
+      "mode": "batch_pdf"
+    },
+    {
+      "id": "single",
+      "inbox": "Inbox/Single",
+      "mode": "single_document_pdf"
+    }
+  ],
+  "default_company": {
+    "id": "default",
+    "name": "ნაგულისხმევი კომპანია",
+    "folder": "ნაგულისხმევი-კომპანია"
+  },
+  "companies": [
+    {
+      "id": "acme",
+      "name": "შპს „მაგალითი\"",
+      "folder": "მაგალითი",
+      "aliases": [
+        "შპს მაგალითი",
+        "მაგალითი"
+      ],
+      "tax_id": "000000000"
+    },
+    {
+      "id": "beta",
+      "name": "შპს „ბეტა\"",
+      "folder": "ბეტა",
+      "aliases": [
+        "შპს ბეტა",
+        "ბეტა"
+      ],
+      "tax_id": "000000001"
+    }
+  ],
+  "processing": {
+    "concurrency": 1,
+    "dpi": 300,
+    "trial_mode": true
+  },
+  "ocr": {
+    "path": "local",
+    "local_provider": "tesseract",
+    "tesseract_cmd": "C:/Program Files/Tesseract-OCR/tesseract.exe",
+    "tesseract_lang": "kat+eng",
+    "tessdata_dir": "C:/ProgramData/hrsorter/tessdata",
+    "online": {
+      "enabled": false,
+      "provider": "claude_code"
+    }
+  },
+  "employee_api": {
+    "enabled": false,
+    "mode": "mock",
+    "mock_file": "config/mock_employees.example.json"
+  },
+  "ui": {
+    "host": "127.0.0.1",
+    "port": 8765
+  }
+}

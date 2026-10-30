@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hrsorter.local/schema/document_sidecar/1.0",
+  "title": "hrsorter document sidecar",
+  "description": "ერთი გამოყოფილი დოკუმენტის მეტამონაცემები (PDF-ის გვერდით .json). გვერდების ნომრები ყველგან 1-დან იწყება (წყარო PDF-ის გვერდი). ბილიკები (*_path) და იდენტიფიკატორები (*_id) ცალკე ველებია — ბილიკი იდენტიფიკატორად არ გამოიყენება. დამატებითი ველები დასაშვებია.",
+  "type": "object",
+  "required": [
+    "schema_version", "document_id", "job_id", "source_id", "source_sha256", "source_page_ranges",
+    "output_path", "output_sha256", "document_type_id", "document_type_name", "company_id", "company_source",
+    "employee_id", "personal_number", "document_date", "document_date_raw", "year", "fields", "classification",
+    "boundary", "signature_status", "employee_verification", "duplicate", "review_reasons", "flags",
+    "processing_status", "provider", "model_version", "pipeline_version", "config_version", "processed_at",
+    "attempt", "attempt_history", "error_codes"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "pattern": "^\\d+\\.\\d+$"},
+    "document_id": {"$ref": "#/$defs/id", "description": "სტაბილური ID (doc_<hex>), ბილიკისგან დამოუკიდებელი"},
+    "job_id": {"$ref": "#/$defs/id"},
+    "source_id": {"$ref": "#/$defs/id"},
+    "source_sha256": {"$ref": "#/$defs/sha256"},
+    "source_archive_path": {"type": ["string", "null"], "description": "წყაროს უცვლელი ასლი არქივში"},
+    "source_page_ranges": {
+      "type": "array",
+      "minItems": 1,
+      "description": "წყარო PDF-ის გვერდების დიაპაზონები, 1-დან დანომრილი, ორივე ბოლო ჩათვლით (start ≤ end)",
+      "items": {
+        "type": "object",
+        "required": ["start", "end"],
+        "additionalProperties": false,
+        "properties": {"start": {"type": "integer", "minimum": 1}, "end": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "page_count": {"type": "integer", "minimum": 1},
+    "profile_id": {"type": "string"},
+    "mode": {"enum": ["batch_pdf", "single_document_pdf"]},
+    "output_path": {"type": ["string", "null"], "description": "საბოლოო PDF-ის აბსოლუტური ბილიკი"},
+    "output_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "document_type_id": {"type": "string", "description": "\"unknown\" — თუ ტიპი ვერ განისაზღვრა"},
+    "document_type_name": {"type": ["string", "null"]},
+    "company_id": {"type": ["string", "null"]},
+    "company_name": {"type": ["string", "null"]},
+    "company_source": {"enum": ["document", "api", "default"]},
+    "company_conflict": {"type": "boolean"},
+    "company_unrecognized": {"type": "boolean"},
+    "employee_id": {"type": ["string", "null"], "description": "მხოლოდ API-ით დადასტურებული თანამშრომლის ID"},
+    "personal_number": {
+      "oneOf": [{"type": "string", "pattern": "^\\d{11}$"}, {"type": "null"}],
+      "description": "სტრიქონი (საწყისი ნულები ინახება); წყარო იხ. fields.personal_number.source"
+    },
+    "document_date": {"oneOf": [{"type": "string", "format": "date"}, {"type": "null"}],
+                      "description": "შედგენის/გამოცემის თარიღი ISO YYYY-MM-DD; მხოლოდ წლის შემთხვევაში null"},
+    "document_date_raw": {"type": ["string", "null"], "description": "დოკუმენტში წაკითხული საწყისი ჩანაწერი"},
+    "year": {"oneOf": [{"type": "integer", "minimum": 1900, "maximum": 2100}, {"type": "null"}]},
+    "fields": {"type": "object", "additionalProperties": {"$ref": "#/$defs/field"}},
+    "classification": {
+      "type": "object",
+      "required": ["type_id", "confidence", "margin", "evidence", "scores"],
+      "properties": {
+        "type_id": {"type": "string"},
+        "confidence": {"$ref": "#/$defs/unit"},
+        "margin": {"type": "number"},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "scores": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type_id", "score"],
+            "properties": {
+              "type_id": {"type": "string"},
+              "score": {"type": "number"},
+              "matched_positive": {"type": "array", "items": {"type": "string"}},
+              "matched_negative": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "required": ["kind", "confidence", "evidence", "blank_pages"],
+      "properties": {
+        "kind": {"enum": ["document", "uncertain", "blank"]},
+        "confidence": {"$ref": "#/$defs/unit"},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "blank_pages": {"type": "array", "items": {"type": "integer", "minimum": 1},
+                        "description": "დოკუმენტის შიგნით ცარიელი გვერდები (1-დან)"}
+      }
+    },
+    "signature_status": {"$ref": "#/$defs/signature"},
+    "employee_verification": {
+      "type": "object",
+      "required": ["status", "matched_by", "from_cache", "synced_at", "candidates"],
+      "properties": {
+        "status": {"enum": ["verified", "not_found", "ambiguous", "api_unavailable", "not_checked"]},
+        "matched_by": {"enum": ["personal_number", "employee_id", "name", null]},
+        "from_cache": {"type": "boolean"},
+        "synced_at": {"oneOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+        "candidates": {"type": "array", "items": {"type": "string"}, "description": "მხოლოდ კანდიდატების employee_id-ები"},
+        "detail": {"type": ["string", "null"]}
+      }
+    },
+    "duplicate": {
+      "type": "object",
+      "required": ["status", "matches"],
+      "properties": {
+        "status": {"enum": ["none", "exact", "possible"]},
+        "matches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["document_id", "score", "reasons"],
+            "properties": {
+              "document_id": {"$ref": "#/$defs/id"},
+              "score": {"$ref": "#/$defs/unit"},
+              "reasons": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "review_reasons": {
+      "type": "array",
+      "items": {"enum": ["unknown_type", "low_type_confidence", "uncertain_boundary", "company_conflict",
+                         "company_unrecognized", "multiple_employees", "possible_duplicate", "mode_mismatch",
+                         "type_not_auto_enabled", "ocr_unreadable", "other"]}
+    },
+    "flags": {
+      "type": "array",
+      "items": {"enum": ["year_unknown", "date_unknown", "signature_uncertain", "signature_not_detected",
+                         "employee_unverified", "employee_api_unavailable", "employee_name_candidates",
+                         "personal_number_missing", "personal_number_handwritten", "company_default",
+                         "amount_missing", "low_ocr_quality", "api_company_differs"]}
+    },
+    "decision_explanation": {"type": "array", "items": {"type": "string"}},
+    "processing_status": {"enum": ["publishing", "auto_saved", "proposed", "needs_review", "superseded"]},
+    "superseded_by": {"type": ["string", "null"], "description": "ჩამნაცვლებელი job_id (processing_status=superseded)"},
+    "content_fingerprint": {"type": ["string", "null"]},
+    "text_fingerprint": {"type": ["string", "null"]},
+    "provider": {"type": "string"},
+    "model_version": {"type": "string"},
+    "pipeline_version": {"type": "string"},
+    "config_version": {"type": "string"},
+    "processed_at": {"type": "string", "format": "date-time"},
+    "attempt": {"type": "integer", "minimum": 0},
+    "attempt_history": {"type": "array", "items": {"type": "object"}},
+    "error_codes": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z]+_[0-9a-f]{8,}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "unit": {"type": "number", "minimum": 0, "maximum": 1},
+    "signature": {"enum": ["present", "not_detected", "uncertain", "not_applicable"]},
+    "field": {
+      "type": "object",
+      "required": ["value", "raw", "source", "page", "confidence", "evidence"],
+      "properties": {
+        "value": {"description": "ნორმალიზებული მნიშვნელობა ან null (თარიღი — ISO, პ/ნ — სტრიქონი)"},
+        "raw": {"type": ["string", "null"]},
+        "source": {"enum": ["document", "api", "default", "derived", null]},
+        "page": {"oneOf": [{"type": "integer", "minimum": 1}, {"type": "null"}], "description": "წყაროს გვერდი, 1-დან"},
+        "confidence": {"$ref": "#/$defs/unit"},
+        "evidence": {"type": ["string", "null"]},
+        "handwritten": {"type": "boolean"},
+        "candidates": {"type": "array"}
+      }
+    }
+  }
+}

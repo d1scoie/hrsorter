@@ -1,0 +1,199 @@
+{
+  "schema_version": "1.0",
+  "document_id": "doc_5f0c2a9e4b7d4c1e9a3f6b8d2e1c0a7f",
+  "job_id": "job_8e2d4f6a1b3c4d5e8f9a0b1c2d3e4f5a",
+  "source_id": "src_1a2b3c4d5e6f47a8b9c0d1e2f3a4b5c6",
+  "source_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "source_archive_path": "C:/HRScan/_Archive/9f/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.pdf",
+  "source_page_ranges": [
+    {
+      "start": 4,
+      "end": 5
+    }
+  ],
+  "page_count": 2,
+  "profile_id": "batch",
+  "mode": "batch_pdf",
+  "output_path": "C:/HRScan/Proposed/მაგალითი/ჯარიმა/2024/2024-03-15_ჯარიმა_ნინო-ბერიძე_01001000001_15_5f0c2a9e.pdf",
+  "output_sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+  "document_type_id": "fine",
+  "document_type_name": "ჯარიმა",
+  "company_id": "acme",
+  "company_name": "შპს „მაგალითი\"",
+  "company_source": "document",
+  "company_conflict": false,
+  "company_unrecognized": false,
+  "employee_id": "E001",
+  "personal_number": "01001000001",
+  "document_date": "2024-03-15",
+  "document_date_raw": "15.03.2024",
+  "year": 2024,
+  "fields": {
+    "first_name": {
+      "value": "ნინო",
+      "raw": "ნინო",
+      "source": "document",
+      "page": 4,
+      "confidence": 0.95,
+      "evidence": "დასაქმებული: ნინო ბერიძე",
+      "handwritten": false,
+      "candidates": []
+    },
+    "last_name": {
+      "value": "ბერიძე",
+      "raw": "ბერიძე",
+      "source": "document",
+      "page": 4,
+      "confidence": 0.95,
+      "evidence": "დასაქმებული: ნინო ბერიძე",
+      "handwritten": false,
+      "candidates": []
+    },
+    "personal_number": {
+      "value": "01001000001",
+      "raw": "01001000001",
+      "source": "document",
+      "page": 4,
+      "confidence": 0.95,
+      "evidence": "პ/ნ 01001000001",
+      "handwritten": false,
+      "candidates": []
+    },
+    "document_number": {
+      "value": "15",
+      "raw": "№ 15",
+      "source": "document",
+      "page": 4,
+      "confidence": 0.95,
+      "evidence": "ბრძანება № 15",
+      "handwritten": false,
+      "candidates": []
+    },
+    "document_date": {
+      "value": "2024-03-15",
+      "raw": "15.03.2024",
+      "source": "document",
+      "page": 4,
+      "confidence": 0.95,
+      "evidence": "15.03.2024",
+      "handwritten": false,
+      "candidates": []
+    },
+    "fine_amount": {
+      "value": 100,
+      "raw": "100 (ასი) ლარი",
+      "source": "document",
+      "page": 4,
+      "confidence": 0.88,
+      "evidence": "დაეკისროს ჯარიმა 100 (ასი) ლარის ოდენობით",
+      "handwritten": false,
+      "candidates": []
+    },
+    "fine_currency": {
+      "value": "GEL",
+      "raw": "ლარი",
+      "source": "document",
+      "page": 4,
+      "confidence": 0.9,
+      "evidence": "ლარის ოდენობით",
+      "handwritten": false,
+      "candidates": []
+    },
+    "fine_reason": {
+      "value": "შინაგანაწესის დარღვევა",
+      "raw": "შრომის შინაგანაწესის დარღვევის გამო",
+      "source": "document",
+      "page": 4,
+      "confidence": 0.7,
+      "evidence": "შრომის შინაგანაწესის დარღვევის გამო",
+      "handwritten": false,
+      "candidates": []
+    },
+    "branch": {
+      "value": "თბილისი",
+      "raw": null,
+      "source": "api",
+      "page": null,
+      "confidence": 1.0,
+      "evidence": null,
+      "handwritten": false,
+      "candidates": []
+    }
+  },
+  "classification": {
+    "type_id": "fine",
+    "confidence": 0.9,
+    "margin": 0.5,
+    "evidence": [
+      "title: ბრძანება დაჯარიმების შესახებ"
+    ],
+    "scores": [
+      {
+        "type_id": "fine",
+        "score": 9.0,
+        "matched_positive": [
+          "დაჯარიმებ",
+          "ჯარიმ",
+          "ბრძანება"
+        ],
+        "matched_negative": []
+      },
+      {
+        "type_id": "hire_order",
+        "score": 1.0,
+        "matched_positive": [
+          "ბრძანება"
+        ],
+        "matched_negative": []
+      }
+    ]
+  },
+  "boundary": {
+    "kind": "document",
+    "confidence": 0.95,
+    "evidence": [
+      "title_start: fine",
+      "page 2/2",
+      "closing_block"
+    ],
+    "blank_pages": []
+  },
+  "signature_status": "present",
+  "employee_verification": {
+    "status": "verified",
+    "matched_by": "personal_number",
+    "from_cache": false,
+    "synced_at": null,
+    "candidates": [],
+    "detail": null
+  },
+  "duplicate": {
+    "status": "none",
+    "matches": []
+  },
+  "review_reasons": [],
+  "flags": [],
+  "decision_explanation": [
+    "trial_mode: processing.trial_mode=true — final auto-save disabled, result proposed"
+  ],
+  "processing_status": "proposed",
+  "superseded_by": null,
+  "content_fingerprint": "3b7e72a1c9d04f5e8a6b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f",
+  "text_fingerprint": "e3b98a4da31a127d4bde6e43033f66ba274cab0eb7eb1c70ec41402bf6273dd8",
+  "provider": "text_layer+ocr:tesseract",
+  "model_version": "tesseract-5.4.0",
+  "pipeline_version": "0.1.0",
+  "config_version": "a1b2c3d4e5f6",
+  "processed_at": "2024-04-01T09:00:12+00:00",
+  "attempt": 1,
+  "attempt_history": [
+    {
+      "attempt": 1,
+      "started_at": "2024-04-01T09:00:00+00:00",
+      "finished_at": null,
+      "status": "running",
+      "error_code": null
+    }
+  ],
+  "error_codes": []
+}

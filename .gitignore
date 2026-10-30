@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+config/config.json
+config/document_types.json
+.pytest_cache/
+*.egg-info/
+# რეალური სკანები პირადი მონაცემებით — არასდროს დაკომიტდეს
+printer_demo/
+build_out/
+new_scan/

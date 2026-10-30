@@ -1,0 +1,411 @@
+{
+  "types_schema": 1,
+  "_comment": "pattern არის regex, რომელიც მოწმდება ნორმალიზებულ ტექსტზე (პატარა ასოები, ერთი ჰარი, ერთიანი ბრჭყალები). title_only=true — მხოლოდ გვერდის სათაურის ზონაში. ახალი ტიპი დაამატე აქ; auto_save_enabled ჩართე მხოლოდ რეალურ ნიმუშებზე გამოცდის შემდეგ.",
+  "types": [
+    {
+      "id": "contract",
+      "name_ka": "ხელშეკრულება",
+      "folder": "ხელშეკრულება",
+      "description": "შრომითი ხელშეკრულება",
+      "positive": [
+        {
+          "pattern": "შრომითი\\s+ხელშეკრულება",
+          "weight": 5,
+          "title_only": true
+        },
+        {
+          "pattern": "ხელშეკრულება",
+          "weight": 3,
+          "title_only": true
+        },
+        {
+          "pattern": "დამსაქმებელი",
+          "weight": 1
+        },
+        {
+          "pattern": "დასაქმებული",
+          "weight": 1
+        },
+        {
+          "pattern": "შრომის\\s+ანაზღაურება|ხელფას",
+          "weight": 1
+        },
+        {
+          "pattern": "ხელშეკრულების\\s+(ვადა|მოქმედების)",
+          "weight": 1
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "დანართი",
+          "weight": 4,
+          "title_only": true
+        },
+        {
+          "pattern": "ბრძანება",
+          "weight": 3,
+          "title_only": true
+        },
+        {
+          "pattern": "შეწყვეტის\\s+შესახებ",
+          "weight": 3,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "contract_start",
+        "contract_end",
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true
+    },
+    {
+      "id": "contract_annex",
+      "name_ka": "ხელშეკრულების დანართი",
+      "folder": "ხელშეკრულების-დანართი",
+      "description": "შრომითი ხელშეკრულების დანართი / ცვლილება",
+      "positive": [
+        {
+          "pattern": "ხელშეკრულების\\s+დანართი",
+          "weight": 5,
+          "title_only": true
+        },
+        {
+          "pattern": "დანართი\\s*(№|n)?\\s*\\d*",
+          "weight": 4,
+          "title_only": true
+        },
+        {
+          "pattern": "ცვლილებ(ის|ები)\\s+შეტანის",
+          "weight": 2
+        }
+      ],
+      "negative": [],
+      "fields": [
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "review",
+      "signature_expected": true
+    },
+    {
+      "id": "fine",
+      "name_ka": "ჯარიმა",
+      "folder": "ჯარიმა",
+      "description": "დაჯარიმების / დისციპლინური პასუხისმგებლობის ბრძანება",
+      "positive": [
+        {
+          "pattern": "დაჯარიმებ",
+          "weight": 5,
+          "title_only": true
+        },
+        {
+          "pattern": "ჯარიმ",
+          "weight": 3
+        },
+        {
+          "pattern": "დისციპლინური\\s+(პასუხისმგებლ|სახდელ)",
+          "weight": 3
+        },
+        {
+          "pattern": "ბრძანება",
+          "weight": 2,
+          "title_only": true
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "შვებულებ",
+          "weight": 3,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "fine_amount",
+        "fine_currency",
+        "fine_reason",
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true
+    },
+    {
+      "id": "vacation",
+      "name_ka": "შვებულება",
+      "folder": "შვებულება",
+      "description": "შვებულების განცხადება ან ბრძანება (ერთად). ცალ-ცალკე საჭიროებისას ჩართე vacation_application და vacation_order და გამორთე ეს.",
+      "positive": [
+        {
+          "pattern": "შვებულებ",
+          "weight": 4,
+          "title_only": true
+        },
+        {
+          "pattern": "განცხადება|ბრძანება",
+          "weight": 2,
+          "title_only": true
+        },
+        {
+          "pattern": "(ანაზღაურებადი|ანაზღაურების\\s+გარეშე)\\s+შვებულ",
+          "weight": 2
+        },
+        {
+          "pattern": "შვებულებ",
+          "weight": 3
+        },
+        {
+          "pattern": "(კალენდარული|სამუშაო)\\s+დღ",
+          "weight": 1
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "გათავისუფლებ",
+          "weight": 3,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "vacation_start",
+        "vacation_end",
+        "vacation_days",
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true
+    },
+    {
+      "id": "vacation_application",
+      "name_ka": "შვებულების განცხადება",
+      "folder": "შვებულების-განცხადება",
+      "description": "მაგალითი ტიპების გაყოფისთვის (გამორთულია)",
+      "positive": [
+        {
+          "pattern": "განცხადება",
+          "weight": 3,
+          "title_only": true
+        },
+        {
+          "pattern": "შვებულებ",
+          "weight": 3
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "ბრძანება",
+          "weight": 4,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "vacation_start",
+        "vacation_end",
+        "vacation_days",
+        "signature_status"
+      ],
+      "active": false,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true
+    },
+    {
+      "id": "vacation_order",
+      "name_ka": "შვებულების ბრძანება",
+      "folder": "შვებულების-ბრძანება",
+      "description": "მაგალითი ტიპების გაყოფისთვის (გამორთულია)",
+      "positive": [
+        {
+          "pattern": "ბრძანება",
+          "weight": 3,
+          "title_only": true
+        },
+        {
+          "pattern": "შვებულებ",
+          "weight": 3
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "განცხადება",
+          "weight": 4,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "vacation_start",
+        "vacation_end",
+        "vacation_days",
+        "signature_status"
+      ],
+      "active": false,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true
+    },
+    {
+      "id": "application",
+      "name_ka": "განცხადება",
+      "folder": "განცხადება",
+      "description": "თანამშრომლის განცხადება (შვებულების გარდა)",
+      "positive": [
+        {
+          "pattern": "განცხადება",
+          "weight": 4,
+          "title_only": true
+        },
+        {
+          "pattern": "გთხოვთ",
+          "weight": 1
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "შვებულებ",
+          "weight": 3
+        },
+        {
+          "pattern": "ბრძანება",
+          "weight": 3,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true
+    },
+    {
+      "id": "hire_order",
+      "name_ka": "მიღების ბრძანება",
+      "folder": "მიღების-ბრძანება",
+      "description": "სამსახურში მიღების / თანამდებობაზე დანიშვნის ბრძანება",
+      "positive": [
+        {
+          "pattern": "(სამსახურში|სამუშაოზე)\\s+მიღებ",
+          "weight": 4
+        },
+        {
+          "pattern": "(თანამდებობაზე\\s+)?დანიშვნის\\s+შესახებ",
+          "weight": 4
+        },
+        {
+          "pattern": "მიღების\\s+შესახებ",
+          "weight": 2,
+          "title_only": true
+        },
+        {
+          "pattern": "ბრძანება",
+          "weight": 2,
+          "title_only": true
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "გათავისუფლებ",
+          "weight": 4
+        },
+        {
+          "pattern": "შვებულებ",
+          "weight": 3,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true
+    },
+    {
+      "id": "dismissal_order",
+      "name_ka": "გათავისუფლების ბრძანება",
+      "folder": "გათავისუფლების-ბრძანება",
+      "description": "სამსახურიდან გათავისუფლების / ხელშეკრულების შეწყვეტის ბრძანება",
+      "positive": [
+        {
+          "pattern": "(სამსახურიდან|თანამდებობიდან)\\s+გათავისუფლებ",
+          "weight": 4
+        },
+        {
+          "pattern": "გათავისუფლების\\s+შესახებ",
+          "weight": 4,
+          "title_only": true
+        },
+        {
+          "pattern": "შრომითი\\s+ხელშეკრულების\\s+შეწყვეტ",
+          "weight": 3
+        },
+        {
+          "pattern": "ბრძანება",
+          "weight": 2,
+          "title_only": true
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "შვებულებ",
+          "weight": 3,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true
+    },
+    {
+      "id": "explanation",
+      "name_ka": "ახსნა-განმარტება",
+      "folder": "ახსნა-განმარტება",
+      "description": "თანამშრომლის ახსნა-განმარტებითი ბარათი",
+      "positive": [
+        {
+          "pattern": "ახსნა[\\s-]*განმარტებ",
+          "weight": 5,
+          "title_only": true
+        },
+        {
+          "pattern": "ახსნა[\\s-]*განმარტებ",
+          "weight": 2
+        }
+      ],
+      "negative": [],
+      "fields": [
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true
+    },
+    {
+      "id": "unknown",
+      "name_ka": "უცნობი/გადასამოწმებელი",
+      "folder": "უცნობი",
+      "description": "ტიპი ვერ განისაზღვრა — ყოველთვის NeedsReview",
+      "positive": [],
+      "negative": [],
+      "fields": [],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "review",
+      "signature_expected": false
+    }
+  ]
+}

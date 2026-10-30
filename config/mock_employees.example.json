@@ -1,0 +1,13 @@
+{
+  "_comment": "სინთეზური სატესტო მონაცემები — არ არის რეალური პირები. პირადი ნომრები გამოგონილია.",
+  "companies": [
+    {"id": "acme", "name": "შპს „მაგალითი\"", "branches": ["თბილისი", "ბათუმი"]},
+    {"id": "beta", "name": "შპს „ბეტა\"", "branches": ["ქუთაისი"]}
+  ],
+  "employees": [
+    {"id": "E001", "first_name": "ნინო", "last_name": "ბერიძე", "personal_number": "01001000001", "company_id": "acme", "branch": "თბილისი", "status": "active"},
+    {"id": "E002", "first_name": "გიორგი", "last_name": "კაპანაძე", "personal_number": "01001000002", "company_id": "acme", "branch": "ბათუმი", "status": "active"},
+    {"id": "E003", "first_name": "გიორგი", "last_name": "კაპანაძე", "personal_number": "01001000003", "company_id": "beta", "branch": "ქუთაისი", "status": "active"},
+    {"id": "E004", "first_name": "მარიამ", "last_name": "ლომიძე", "personal_number": "00001000004", "company_id": "beta", "branch": "ქუთაისი", "status": "dismissed"}
+  ]
+}

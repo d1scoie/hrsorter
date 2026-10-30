@@ -1,0 +1,51 @@
+﻿HR Sorter (HR გადამრჩევი) — Third-party components / მესამე მხარის კომპონენტები
+==============================================================================
+
+This installer bundles the following open-source components. Each remains under its own license.
+ეს ინსტალერი შეიცავს ქვემოთ ჩამოთვლილ ღია კოდის კომპონენტებს; თითოეული საკუთარი ლიცენზიით ვრცელდება.
+
+Python runtime and libraries (packaged with PyInstaller)
+--------------------------------------------------------
+- CPython 3.13 ............................ PSF License 2.0
+- PyInstaller bootloader .................. GPL-2.0 with bootloader exception (permits bundling)
+- pypdf ................................... BSD-3-Clause
+- pypdfium2 / PDFium ...................... Apache-2.0 / BSD-3-Clause
+- Pillow .................................. MIT-CMU (HPND)
+- NumPy ................................... BSD-3-Clause
+- watchdog ................................ Apache-2.0
+- FastAPI ................................. MIT
+- Starlette ............................... BSD-3-Clause
+- Uvicorn ................................. BSD-3-Clause
+- Pydantic, pydantic-core ................. MIT
+- jsonschema, referencing, rpds-py ........ MIT
+- keyring, pywin32-ctypes ................. MIT / BSD-3-Clause
+- httpx, httpcore, h11, anyio, idna ....... BSD-3-Clause / MIT
+- pystray ................................. LGPL-3.0  https://github.com/moses-palmer/pystray (unmodified)
+- six ..................................... MIT
+
+OCR engine (unmodified binaries from the UB Mannheim Windows build of Tesseract 5.4.0)
+--------------------------------------------------------------------------------------
+- Tesseract OCR ........................... Apache-2.0  https://github.com/tesseract-ocr/tesseract
+- tessdata / tessdata_best (kat, eng, osd)  Apache-2.0  https://github.com/tesseract-ocr/tessdata_best
+- Leptonica ............................... BSD-2-Clause
+- libpng, zlib ............................ libpng / zlib license
+- libjpeg-turbo ........................... IJG / BSD-3-Clause
+- libtiff ................................. libtiff (BSD-style)
+- libwebp, libsharpyuv .................... BSD-3-Clause
+- giflib .................................. MIT
+- OpenJPEG ................................ BSD-2-Clause
+- libarchive .............................. BSD-2-Clause
+- OpenSSL 3 (libcrypto) ................... Apache-2.0
+- zstd, lz4, libb2, libdeflate, LERC ...... BSD / CC0 / MIT / Apache-2.0
+- xz (liblzma), bzip2, expat .............. 0BSD / bzip2 / MIT
+- GCC runtime (libgcc, libstdc++), winpthreads  GPL-3.0 with GCC Runtime Library Exception / MIT
+- libiconv ................................ LGPL-2.1-or-later (dynamically linked DLL)
+- JBIG-KIT (libjbig) ...................... GPL-2.0-or-later (dynamically linked DLL)
+
+NOTE / შენიშვნა: libiconv (LGPL) and JBIG-KIT (GPL) are included unmodified as separate DLLs because the
+Tesseract build depends on them. If this installer is distributed to third parties (outside your own
+organization), the corresponding source code must be made available, e.g. from the MSYS2 project
+(https://packages.msys2.org — packages mingw-w64-x86_64-libiconv and mingw-w64-x86_64-jbigkit).
+This is not legal advice; check with your legal advisor before external distribution.
+
+HR Sorter application code: see the project repository.
