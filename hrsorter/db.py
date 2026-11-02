@@ -207,7 +207,7 @@ class Repository:
             self.conn.execute("ALTER TABLE jobs ADD COLUMN not_before REAL")
         for table, col, typ in (("inbox_files", "moved_kind", "TEXT"), ("inbox_files", "moved_to", "TEXT"), ("inbox_files", "moved_at", "REAL"),
                                 ("inbox_files", "deleted_at", "REAL"), ("documents", "purged_at", "TEXT"),
-                                ("sources", "purged_at", "TEXT")):
+                                ("sources", "purged_at", "TEXT"), ("mhr_items", "ai_review", "TEXT")):
             if col not in {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
@@ -422,6 +422,11 @@ class Repository:
         cur = self.conn.execute(f"UPDATE mhr_items SET {', '.join(sets)} WHERE document_id=? AND status IN ({q})",
                                 [*vals, document_id, *from_status])
         return cur.rowcount == 1
+
+    def mhr_set_ai_review(self, document_id: str, review: dict[str, Any] | None) -> None:
+        """AI ანალიზის შედეგი (ai_review.py); None = გასუფთავება (ხელახალი ანალიზი)."""
+        self.conn.execute("UPDATE mhr_items SET ai_review=? WHERE document_id=?",
+                          (json.dumps(review, ensure_ascii=False) if review is not None else None, document_id))
 
     def mhr_list(self, statuses: tuple[str, ...] | None = None, limit: int = 500) -> list[sqlite3.Row]:
         if statuses:

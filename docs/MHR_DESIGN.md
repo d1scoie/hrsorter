@@ -94,6 +94,14 @@ def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg,
 `sweep` იყენებს `validate_fn or validation.validate_document` (lazy import), შედეგს წერს `mhr_items.validation`-ში
 (`ValidationResult.to_dict()`), `employee_id`-ს — თანამშრომლის ID-ს.
 
+**AI ანალიზი** (`ai_review.py`, ნაბიჯი b2): `ready|failed` ჩანაწერებზე, სადაც `mhr_items.ai_review IS NULL`, `sweep`
+`review_fn or ai_review.review_document`-ს უშვებს (≤ `mhr.ai_review.per_sweep` ერთ გავლაზე) და შედეგს
+(`AiReview.to_dict()`: verdict upload|check|reject|error, confidence, summary, items, risks) `ai_review` სვეტში წერს.
+სტატუსს არ ცვლის — მხოლოდ UI-ში სთავაზობს. მოქმედებს მხოლოდ `ai_review.enabled(cfg)`-ზე (ocr.online.enabled +
+provider=claude_code + mhr.ai_review.enabled). Claude Code-ს `claude -p --tools "" --model opus` ეძახის, პრომპტი stdin-ით;
+შეცდომაც იწერება (verdict=error), რომ უსასრულოდ არ გამეორდეს. `revalidate` და ხელახალი ვალიდაცია `ai_review`-ს ასუფთავებს;
+`rerun_ai_review` — ოპერატორის „ხელახალი AI ანალიზი“.
+
 ## ვალიდაციის წესები (აგენტი B)
 - შემავალი: `documents` ჩანაწერი (status ∈ proposed/auto_saved), მისი `metadata` (sidecar: fields, document_type_id,
   company_id, personal_number), `page_texts` (job_id + page_start..page_end) — OCR ტექსტი და handwriting/marks ნიშნები.

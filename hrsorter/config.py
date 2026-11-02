@@ -161,6 +161,13 @@ DEFAULTS: dict[str, Any] = {
         "upload_type_ids": [],              # რომელი ტიპები იტვირთება (ცარიელი = ყველა, unknown-ის გარდა)
         "contract_type_ids": ["contract"],  # რომელ ტიპებზე ხდება შედარება MHR-ის ორიგინალთან
         "require_approval": True,           # ოპერატორის დადასტურება ატვირთვამდე
+        "ai_review": {                      # ვალიდაციის შემდეგ Opus-ის „მეორე აზრი“ (ai_review.py); მოქმედებს მხოლოდ
+            "enabled": True,                # ocr.online.enabled + provider=claude_code რეჟიმში. მხოლოდ სთავაზობს, არ ტვირთავს
+            "model": "opus",
+            "timeout_seconds": 300,
+            "max_chars": 60000,             # ტექსტის მაქსიმუმი პრომპტში
+            "per_sweep": 3,                 # ერთ გავლაზე ამდენი დოკუმენტი (თითო ~0.5–2 წთ)
+        },
         "signature_every_page": True,       # ხელშეკრულება: ხელმოწერა ყველა (არაცარიელ) გვერდზე, თორემ — სხვაობა
         "name_similarity": 0.85,
         "timeout_seconds": 20,

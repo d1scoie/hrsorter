@@ -501,6 +501,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
               ("წყარო", f'{Path(x["first_path"]).name}, გვ. {x["page_start"] + 1}–{x["page_end"] + 1}')]
         if mhr_on:   # თანამშრომელს MHR ამოწმებს — ცალკე „თანამშრომლების API“-ს გაფრთხილება აქ დამაბნეველია
             kv.insert(4, ("MHR", _mhr_doc_status(mhr_item)))
+            ai = _ai_load(mhr_item) if mhr_item else None
+            if ai and ai.get("verdict") in AI_KA and ai.get("verdict") != "error":
+                kv.insert(5, ("AI ანალიზი", f'{AI_KA[ai["verdict"]][0]} — {ai.get("summary") or ""}'))
         rs = "".join(f'<div class="reason">{icon("alert", 18)}<div><b>{e(REASONS.get(k, (k, ""))[0])}</b><span>{e(REASONS.get(k, ("", ""))[1])}</span></div></div>'
                      for k in reasons)
         flags = "".join(chip(FLAGS.get(fl, fl), "mute") for fl in meta.get("flags", [])
@@ -578,12 +581,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
     def mhr_action(doc_id: str, action: str):
         from .. import mhr_queue
         fn = {"approve": mhr_queue.approve, "reject": mhr_queue.reject, "revalidate": mhr_queue.revalidate,
-              "retry": mhr_queue.retry_upload}.get(action)
+              "retry": mhr_queue.retry_upload, "ai-review": mhr_queue.rerun_ai_review}.get(action)
         if fn is None:
             raise HTTPException(404)
         r = repo()
         try:
-            fn(r, doc_id) if action in ("revalidate", "retry") else fn(r, doc_id, "operator")
+            fn(r, doc_id) if action in ("revalidate", "retry", "ai-review") else fn(r, doc_id, "operator")
         finally:
             r.close()
         return RedirectResponse(f"/mhr/{doc_id}", status_code=303)
@@ -916,6 +919,9 @@ MHR_KA = {"pending": ("ვალიდაციას ელოდება", "m
           "approved": ("ატვირთვის რიგში", "info"), "uploading": ("იტვირთება", "info"), "uploaded": ("ატვირთულია", "ok"),
           "upload_failed": ("ატვირთვა ვერ მოხერხდა", "bad"), "needs_check": ("საჭიროებს შემოწმებას", "warn"),
           "rejected": ("უარყოფილი", "mute")}
+AI_KA = {"upload": ("AI: ატვირთვა შეიძლება", "ok"), "check": ("AI: გადაამოწმე", "warn"),
+         "reject": ("AI: არ ატვირთო", "bad"), "error": ("AI ანალიზი ვერ შესრულდა", "mute")}
+_AI_CONF_KA = {"high": "მაღალი დარწმუნებულობა", "medium": "საშუალო დარწმუნებულობა", "low": "დაბალი დარწმუნებულობა"}
 _MHR_TABS = {"ready": ("მზადაა", ("ready",)), "failed": ("ვერ გაიარა", ("failed",)),
              "queue": ("მიმდინარე", ("pending", "unavailable", "approved", "uploading")),
              "done": ("ატვირთულია", ("uploaded",)), "other": ("სხვა", ("skipped", "upload_failed", "needs_check", "rejected"))}
@@ -957,10 +963,63 @@ def _mhr_row(c: Config, x) -> str:
     if x["status"] == "ready":
         btns = (f'<form class="inline" method="post" action="/mhr/{e(x["document_id"])}/approve"><button class="btn sm primary">'
                 f'{icon("cloud", 14)}ატვირთვა</button></form>')
+    ai = _ai_load(x)
+    if ai and ai.get("verdict") != "error" and ai.get("summary"):
+        summary = ai["summary"]   # AI-ის ახსნა ოპერატორისთვის უფრო გასაგებია, ვიდრე წესების პირველი სტრიქონი
+    ai_chip = chip(*AI_KA[ai["verdict"]]) if ai and ai.get("verdict") in AI_KA else ""
     return (f'<div class="row"><div class="grow"><a class="t" href="/mhr/{e(x["document_id"])}" style="display:block;color:var(--text)">'
             f'{e(name or "თანამშრომელი უცნობია")}</a><div class="m">{e(meta)}</div>'
-            f'{f"<div class=m>{e(summary)}</div>" if summary else ""}</div>{mhr_chip(x["status"])}'
+            f'{f"<div class=m>{e(summary)}</div>" if summary else ""}</div>{ai_chip}{mhr_chip(x["status"])}'
             f'<div class="btns">{btns}<a class="btn sm" href="/mhr/{e(x["document_id"])}">დეტალები</a></div></div>')
+
+
+def _ai_load(m) -> dict | None:
+    try:
+        raw = m["ai_review"]
+    except (IndexError, KeyError):
+        return None
+    return json.loads(raw) if raw else None
+
+
+def _ai_block(c: Config, m) -> str:
+    """AI ანალიზის (Opus) ბლოკი MHR-ის დეტალურ გვერდზე: გადაწყვეტილება, ახსნა პუნქტობრივად, რისკები."""
+    from .. import ai_review
+    if not ai_review.enabled(c):
+        return ""
+    ai = _ai_load(m)
+    doc_id = e(m["document_id"])
+    rerun = (f'<form class="inline" method="post" action="/mhr/{doc_id}/ai-review"><button class="btn sm">'
+             f'{icon("refresh", 14)}ხელახალი AI ანალიზი</button></form>')
+    if ai is None:
+        if m["status"] in ("ready", "failed"):
+            return (f'<div class="banner tone-info">{icon("clock", 18)}<div><b>AI ანალიზი (Opus) რიგშია.</b> წესებით შემოწმება '
+                    'უკვე დასრულდა (ქვემოთ). რამდენიმე წუთში აქ გამოჩნდება დეტალური ახსნა და რეკომენდაცია — განაახლე გვერდი.</div></div>')
+        return ""
+    verdict = ai.get("verdict") or "error"
+    lbl, tone = AI_KA.get(verdict, AI_KA["error"])
+    if verdict == "error":
+        return (f'<div class="card section" style="margin-bottom:20px"><div class="chips" style="margin-bottom:8px">{chip(lbl, tone)}</div>'
+                f'<p class="muted">Claude Code-მა პასუხი არ დააბრუნა ({e(ai.get("error") or "")}). შეამოწმე, რომ Claude Code '
+                f'დაყენებულია და შესულია („პარამეტრები“), მერე სცადე თავიდან.</p>{rerun}</div>')
+    items = "".join(
+        f'<div class="row" style="align-items:flex-start"><div style="min-width:160px"><b>{e(it.get("topic") or "")}</b></div>'
+        f'<div class="grow">{e(it.get("explanation") or "")}</div>{chip(*_CHECK_KA_AI.get(it.get("status"), ("—", "mute")))}</div>'
+        for it in ai.get("items") or [])
+    risks = "".join(f"<li>{e(r)}</li>" for r in ai.get("risks") or [])
+    hint = {"upload": "AI-ის აზრით დოკუმენტი სწორია. თუ ეთანხმები — დააჭირე ატვირთვას.",
+            "check": "AI-მ რაღაც ეჭვი დაინახა — ქვემოთ წერია, რა და სად. ნახე PDF-ში და მერე გადაწყვიტე.",
+            "reject": "AI-ის აზრით ეს დოკუმენტი ან სხვა თანამშრომლისაა, ან სულ სხვა დოკუმენტია. ატვირთვამდე აუცილებლად გადაამოწმე."}[verdict]
+    return (f'<div class="card section" style="margin-bottom:20px"><div class="chips" style="margin-bottom:8px">{chip(lbl, tone)}'
+            f'{chip(_AI_CONF_KA.get(ai.get("confidence") or "low", ""), "mute")}</div>'
+            f'<h2 style="margin-top:4px">AI ანალიზი · {e(ai.get("model") or "Opus")}</h2>'
+            f'<p style="font-size:15px">{e(ai.get("summary") or "")}</p><p class="muted" style="font-size:13.5px">{hint}</p>'
+            + (f'<div class="card list" style="margin:12px 0">{items}</div>' if items else "")
+            + (f'<p><b>რას გადაამოწმებ:</b></p><ul style="margin-top:4px">{risks}</ul>' if risks else "")
+            + f'<div class="btns">{rerun}</div><p class="muted" style="font-size:12.5px;margin-top:10px">AI მხოლოდ რჩევას იძლევა — '
+              'არაფერი არ იტვირთება შენი დაჭერის გარეშე. გაანალიზებულია ამოკითხული ტექსტი და შედარების შედეგი, გვერდის სურათები არა.</p></div>')
+
+
+_CHECK_KA_AI = {"ok": ("წესრიგშია", "ok"), "warn": ("ყურადღება", "warn"), "bad": ("პრობლემა", "bad")}
 
 
 def _mhr_detail_body(c: Config, m, d) -> str:
@@ -972,6 +1031,7 @@ def _mhr_detail_body(c: Config, m, d) -> str:
            + (f' · ატვირთვის ID {e(m["remote_id"])}' if m["remote_id"] else "") + "</p>"]
     if m["error"]:
         out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(m["error"])}</div></div>')
+    out.append(_ai_block(c, m))
     if v.get("summary"):
         tone = "ok" if v.get("status") == "passed" else "warn"
         out.append(f'<div class="banner tone-{tone}">{icon("check" if tone == "ok" else "alert", 18)}<div>'
@@ -991,11 +1051,15 @@ def _mhr_detail_body(c: Config, m, d) -> str:
     if d is not None and not (m["status"] == "failed" and m["employee_id"]):
         out.append(_manual_block(c, d, m, f"/mhr/{m['document_id']}").replace('margin-top:16px', 'margin-bottom:20px'))
     if m["status"] == "failed" and m["employee_id"]:
+        ai = _ai_load(m)
+        ai_ok = bool(ai and ai.get("verdict") == "upload")
+        lead = ("AI-მ სხვაობები გადახედა და თვლის, რომ ეს წაკითხვის შეცდომებია — დოკუმენტი სწორია" if ai_ok
+                else "ქვემოთ მოცემული სხვაობები ვნახე — დოკუმენტი სწორია")
         out.append(f'<form method="post" action="/mhr/{e(m["document_id"])}/override" class="card" style="padding:14px 16px;margin-bottom:20px">'
-                   '<label class="switch" style="margin-bottom:10px"><input type="checkbox" name="confirm" value="1" required>'
-                   '<span><b>ქვემოთ მოცემული სხვაობები ვნახე — დოკუმენტი სწორია</b><br><span class="muted" style="font-size:13.5px">'
+                   f'<label class="switch" style="margin-bottom:10px"><input type="checkbox" name="confirm" value="1" required>'
+                   f'<span><b>{lead}</b><br><span class="muted" style="font-size:13.5px">'
                    'მაგ. ბეჭედი ან ხელმოწერა შეცდომით ჩაითვალა ცვლილებად. ატვირთვა ჟურნალში ჩაიწერება, როგორც შენი გადაწყვეტილება.'
-                   '</span></span></label><button class="btn">ატვირთვა მაინც</button></form>')
+                   f'</span></span></label><button class="btn{" primary" if ai_ok else ""}">ატვირთვა მაინც</button></form>')
     checks = v.get("checks") or []
     if checks:
         rows = "".join(
@@ -1329,7 +1393,7 @@ _BOOL_FIELDS = [("processing.trial_mode", "საცდელი რეჟიმ
                 ("employee_api.enabled", "თანამშრომლების API ჩართულია"), ("autostart.enabled", "ავტოგაშვება"),
                 ("mhr.enabled", "MHR ინტეგრაცია"), ("mhr.require_approval", "ატვირთვამდე დადასტურება"),
                 ("cleanup.move_processed", "დამუშავებულის გადატანა"), ("tray.notifications", "Windows-ის შეტყობინებები"),
-                ("mhr.signature_every_page", "ხელმოწერა ყველა გვერდზე")]
+                ("mhr.signature_every_page", "ხელმოწერა ყველა გვერდზე"), ("mhr.ai_review.enabled", "AI ანალიზი")]
 _CLEANUP_NUM_FIELDS = [
     ("cleanup.processed_days", "დამუშავებული ფაილის წაშლა (დღე)", int,
      "Processed-იდან. ორიგინალის ასლი არქივში რჩება, ამიტომ ეს უსაფრთხოა. 0 = არასდროს. _Failed არასდროს იშლება."),
@@ -1440,7 +1504,13 @@ def _settings_body(c: Config, msg: str, err: str) -> str:
                f'<label class="switch"><input type="checkbox" name="ocr.online.enabled" value="1" {"checked" if online else ""}>'
                '<span><b>ონლაინ სერვისის დაშვება</b><br><span class="muted" style="font-size:13.5px">თუ ჩართავ და ამოცნობის გზას „hybrid/online“-ზე '
                f'დააყენებ (დამატებითში), დოკუმენტის გვერდები გარე სერვისში გაიგზავნება. {how}</span></span></label>'
-               + (_claude_login_block() if by_subscription else "") + '</div>')
+               + (_claude_login_block() if by_subscription else "")
+               + (f'<label class="switch" style="margin-top:12px"><input type="checkbox" name="mhr.ai_review.enabled" value="1" '
+                  f'{"checked" if d["mhr"]["ai_review"]["enabled"] else ""}><span><b>AI ანალიზი MHR-შედარების შემდეგ (Opus)</b><br>'
+                  '<span class="muted" style="font-size:13.5px">ყოველი შემოწმებული დოკუმენტის ამოკითხულ ტექსტს და შედარების შედეგს '
+                  'Claude Opus გადახედავს, ყველაფერს მარტივად ახსნის და იტყვის, შეიძლება თუ არა ატვირთვა. თავად არ ტვირთავს — '
+                  'გადაწყვეტილება შენია. მუშაობს მხოლოდ ონლაინ სერვისის დაშვებისას.</span></span></label>' if by_subscription else "")
+               + '</div>')
 
     # MHR
     mh = d["mhr"]

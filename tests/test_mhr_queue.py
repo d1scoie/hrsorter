@@ -450,3 +450,94 @@ def test_manual_approve_blocked_and_unavailable(repo, cfg, mhr, tmp_path):
     (mhr.dir / "unavailable").write_text("")
     assert q.upload_now(repo, cfg, "doc_1", mhr) == "approved"   # worker მოგვიანებით სცდის
     assert repo.mhr_get("doc_1")["error"] == "MHR unavailable"
+
+
+# --- AI ანალიზი (ai_review) ---------------------------------------------------------------------
+
+AI_ON = {"ocr": {"online": {"enabled": True, "provider": "claude_code"}}}
+
+
+class FakeReview:
+    def __init__(self, verdict="upload", exc: BaseException | None = None):
+        self.verdict, self.exc, self.calls = verdict, exc, []
+
+    def __call__(self, repo, cfg, doc_id):
+        from hrsorter.ai_review import AiReview
+        self.calls.append(doc_id)
+        if self.exc:
+            raise self.exc
+        return AiReview(self.verdict, "high", f"შეჯამება {doc_id}", [{"topic": "ხელფასი", "status": "ok", "explanation": "კარგია"}])
+
+
+def ai(repo, doc_id="doc_1"):
+    raw = repo.mhr_get(doc_id)["ai_review"]
+    return json.loads(raw) if raw else None
+
+
+@pytest.mark.parametrize("vstatus", ["passed", "failed"])
+def test_ai_review_runs_after_validation_for_ready_and_failed(repo, cfg, mhr, tmp_path, vstatus):
+    cfg.data["ocr"]["online"].update(AI_ON["ocr"]["online"])
+    add_doc(repo, tmp_path)
+    rv = FakeReview("check")
+    c = q.sweep(repo, cfg, mhr, FakeValidate(vstatus), review_fn=rv)
+    assert rv.calls == ["doc_1"] and c["ai_reviewed"] == 1
+    assert ai(repo)["verdict"] == "check" and ai(repo)["summary"] == "შეჯამება doc_1"
+    assert status(repo) == ("ready" if vstatus == "passed" else "failed")   # სტატუსს AI არ ცვლის
+    q.sweep(repo, cfg, mhr, FakeValidate(vstatus), review_fn=rv)
+    assert rv.calls == ["doc_1"]   # მეორედ არ ეშვება
+
+
+def test_ai_review_disabled_or_not_claude_code_is_noop(repo, cfg, mhr, tmp_path):
+    add_doc(repo, tmp_path)
+    rv = FakeReview()
+    q.sweep(repo, cfg, mhr, FakeValidate("passed"), review_fn=rv)        # ონლაინ გამორთულია
+    assert rv.calls == [] and ai(repo) is None
+    cfg.data["ocr"]["online"].update(AI_ON["ocr"]["online"])
+    cfg.data["mhr"]["ai_review"]["enabled"] = False
+    q.sweep(repo, cfg, mhr, FakeValidate("passed"), review_fn=rv)
+    assert rv.calls == [] and ai(repo) is None
+
+
+def test_ai_review_exception_is_stored_as_error_once(repo, cfg, mhr, tmp_path):
+    cfg.data["ocr"]["online"].update(AI_ON["ocr"]["online"])
+    add_doc(repo, tmp_path)
+    rv = FakeReview(exc=RuntimeError("boom"))
+    q.sweep(repo, cfg, mhr, FakeValidate("passed"), review_fn=rv)
+    assert ai(repo)["verdict"] == "error" and ai(repo)["error"] == "RuntimeError"
+    q.sweep(repo, cfg, mhr, FakeValidate("passed"), review_fn=rv)
+    assert len(rv.calls) == 1
+
+
+def test_ai_review_per_sweep_limit_and_rerun_and_revalidate_clear(repo, cfg, mhr, tmp_path):
+    cfg.data["ocr"]["online"].update(AI_ON["ocr"]["online"])
+    cfg.data["mhr"]["ai_review"]["per_sweep"] = 1
+    add_doc(repo, tmp_path, "doc_1")
+    add_doc(repo, tmp_path, "doc_2")
+    rv = FakeReview()
+    q.sweep(repo, cfg, mhr, FakeValidate("failed"), review_fn=rv)
+    assert len(rv.calls) == 1
+    q.sweep(repo, cfg, mhr, FakeValidate("failed"), review_fn=rv)
+    assert sorted(rv.calls) == ["doc_1", "doc_2"]
+    # ხელახალი ანალიზი: სუფთავდება და შემდეგ გავლაზე თავიდან
+    assert q.rerun_ai_review(repo, "doc_1") and ai(repo, "doc_1") is None
+    q.sweep(repo, cfg, mhr, FakeValidate("failed"), review_fn=rv)
+    assert rv.calls.count("doc_1") == 2 and ai(repo, "doc_1")["verdict"] == "upload"
+    # ხელახალი ვალიდაცია ძველ AI-შედეგს შლის
+    assert q.revalidate(repo, "doc_1") and ai(repo, "doc_1") is None
+    q.approve_override(repo, "doc_2", "operator")
+    assert not q.rerun_ai_review(repo, "doc_2")   # approved — აღარ ეხება
+
+
+def test_ai_review_not_stored_if_status_changed_meanwhile(repo, cfg, mhr, tmp_path):
+    cfg.data["ocr"]["online"].update(AI_ON["ocr"]["online"])
+    add_doc(repo, tmp_path)
+    q.sweep(repo, cfg, mhr, FakeValidate("passed"), review_fn=FakeReview(exc=RuntimeError("skip")))   # ready, error review
+    repo.mhr_set_ai_review("doc_1", None)
+
+    class Approving(FakeReview):
+        def __call__(self, repo_, cfg_, doc_id):
+            q.approve(repo_, doc_id, "operator")    # ოპერატორმა ანალიზის დროს ატვირთა
+            return super().__call__(repo_, cfg_, doc_id)
+
+    q.sweep(repo, cfg, mhr, FakeValidate("passed"), review_fn=Approving())
+    assert ai(repo) is None and status(repo) == "uploaded"

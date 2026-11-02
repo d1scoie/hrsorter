@@ -31,6 +31,8 @@ STALE_UPLOADING_SECONDS = 600     # ამაზე დიდხანს `uploa
 UPLOAD_MAX_ATTEMPTS = 5           # MHR მიუწვდომლობისას ატვირთვის ცდები, შემდეგ upload_failed
 
 ValidateFn = Callable[[Any, Any, str, MhrClient], ValidationResult]
+ReviewFn = Callable[[Any, Any, str], Any]          # ai_review.review_document(repo, cfg, doc_id) -> AiReview
+AI_REVIEW_STATUSES = (S.READY.value, S.FAILED.value)   # რომელ შედეგებზე ეშვება AI ანალიზი
 
 
 # --- ოპერატორის მოქმედებები ----------------------------------------------------------------
@@ -73,10 +75,20 @@ def revalidate(repo, document_id: str) -> bool:
     """failed|unavailable|upload_failed|needs_check|rejected → pending (ხელახალი ვალიდაცია)."""
     ok = repo.mhr_transition(document_id, (S.FAILED.value, S.UNAVAILABLE.value, S.UPLOAD_FAILED.value,
                                            S.NEEDS_CHECK.value, S.REJECTED.value), S.PENDING.value,
-                             attempts=0, next_try=None, error=None)
+                             attempts=0, next_try=None, error=None, ai_review=None)
     if ok:
         _event(repo, document_id, "revalidate")
     return ok
+
+
+def rerun_ai_review(repo, document_id: str) -> bool:
+    """ready|failed: AI ანალიზის გასუფთავება — worker შემდეგ გავლაზე თავიდან გააკეთებს."""
+    m = repo.mhr_get(document_id)
+    if m is None or m["status"] not in AI_REVIEW_STATUSES:
+        return False
+    repo.mhr_set_ai_review(document_id, None)
+    _event(repo, document_id, "ai_review requested")
+    return True
 
 
 def retry_upload(repo, document_id: str) -> bool:
@@ -144,11 +156,12 @@ def upload_now(repo, cfg, document_id: str, client: MhrClient | None = None) -> 
 # --- worker-ის გავლა ----------------------------------------------------------------------------
 
 def sweep(repo, cfg, client: MhrClient | None = None, validate_fn: ValidateFn | None = None,
-          now: Callable[[], float] = time.time) -> dict[str, int]:
+          now: Callable[[], float] = time.time, review_fn: ReviewFn | None = None) -> dict[str, int]:
     """ერთი გავლა: stale uploading → needs_check; unavailable (ვადა გავიდა) → pending; pending → ვალიდაცია;
-    approved → ატვირთვა. აბრუნებს მთვლელებს. `mhr.enabled=false` → არაფერს აკეთებს."""
+    ready|failed AI ანალიზის გარეშე → AI ანალიზი; approved → ატვირთვა. აბრუნებს მთვლელებს.
+    `mhr.enabled=false` → არაფერს აკეთებს."""
     counts = {k: 0 for k in ("requeued", "ready", "approved", "failed", "skipped", "unavailable", "uploaded",
-                             "upload_retry", "upload_failed", "needs_check", "rejected", "recovered")}
+                             "upload_retry", "upload_failed", "needs_check", "rejected", "recovered", "ai_reviewed")}
     m = cfg.section("mhr")
     if not m.get("enabled"):
         return counts
@@ -181,11 +194,39 @@ def sweep(repo, cfg, client: MhrClient | None = None, validate_fn: ValidateFn | 
                       (S.PENDING.value, SWEEP_LIMIT)):
         _validate_one(repo, cfg, m, client, validate_fn, row, retry_at, counts)
 
+    # (b2) AI ანალიზი — წესების შედეგი უკვე ბაზაშია (UI-ში ჩანს), Opus-ის „მეორე აზრი“ ემატება
+    _ai_review_pending(repo, cfg, review_fn, counts)
+
     # (c) ატვირთვა
     for row in repo.q("SELECT * FROM mhr_items WHERE status=? AND (next_try IS NULL OR next_try <= ?)"
                       " ORDER BY updated_at LIMIT ?", (S.APPROVED.value, t, SWEEP_LIMIT)):
         _upload_one(repo, cfg, m, client, row, retry_at, counts)
     return counts
+
+
+def _ai_review_pending(repo, cfg, review_fn: ReviewFn | None, counts: dict[str, int]) -> None:
+    from . import ai_review
+    if not ai_review.enabled(cfg):
+        return
+    limit = int(ai_review.settings(cfg).get("per_sweep") or 3)
+    q = ",".join("?" for _ in AI_REVIEW_STATUSES)
+    for row in repo.q(f"SELECT document_id, status FROM mhr_items WHERE status IN ({q}) AND ai_review IS NULL"
+                      f" ORDER BY updated_at LIMIT ?", (*AI_REVIEW_STATUSES, limit)):
+        doc_id = row["document_id"]
+        try:
+            res = (review_fn or ai_review.review_document)(repo, cfg, doc_id)
+            data = res.to_dict() if hasattr(res, "to_dict") else dict(res)
+        except Exception as e:   # შედეგი არასდროს არ იკარგება უსასრულო ციკლში — შეცდომაც იწერება
+            log.warning("ai review of %s failed: %s", doc_id, type(e).__name__)
+            data = ai_review.AiReview("error", error=type(e).__name__, reviewed_at=now_iso()).to_dict()
+        m = repo.mhr_get(doc_id)
+        if m is None or m["status"] != row["status"]:   # ამასობაში სტატუსი შეიცვალა (მაგ. ოპერატორმა ატვირთა)
+            continue
+        repo.mhr_set_ai_review(doc_id, data)
+        counts["ai_reviewed"] += 1
+        _event(repo, doc_id, f"ai_review: {data.get('verdict')} ({data.get('confidence')})"
+               + (f" — {data.get('error')}" if data.get("error") else ""),
+               level="warning" if data.get("verdict") == "error" else "info")
 
 
 def _find_upload(client: MhrClient, row) -> tuple[str, str | None]:
@@ -248,7 +289,7 @@ def _validate_one(repo, cfg, m: dict[str, Any], client: MhrClient, validate_fn: 
             counts["unavailable"] += 1
             _event(repo, doc_id, f"unavailable ({type(e).__name__})", type_id, level="warning")
         return
-    fields: dict[str, Any] = {"validation": res.to_dict(), "error": res.error,
+    fields: dict[str, Any] = {"validation": res.to_dict(), "error": res.error, "ai_review": None,
                               "employee_id": res.employee.employee_id if res.employee else None}
     if res.status == "passed":
         to = S.APPROVED if not m.get("require_approval", True) else S.READY

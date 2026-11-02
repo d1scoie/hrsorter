@@ -416,3 +416,45 @@ def test_manual_upload_button_on_document_and_mhr_pages(client, tmp_path):
     assert r.headers["location"].startswith(f"/doc/{d}?err=") and "ვერ მოიძებნა" in c.get(r.headers["location"]).text
     assert repo.mhr_get(d) is None
     assert c.post("/doc/doc_nope/manual-upload", data={}, headers={"origin": LOCAL}).status_code == 404
+
+
+def test_mhr_pages_show_ai_review(client):
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True}
+    data["ocr"] = {"online": {"enabled": True, "provider": "claude_code"}}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    v = {"status": "failed", "employee": {"employee_id": "E2", "first_name": "გიორგი", "last_name": "კაპანაძე"},
+         "checks": [{"field": "salary", "label_ka": "ხელფასი", "document_value": "2000", "mhr_value": "2200",
+                     "status": "mismatch", "blocking": True, "note": ""}], "diffs": [], "summary": ["ხელფასი განსხვავდება"]}
+    doc = "doc_" + "d" * 32
+    repo.mhr_enqueue(doc, "01001000001")
+    repo.mhr_transition(doc, ("pending",), "failed", validation=v, employee_id="E2")
+    page = c.get(f"/mhr/{doc}").text
+    assert "AI ანალიზი (Opus) რიგშია" in page and "ქვემოთ მოცემული სხვაობები ვნახე" in page
+
+    repo.mhr_set_ai_review(doc, {"verdict": "upload", "confidence": "high", "summary": "ხელფასი სწორად იკითხება, დოკუმენტი სწორია.",
+                                 "items": [{"topic": "ხელფასი", "status": "ok", "explanation": "2200 სხვაგან ჩანს"}],
+                                 "risks": ["ბოლო გვერდის თარიღი"], "model": "opus"})
+    page = c.get(f"/mhr/{doc}").text
+    for s in ("AI: ატვირთვა შეიძლება", "მაღალი დარწმუნებულობა", "დოკუმენტი სწორია.", "2200 სხვაგან ჩანს", "ბოლო გვერდის თარიღი",
+              "AI-მ სხვაობები გადახედა", "ხელახალი AI ანალიზი"):
+        assert s in page, s
+    assert "(Opus) რიგშია" not in page
+    lst = c.get("/mhr?tab=failed").text
+    assert "AI: ატვირთვა შეიძლება" in lst and "დოკუმენტი სწორია." in lst
+
+    # ხელახალი ანალიზი — სუფთავდება
+    c.post(f"/mhr/{doc}/ai-review", headers={"origin": LOCAL})
+    assert repo.mhr_get(doc)["ai_review"] is None
+
+    repo.mhr_set_ai_review(doc, {"verdict": "error", "error": "claude not found"})
+    assert "AI ანალიზი ვერ შესრულდა" in c.get(f"/mhr/{doc}").text
+
+    # AI გამორთული — ბლოკი საერთოდ არ ჩანს; პარამეტრებში ჩამრთველი არის
+    assert 'name="mhr.ai_review.enabled"' in c.get("/settings").text
+    data["ocr"]["online"]["enabled"] = False
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert "AI ანალიზი" not in c.get(f"/mhr/{doc}").text
+    repo.close()
