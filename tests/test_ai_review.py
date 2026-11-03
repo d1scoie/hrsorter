@@ -78,7 +78,7 @@ def test_run_claude_passes_prompt_on_stdin_without_tools():
     out = ar.run_claude("პრომპტი", model="opus", timeout=5, cmd="claude.exe", runner=run)
     assert out == '{"verdict":"check"}'
     args, kw = run.calls[0]
-    assert args[:2] == ["claude.exe", "-p"] and "--tools" in args and args[args.index("--tools") + 1] == ""
+    assert args[:2] == ["claude.exe", "-p"] and "--tools" in args and args[args.index("--tools") + 1] == "" and "--safe-mode" in args
     assert args[args.index("--model") + 1] == "opus" and kw["input"] == "პრომპტი".encode("utf-8") and kw["timeout"] == 5
 
 

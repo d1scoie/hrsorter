@@ -94,6 +94,23 @@ def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg,
 `sweep` იყენებს `validate_fn or validation.validate_document` (lazy import), შედეგს წერს `mhr_items.validation`-ში
 (`ValidationResult.to_dict()`), `employee_id`-ს — თანამშრომლის ID-ს.
 
+**საეჭვო გვერდის ხელახალი წაკითხვა** (`validation._recheck_diffs`): ორიგინალთან/შაბლონთან შედარებამ ტექსტური
+სხვაობა (`changed|added|removed`, significant) იპოვა Tesseract-ით წაკითხულ გვერდზე → ეს გვერდი (≤ `mhr.recheck.max_pages`)
+ონლაინ OCR-ით (`build_ocr_chain(cfg).online`, Claude) ხელახლა იკითხება, ტექსტი `page_texts`-ში ინახება
+(`text_source="ocr:<provider>:recheck"`) და შედარება იმავე `compare`-ით მეორდება. გაქრა → `TextDiff(significant=False,
+reason=RECHECK_NOTE)`; დარჩა → reason-ს ემატება `RECHECK_STILL`. მოქმედებს მხოლოდ ონლაინ პროვაიდერის ხელმისაწვდომობისას;
+`mhr.recheck.enabled=false` თიშავს. მიზეზი: რეალურ სკანზე Tesseract-მა სუფთა გვერდზე ციფრი დაკარგა („2 კვირით" →
+„კვირით") და „მე-5" → „მე-3" წაიკითხა — ცრუ გაჩერებები.
+
+**რეალური სკანებიდან (2026-11-03) დამატებული ხმაურის წესები:** ბეჭდის/ხელმოწერის ლაქაში Tesseract-ის ≥0.6 სანდოობის
+ნაგავი („2099/3)", „/7", „LI") `drop_stamp_words`-ში იშლება — რჩება ნამდვილი ქართული სიტყვა, თარიღი/პ.ნ. და სანდო სუფთა
+ტოკენი (≥4 ციფრი, „ს/ნ", ელ-ფოსტა — ბეჭედი რეკვიზიტებს ფარავს); სუფთა ჩამატება მხოლოდ MHR-ის ცნობილი ტოკენებით („2009",
+ს/კ — `known_tokens(employee)` ახლა ორიგინალთან შედარებასაც გადაეცემა) ბეჭედია; რეკვიზიტების ცხრილში ≤1 უცნობი მოკლე (≤4 ასო)
+ტოკენი („ალლი" — ხელმოწერის ნაკაწრი) იტანება; ბოლო გვერდის გრძელი სტრიქონი შაბლონში კომპაქტურ ფანჯარაში ეძებება
+(`_best_match` — „ქ. თბილისი, პეკინის ქ." პრეამბულაშიც არის); პუნქტის ნომერთან შეწებებული გამჭოლი სათაური („10.6 ქ. თბილისი
+2026-11-01") `_strip`-ში იშლება; `find_doc_number` მისამართის ხაზს („ქუჩა #17") გამოტოვებს. `claude -p` ყველგან
+`--safe-mode`-ით ეშვება — მომხმარებლის CLAUDE.md-ის პირადი წესები („ბოლოს შეჯამება") ტრანსკრიფციას/JSON-ს არ ემატება.
+
 **AI ანალიზი** (`ai_review.py`, ნაბიჯი b2): `ready|failed` ჩანაწერებზე, სადაც `mhr_items.ai_review IS NULL`, `sweep`
 `review_fn or ai_review.review_document`-ს უშვებს (≤ `mhr.ai_review.per_sweep` ერთ გავლაზე) და შედეგს
 (`AiReview.to_dict()`: verdict upload|check|reject|error, confidence, summary, items, risks) `ai_review` სვეტში წერს.

@@ -541,3 +541,16 @@ def test_ai_review_not_stored_if_status_changed_meanwhile(repo, cfg, mhr, tmp_pa
 
     q.sweep(repo, cfg, mhr, FakeValidate("passed"), review_fn=Approving())
     assert ai(repo) is None and status(repo) == "uploaded"
+
+
+def test_ai_review_skipped_when_validation_had_mhr_error(repo, cfg, mhr, tmp_path):
+    cfg.data["ocr"]["online"].update(AI_ON["ocr"]["online"])
+    add_doc(repo, tmp_path)
+    rv = FakeReview()
+    q.sweep(repo, cfg, mhr, FakeValidate("failed", exc=None), review_fn=rv)
+    repo.mhr_transition("doc_1", ("failed",), "failed", error="MhrError", ai_review=None)   # შედარება არ შესრულებულა
+    q.sweep(repo, cfg, mhr, FakeValidate("failed"), review_fn=rv)
+    assert len(rv.calls) == 1 and ai(repo) is None     # მეორედ არ გაეშვა
+    assert q.revalidate(repo, "doc_1")                  # revalidate error-ს ასუფთავებს → შემდეგ ვალიდაციაზე ისევ ეშვება
+    q.sweep(repo, cfg, mhr, FakeValidate("failed"), review_fn=rv)
+    assert len(rv.calls) == 2 and ai(repo)["verdict"] == "upload"

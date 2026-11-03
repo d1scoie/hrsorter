@@ -720,3 +720,76 @@ def test_marks_are_the_found_signatures_not_handwriting(repo, cfg):
     doc2 = add_doc(repo, doc_id="doc_hw", page_flags={0: {"has_marks": True, "signature_hint": "uncertain", "signature_parties": {}}})
     r2 = validate_document(repo, cfg, doc2, original_client())
     assert [d.reason for d in r2.diffs if d.kind == "handwriting"] == ["ნიშნები ხელმოწერის ზონის გარეთ"]
+
+
+# --- საეჭვო გვერდის ხელახალი წაკითხვა ონლაინ OCR-ით (validation._recheck_diffs) --------------------------------
+class FakeOnline:
+    name, is_online = "online:claude_code", True
+
+    def __init__(self, texts: dict[int, str], ok: bool = True):
+        self.texts, self.ok, self.calls = texts, ok, []
+
+    def available(self) -> bool:
+        return self.ok
+
+
+def _with_recheck(monkeypatch, provider: FakeOnline):
+    monkeypatch.setattr(validation, "build_ocr_chain", lambda cfg: type("C", (), {"online": provider})())
+
+    def fake_page_text(cfg, prov, output_path, page_index, rotation):
+        prov.calls.append((page_index, rotation))
+        return prov.texts[page_index]
+    monkeypatch.setattr(validation, "_online_page_text", fake_page_text)
+
+
+def test_recheck_removes_ocr_digit_error(repo, cfg, monkeypatch):
+    """Tesseract-მა ციფრი დაკარგა („1500" → „1800" ანალოგია რეალური „2 კვირით" → „კვირით"): Claude-ის ხელახალი
+    წაკითხვით სხვაობა ქრება → passed, სიაში ხმაურად რჩება შენიშვნა, page_texts-ში ახალი ტექსტი."""
+    prov = FakeOnline({0: OCR_P1})   # სწორი ტექსტი
+    _with_recheck(monkeypatch, prov)
+    doc = add_doc(repo, pages=(OCR_P1.replace("შეადგენს 1500 ლარს", "შეადგენს 1800 ლარს"), OCR_P2),
+                  page_flags={0: {"rotation_applied": 90}})
+    r = validate_document(repo, cfg, doc, original_client())
+    assert prov.calls == [(0, 90)]                      # output PDF-ის 0-ე გვერდი (page_start=3 → ინდექსი 3-3)
+    assert r.status == "passed", r.summary
+    assert not r.significant_diffs and any(d.reason == validation.RECHECK_NOTE and d.page == 1 for d in r.diffs)
+    saved = repo.load_page_texts("job_1")[3]
+    assert saved["text"] == OCR_P1 and saved["text_source"] == "ocr:online:claude_code:recheck"
+    # მეორე ვალიდაცია: გვერდი უკვე ონლაინ-წაკითხულია — ხელახლა არ იგზავნება
+    validate_document(repo, cfg, doc, original_client())
+    assert prov.calls == [(0, 90)]
+
+
+def test_recheck_keeps_real_change_and_marks_it(repo, cfg, monkeypatch):
+    wrong = OCR_P1.replace("შეადგენს 1500 ლარს", "შეადგენს 1800 ლარს")
+    prov = FakeOnline({0: wrong})    # Claude-მაც იგივე წაიკითხა — ნამდვილი ცვლილებაა
+    _with_recheck(monkeypatch, prov)
+    doc = add_doc(repo, pages=(wrong, OCR_P2))
+    r = validate_document(repo, cfg, doc, original_client())
+    assert r.status == "failed" and len(prov.calls) == 1
+    s = r.significant_diffs
+    assert len(s) == 1 and "1800" in s[0].scanned and validation.RECHECK_STILL in s[0].reason
+
+
+def test_recheck_skipped_when_disabled_or_offline_or_failing(repo, cfg, monkeypatch):
+    wrong = OCR_P1.replace("შეადგენს 1500 ლარს", "შეადგენს 1800 ლარს")
+    prov = FakeOnline({0: OCR_P1}, ok=False)
+    _with_recheck(monkeypatch, prov)
+    doc = add_doc(repo, pages=(wrong, OCR_P2))
+    assert validate_document(repo, cfg, doc, original_client()).status == "failed" and prov.calls == []
+    prov.ok = True
+    cfg.data["mhr"]["recheck"]["enabled"] = False
+    assert validate_document(repo, cfg, doc, original_client()).status == "failed" and prov.calls == []
+    cfg.data["mhr"]["recheck"]["enabled"] = True
+    from hrsorter.ocr.base import OcrError
+
+    def boom(*a, **k):
+        raise OcrError("timeout", retryable=True)
+    monkeypatch.setattr(validation, "_online_page_text", boom)
+    r = validate_document(repo, cfg, doc, original_client())
+    assert r.status == "failed" and "1800" in r.significant_diffs[0].scanned and validation.RECHECK_STILL not in r.significant_diffs[0].reason
+
+
+def test_clean_recheck_text_drops_model_markers():
+    t = "მუხლი 5\n[ბეჭედი: შპს არბო 2009, 205273498]\nხელფასი 1300 [?] ლარი [ხელნაწერი: ა. მ.]"
+    assert validation._clean_recheck_text(t).split() == ["მუხლი", "5", "ხელფასი", "1300", "ლარი"]

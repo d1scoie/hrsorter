@@ -296,14 +296,19 @@ def _table_noise(a: list[str], b: list[str], a_bag: list[str], b_page: list[str]
         return False
     geo = [w for w in b if _GEO_WORD.search(w)]
     if lits:
-        return all(_found(w, a_bag) or _found(w, known) for w in geo)
+        unknown = [w for w in geo if not _found(w, a_bag) and not _found(w, known)]
+        # ≤1 უცნობი მოკლე (≤4 ასო) ტოკენი — ხელმოწერის ნაკაწრი ქართულ ასოებად („ალლი"); ნამდვილი სიტყვა უფრო გრძელია
+        return not unknown or (len(unknown) == 1 and len(unknown[0]) <= 4)
     # სუფთა ჩამატება — ცვლადების მნიშვნელობები მეორე სვეტიდან: MHR-ის ≥2 მონაცემი უნდა ერიოს (სახელი, პ/ნ…), უცნობი
     # ქართული სიტყვა ≤4 (მისამართი MHR-ში სხვანაირად წერია). ჩამატებული წინადადება ასეთი არ არის — ჩანს.
     hits = sum(1 for w in b if _found(w, known, 0.8))
     unknown = [w for w in geo if not _found(w, a_bag, 0.8) and not _found(w, known, 0.8)]
     nums_known = all(_found(w, known, 0.8) for w in b if _digits([w]))
     short = len(b) <= 5 and not unknown and nums_known       # „ქ თბილისი 2026-10-18" — ადგილი და თარიღი სხვა სვეტიდან
-    return short or (len(b) <= 15 and hits >= 2 and len(unknown) <= 4)
+    # ხელმოწერის ბლოკი სხვა რიგით („დირექტორი დავით გელაშვილი დამსაქმებელი" + ≤1 ნაკაწრი „ალლი"): ყველა სიტყვა შაბლონშია
+    reorder = (len(b) <= 8 and geo and len(unknown) <= 1 and all(len(w) <= 4 for w in unknown)
+               and all(_found(w, a_bag, 0.8) for w in b if _digits([w]) or (w in geo and w not in unknown)))
+    return short or reorder or (len(b) <= 15 and hits >= 2 and len(unknown) <= 4)
 
 
 LAST_PAGE_LINE_MIN = 7     # ბოლო გვერდის სტრიქონი ამდენი (ან მეტი) სიტყვით შაბლონში უნდა მოიძებნოს
@@ -324,12 +329,31 @@ def unmatched_long_lines(template: list[str], page_text: str, labels: set[str] |
         toks = [_confused(x.word) for x in _tokens(line, 0) if not labels or x.word not in labels]   # ნუმერაცია არ ითვლება
         if len(toks) < LAST_PAGE_LINE_MIN:
             continue
-        blocks = [b for b in SequenceMatcher(None, t, toks, autojunk=False).get_matching_blocks() if b.size]
-        matched = sum(b.size for b in blocks)
-        span = (blocks[-1].a + blocks[-1].size - blocks[0].a) if blocks else 0
+        matched, span = _best_match(t, toks)
         if len(toks) - matched >= LAST_PAGE_UNMATCHED or matched < 0.5 * len(toks) or span > 2 * len(toks) + 4:
             out.append(line.strip())
     return out
+
+
+def _best_match(t: list[str], toks: list[str]) -> tuple[int, int]:
+    """(დამთხვეული სიტყვები, მონაკვეთის სიგრძე შაბლონში). SequenceMatcher-ის ბლოკები შეიძლება გაიფანტოს (ფრაზა შაბლონში
+    ორჯერ გვხვდება — „ქ. თბილისი, პეკინის ქ." პრეამბულაშიც და რეკვიზიტებშიც): მაშინ ყველაზე გრძელი ბლოკის გარშემო
+    კომპაქტურ ფანჯარაში ხელახლა ითვლება."""
+    blocks = [b for b in SequenceMatcher(None, t, toks, autojunk=False).get_matching_blocks() if b.size]
+    if not blocks:
+        return 0, 0
+    matched = sum(b.size for b in blocks)
+    span = blocks[-1].a + blocks[-1].size - blocks[0].a
+    if span <= 2 * len(toks) + 4:
+        return matched, span
+    big = max(blocks, key=lambda b: b.size)
+    lo, hi = max(0, big.a - 2 * len(toks)), min(len(t), big.a + big.size + 2 * len(toks))
+    inner = [b for b in SequenceMatcher(None, t[lo:hi], toks, autojunk=False).get_matching_blocks() if b.size]
+    if not inner:
+        return matched, span
+    m2 = sum(b.size for b in inner)
+    s2 = inner[-1].a + inner[-1].size - inner[0].a
+    return (m2, s2) if m2 >= matched - 1 else (matched, span)
 
 
 def _snippet(toks: list[_Tok], i0: int, i1: int) -> str:
@@ -418,6 +442,8 @@ def _diff_tokens(a: list[_Tok], b: list[_Tok], default_page: int, labels: set[st
         if reason and labels is not None and (PLACEHOLDER in aw or page == last_page) \
                 and _table_noise(aw, bw, a_bag, [t.word for t in b if t.page == page], known or []):
             reason = None
+        if reason and not aw and known and b_real and all(_found(w, known, 0.8) for w in b_real):
+            reason = None      # სუფთა ჩამატება მხოლოდ ცნობილი ტოკენებით („2009" — ბეჭდის/კომპანიის სახელის ციფრი, ს/კ) — ბეჭედია
         out.append(TextDiff(page=page, kind=kind, original=_snippet(a, i1, i2), scanned=_snippet(b, j1, j2),
                             significant=reason is not None, reason=reason or "OCR-ის ხმაური"))
     return out
@@ -474,8 +500,15 @@ def _strip(text: str, lines: list[str], page: int | None = None) -> str:
     for i, (ln, norm) in enumerate(rows):
         if norm and (any(_same_line(norm, x) for x in lines) or (i in edge and _is_page_number(norm, page))):
             continue
+        m = _GLUED_HEADER.match(ln)   # „10.6 ქ. თბილისი 2026-11-01": პუნქტის ნომერი + გამჭოლი სათაური ერთ ხაზად — სათაური იშლება
+        if m and any(_same_line(_norm_line(m.group(2)), x) for x in lines):
+            keep.append(m.group(1))
+            continue
         keep.append(ln)
     return "\n".join(keep)
+
+
+_GLUED_HEADER = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2})+\.?)\s+(\S.*)$")
 
 
 def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg, original_paginated: bool = True,

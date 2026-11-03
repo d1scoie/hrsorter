@@ -244,13 +244,20 @@ def find_names(text: str) -> list[NameHit]:
     return out
 
 
+_ADDRESS_CUE = re.compile(r"ქუჩ|გამზირ|ჩიხ|შესახვევ|მისამართ|ადგილ|ბინა|კორპუს|სართულ")   # „პეკინის ქუჩა #17" — ნომერი არაა
+
+
 def find_doc_number(text: str) -> tuple[str, str] | None:
-    """პირველი „№ 15"/„n 15/2"/„ბრძანება № 34-კ" → (ნომერი, ხაზი); 9+ ციფრიანი (პ/ნ და მსგ.) გამორიცხულია."""
+    """პირველი „№ 15"/„n 15/2"/„ბრძანება № 34-კ" → (ნომერი, ხაზი); 9+ ციფრიანი (პ/ნ და მსგ.) და მისამართის
+    ნომერი („… ქუჩა #17", „სტაჟირების ადგილი: … #22") გამორიცხულია."""
     for m in DOCNUM_RE.finditer(text):
         v = m.group(1)
         if sum(ch.isdigit() for ch in v) >= 9:
             continue
-        return v, line_at(text, m.start())
+        line = line_at(text, m.start())
+        if _ADDRESS_CUE.search(line):
+            continue
+        return v, line
     return None
 
 

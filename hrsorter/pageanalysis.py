@@ -277,7 +277,10 @@ def _erase_rules(ink: np.ndarray, min_len: int) -> np.ndarray:
 _STAMP_MIN_IN = (1.0, 0.8)     # ბეჭდის ლაქა: სიგანე × სიმაღლე ინჩებში მინიმუმ
 _STAMP_MAX_W_IN = 4.0          # ამაზე განიერი — ცხრილის ჩარჩო, არა ბეჭედი
 _STAMP_MIN_CELLS = 60
-_STAMP_WORD_MAX_CONF = 0.6
+_STAMP_REAL_MIN_CONF = 0.5   # ბეჭდის ქვეშ რჩება ამაზე სანდო ნამდვილი ქართული სიტყვა …
+_STAMP_CLEAN_MIN_CONF = 0.6  # … და ამაზე სანდო სუფთა რიცხვი (≥4 ციფრი), ელ-ფოსტა, „ს/ნ“-ის ტიპის ეტიკეტი (ბეჭედი ცხრილს ფარავს)
+_STAMP_CLEAN = re.compile(r"^(?:\d{4,}|[ა-ჰ]{1,2}/[ა-ჰ]{1,2}:?|[a-z0-9._-]+@[a-z0-9.-]+\.[a-z]{2,})$")
+_STAMP_STRIP = "„“\"'(),;"
 _KEEP_UNDER_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}|\d{10,}")   # თარიღი, პირადი ნომერი — ბეჭდის ქვეშაც რჩება
 
 
@@ -296,23 +299,30 @@ def stamp_boxes(arr: np.ndarray, words: list[tuple[str, tuple[int, int, int, int
 
 def drop_stamp_words(text: str, words: list[tuple[str, tuple[int, int, int, int], float]],
                      stamps: list[tuple[int, int, int, int]]) -> str:
-    """ბეჭდის შიგნით წაკითხული დაბალი სანდოობის „სიტყვები" (ს/ნ, „არბო 2009", ნაგავი) ტექსტიდან იშლება — ისინი
-    ორიგინალთან შედარებისას „ჩამატებულ ტექსტად" ჩანდა. სანდო სიტყვა ბეჭდის ქვეშაც რჩება (ბეჭედი ტექსტს ფარავს)."""
+    """ბეჭდის/ხელმოწერის ლაქის შიგნით წაკითხული „სიტყვები" (ს/ნ, „არბო 2009", „2099/3", „/7", „LI", ნაგავი) ტექსტიდან
+    იშლება — ისინი ორიგინალთან შედარებისას „ჩამატებულ ტექსტად"/„ციფრების სხვაობად" ჩანდა, სანდოობის მიუხედავად
+    (Tesseract ბეჭდის ციფრებს ხშირად ≥0.6-ით კითხულობს). რჩება მხოლოდ სანდო ნამდვილი ქართული სიტყვა (ბეჭედი ტექსტს
+    ფარავს), თარიღი და პირადი ნომერი."""
     if not stamps:
         return text
-    drop = []
-    for t, (l, tp, r, b), conf in words:
+    drop: set[int] = set()
+    for i, (t, (l, tp, r, b), conf) in enumerate(words):
         cx, cy = (l + r) / 2, (tp + b) / 2
-        if conf < _STAMP_WORD_MAX_CONF and not _KEEP_UNDER_STAMP.search(t)                 and any(x0 <= cx <= x1 and y0 <= cy <= y1 for x0, y0, x1, y1 in stamps):
-            drop.append(t)
+        real = ((conf >= _STAMP_REAL_MIN_CONF and _REAL_WORD.search(t))
+                or (conf >= _STAMP_CLEAN_MIN_CONF and _STAMP_CLEAN.match(t.strip(_STAMP_STRIP))))
+        if not real and not _KEEP_UNDER_STAMP.search(t) and any(x0 <= cx <= x1 and y0 <= cy <= y1 for x0, y0, x1, y1 in stamps):
+            drop.add(i)
     if not drop:
         return text
-    parts = re.split(r"(\s+)", text)   # მთელი ტოკენები, წაკითხვის რიგით — „2"-ის წაშლამ „2026-10-28" არ უნდა დააზიანოს
+    # მთელი ტოკენები, წაკითხვის რიგით — „2"-ის წაშლამ „2026-10-28" არ უნდა დააზიანოს; ყველა სიტყვა თანმიმდევრობით
+    # მოწმდება (ინდექსით, არა მნიშვნელობით), რომ ადრინდელი იგივე ტოკენი (სანდო „2009" ბეჭდის მკრთალი „2009"-ის წინ) არ წაიშალოს
+    parts = re.split(r"(\s+)", text)
     k = 0
-    for w in drop:
+    for i, (w, _box, _conf) in enumerate(words):
         for idx in range(k, len(parts), 2):
             if parts[idx] == w:
-                parts[idx] = ""
+                if i in drop:
+                    parts[idx] = ""
                 k = idx + 2
                 break
     return "".join(parts)

@@ -107,7 +107,7 @@ def _pages_text(pages: list[dict[str, Any]], max_chars: int) -> str:
 
 
 def build_prompt(doc: dict[str, Any], validation: dict[str, Any], pages: list[dict[str, Any]], *,
-                 max_chars: int = 60000) -> str:
+                 max_chars: int = 60000, max_noise: int = 200) -> str:
     """ოპერატორის დოკუმენტი + MHR + წესების შედეგი → პრომპტი. `doc`: type_ka, page_count, fields, signature_status, reasons."""
     emp = validation.get("employee") or {}
     checks = validation.get("checks") or []
@@ -132,8 +132,9 @@ def build_prompt(doc: dict[str, Any], validation: dict[str, Any], pages: list[di
              f"შინაარსობრივი სხვაობები ორიგინალთან/შაბლონთან ({len(sig)}):",
              "\n".join(f"- გვ. {d.get('page')}, {d.get('kind')}: ორიგინალი «{d.get('original')}» → დასკანერებული «{d.get('scanned')}»"
                        f"{' — ' + d['reason'] if d.get('reason') else ''}" for d in sig) or "- (არ არის)",
-             f"წვრილი სხვაობები, რომლებიც პროგრამამ წაკითხვის ხმაურად ჩათვალა ({len(noise)}; პირველი 30):",
-             "\n".join(f"- გვ. {d.get('page')}: «{d.get('original')}» → «{d.get('scanned')}»" for d in noise[:30]) or "- (არ არის)",
+             f"წვრილი სხვაობები, რომლებიც პროგრამამ წაკითხვის ხმაურად ჩათვალა ({len(noise)}"
+             + (f"; ნაჩვენებია პირველი {max_noise}" if len(noise) > max_noise else "; ყველა ნაჩვენებია") + "):",
+             "\n".join(f"- გვ. {d.get('page')}: «{d.get('original')}» → «{d.get('scanned')}»" for d in noise[:max_noise]) or "- (არ არის)",
              "## დოკუმენტის ამოკითხული ტექსტი",
              _pages_text(pages, max_chars)]
     return "\n\n".join(parts)
@@ -184,7 +185,8 @@ def run_claude(prompt: str, *, model: str, timeout: float, cmd: str | None = Non
     cmd = cmd or shutil.which("claude")
     if not cmd:
         raise AiReviewError("claude not found")
-    args = [cmd, "-p", "--output-format", "json", "--tools", "", "--model", model]
+    # --safe-mode: მომხმარებლის CLAUDE.md/სკილები/hook-ები არ იტვირთება (პირადი წესები JSON-პასუხს არ შეცვლის); ავტორიზაცია რჩება
+    args = [cmd, "-p", "--output-format", "json", "--safe-mode", "--tools", "", "--model", model]
     try:
         proc = runner(args, input=prompt.encode("utf-8"), capture_output=True, timeout=timeout, **_no_window())
     except subprocess.TimeoutExpired as e:
@@ -219,7 +221,8 @@ def review_document(repo, cfg: Config, document_id: str, *, runner: Runner | Non
            "reasons": json.loads(row["review_reasons"] or "[]")}
     texts = repo.load_page_texts(row["job_id"])
     pages = [texts.get(i) or {} for i in range(int(row["page_start"]), int(row["page_end"]) + 1)]
-    prompt = build_prompt(doc, json.loads(m["validation"] or "{}"), pages, max_chars=int(s.get("max_chars") or 60000))
+    prompt = build_prompt(doc, json.loads(m["validation"] or "{}"), pages, max_chars=int(s.get("max_chars") or 60000),
+                          max_noise=int(s.get("max_noise") or 200))
     try:
         text = run_claude(prompt, model=model, timeout=float(s.get("timeout_seconds") or 300),
                           cmd=str((cfg.section("ocr").get("online") or {}).get("claude_cmd") or "") or None,

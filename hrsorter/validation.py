@@ -45,9 +45,10 @@ from .db import Repository, now_iso
 from .employee_api import _get_path
 from .features import company_core, surname_lemma
 from .mhr_models import Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, TextDiff, ValidationResult
+from .ocr.base import OcrError
 from .ocr.chain import build_ocr_chain
 from .pdfio import PdfDocument, validate_pdf
-from .preprocess import enhance
+from .preprocess import apply_rotation, enhance
 from .textcompare import _PUNCT, compare_texts, mark_placeholders
 from .textnorm import digits_only, normalize, one_line
 
@@ -703,7 +704,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     if uploaded:
         checks.append(uploaded)
     if ref is None:
-        return _compare_with_template(result, cfg, client, employee, scanned)
+        return _compare_with_template(result, cfg, client, employee, scanned, repo, row)
     result.original = ref
     missing_file = Check("original_contract", LABELS_KA["original_contract"], None, ref.doc_id, "missing_in_mhr", True,
                          note="ორიგინალის ფაილი MHR-ის სერვერზე არ არის (ჩანაწერი არსებობს, ფაილი — არა)")
@@ -747,8 +748,14 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
         if p - 1 < len(scanned_texts):
             scanned_texts[p - 1] = ""
         result.diffs.append(TextDiff(p, "changed", "", "", True, "ორიგინალის გვერდი წაუკითხავია — შედარება ვერ მოხერხდა"))
-    result.diffs.extend(compare_texts(orig.pages, scanned_texts, cfg, original_paginated=orig.paginated,
-                                      strip_lines=orig.strip_lines, labels=clause_labels(orig.pages)))
+    known = known_tokens(employee)   # ბეჭდის ციფრები („2009", ს/კ) სუფთა ჩამატებად არ ჩაითვალოს
+
+    def compare(texts: list[str]) -> list[TextDiff]:
+        return compare_texts(orig.pages, texts, cfg, original_paginated=orig.paginated,
+                             strip_lines=orig.strip_lines, labels=clause_labels(orig.pages), known=known)
+    primary = compare(scanned_texts)
+    result.diffs.extend(primary)
+    _recheck_diffs(result, cfg, repo, row, scanned, scanned_texts, primary, compare)
     if not result.significant_diffs:
         # ხელშეკრულება ორიგინალს ემთხვევა ⇒ MHR-ის ამჟამინდელი ხელფასი/თანამდებობა/ვადა მოგვიანებით შეიცვალა,
         # დოკუმენტი კი არა (სპეც. §12: დღევანდელი მონაცემი ძველ დოკუმენტს არ ანაცვლებს) — შენიშვნა, არა ბლოკი
@@ -770,7 +777,7 @@ def clause_labels(pages: list[str]) -> set[str]:
 
 
 def _compare_with_template(result: ValidationResult, cfg: Config, client, employee: MhrEmployee,
-                           scanned: list[dict[str, Any]]) -> ValidationResult:
+                           scanned: list[dict[str, Any]], repo: Repository | None = None, row=None) -> ValidationResult:
     """ორიგინალი არ არის → თანამდებობის + ხელშეკრულების ტიპის შაბლონი MHR-დან. `${…}` ცვლადები (სახელი, პ/ნ, თარიღი,
     ხელფასი) შედარებისას გამოტოვებულია — ისინი MHR-ის მონაცემებს ზემოთ ველებად შედარდა; ხელფასის სხვაობა ბლოკავს."""
     missing = (f"ამ თარიღის (±{ORIGINAL_DATE_TOLERANCE_DAYS} დღე) ხელშეკრულების ორიგინალი MHR-ში ვერ მოიძებნა "
@@ -793,10 +800,92 @@ def _compare_with_template(result: ValidationResult, cfg: Config, client, employ
     which = ", ".join(x for x in (raw.get("position"), raw.get("work_status")) if x) or template.title or template.doc_id
     result.checks.append(Check("contract_template", "შაბლონი", None, template.doc_id, "info", False,
                                note=f"MHR-ში ამ თანამშრომლის ხელშეკრულება არ არის — სკანი შედარდა თანამდებობის შაბლონთან ({which})"))
-    result.diffs.extend(compare_texts([mark_placeholders(p) for p in orig.pages], [p.get("text") or "" for p in scanned],
-                                      cfg, original_paginated=orig.paginated, strip_lines=orig.strip_lines,
-                                      labels=clause_labels(orig.pages), known=known_tokens(employee)))
+    tpl = [mark_placeholders(p) for p in orig.pages]
+
+    def compare(texts: list[str]) -> list[TextDiff]:
+        return compare_texts(tpl, texts, cfg, original_paginated=orig.paginated, strip_lines=orig.strip_lines,
+                             labels=clause_labels(orig.pages), known=known_tokens(employee))
+    scanned_texts = [p.get("text") or "" for p in scanned]
+    primary = compare(scanned_texts)
+    result.diffs.extend(primary)
+    if repo is not None and row is not None:
+        _recheck_diffs(result, cfg, repo, row, scanned, scanned_texts, primary, compare)
     return _finish(result, compared_template=True)
+
+
+# --- საეჭვო გვერდის ხელახალი წაკითხვა ონლაინ OCR-ით ------------------------------------------------------------
+RECHECK_KINDS = ("changed", "added", "removed")
+RECHECK_NOTE = "გვერდი Claude-მა ხელახლა წაიკითხა — სხვაობა Tesseract-ის წაკითხვის შეცდომა იყო"
+RECHECK_STILL = "ხელახალი წაკითხვითაც"
+
+
+_RECHECK_MARKER = re.compile(r"\[[^\]\n]{0,200}\]")   # „[ბეჭედი: …]", „[ხელნაწერი: …]" — მოდელის ნიშნები, არა ტექსტი
+
+
+def _clean_recheck_text(text: str) -> str:
+    return _RECHECK_MARKER.sub(" ", text or "")
+
+
+def _online_page_text(cfg: Config, provider, output_path: str, page_index: int, rotation: int) -> str:
+    """დოკუმენტის PDF-ის გვერდი → ონლაინ OCR მხოლოდ ბეჭდური ტექსტისთვის (იგივე რენდერი/გაუმჯობესება, რაც ანალიზისას)."""
+    dpi = int(cfg.section("processing").get("dpi", 300))
+    with PdfDocument(output_path) as doc:
+        img = doc.render(page_index, dpi=dpi)
+    if rotation:
+        img = apply_rotation(img, int(rotation))
+    recognize = getattr(provider, "recognize_printed", None) or provider.recognize
+    return _clean_recheck_text(recognize(enhance(img), cfg.data["ocr"].get("tesseract_lang") or "kat+eng").text)
+
+
+def _recheck_diffs(result: ValidationResult, cfg: Config, repo: Repository, row, scanned: list[dict[str, Any]],
+                   scanned_texts: list[str], primary: list[TextDiff], compare) -> None:
+    """წესებმა ტექსტური სხვაობა იპოვა Tesseract-ით წაკითხულ გვერდზე (დაკარგული ციფრი „2 კვირით" → „კვირით", „მე-5" →
+    „მე-3") → ეს გვერდი ონლაინ OCR-ით (Claude) ხელახლა იკითხება და შედარება მეორდება: სხვაობა გაქრა — წაკითხვის შეცდომა
+    იყო (სიაში ხმაურად რჩება); დარჩა — ნამდვილი სხვაობაა. ახალი ტექსტი page_texts-ში ინახება, რომ AI ანალიზი და
+    ხელახალი შედარება უკეთეს ტექსტს ხედავდეს. ≤ `mhr.recheck.max_pages` გვერდი ერთ დოკუმენტზე (ხარჯის კონტროლი)."""
+    rc = cfg.section("mhr").get("recheck") or {}
+    if not rc.get("enabled", True):
+        return
+    bad = {d.page for d in primary if d.significant and d.kind in RECHECK_KINDS and 0 < d.page <= len(scanned)}
+    pages = sorted(p for p in bad if (scanned[p - 1].get("text_source") or "").startswith("ocr:tesseract")
+                   and scanned_texts[p - 1])
+    pages = pages[:int(rc.get("max_pages", 4))]
+    if not pages:
+        return
+    provider = getattr(build_ocr_chain(cfg), "online", None)
+    if provider is None or not provider.available():
+        return
+    rechecked: list[int] = []
+    for p in pages:
+        pt = scanned[p - 1]
+        try:
+            text = _online_page_text(cfg, provider, row["output_path"], int(pt["page_index"]) - int(row["page_start"]),
+                                     int(pt.get("rotation_applied") or 0))
+        except (OcrError, OSError, ValueError, KeyError, TypeError) as e:
+            log.warning("recheck page %s of %s failed: %s", p, row["id"], type(e).__name__)
+            continue
+        if not (text or "").strip():
+            continue
+        new_pt = dict(pt, text=text, text_source=f"ocr:{getattr(provider, 'name', 'online')}:recheck",
+                      ocr_quality=round(float(textquality.score(text)), 4), provider=getattr(provider, "name", "online"))
+        scanned[p - 1] = new_pt
+        scanned_texts[p - 1] = text
+        repo.save_page_text(row["job_id"], int(pt["page_index"]), new_pt)
+        rechecked.append(p)
+    if not rechecked:
+        return
+    log.info("recheck %s: pages %s re-read online", row["id"], rechecked)
+    fresh = compare(scanned_texts)
+    old = {id(d) for d in primary}
+    result.diffs = [d for d in result.diffs if id(d) not in old]
+    still = {d.page for d in fresh if d.significant and d.kind in RECHECK_KINDS}
+    for d in fresh:
+        if d.significant and d.page in rechecked and d.kind in RECHECK_KINDS:
+            d.reason = f"{d.reason} — {RECHECK_STILL}" if d.reason else RECHECK_STILL
+    result.diffs.extend(fresh)
+    for p in rechecked:
+        if p not in still:
+            result.diffs.append(TextDiff(p, "changed", "", "", False, RECHECK_NOTE))
 
 
 def known_tokens(employee: MhrEmployee) -> list[str]:

@@ -359,3 +359,65 @@ def test_numbering_column_read_elsewhere_and_signature_line_are_noise():
     assert _sig("ვადა 40 საათი კვირაში", "ვადა 45 საათი კვირაში")
     # ხელმოწერის სტრიქონი სხვა ტექსტთან ერთად — ჩამატება ისევ ჩანს
     assert _sig("დასაქმებულს ეკრძალება სამუშაო დროს", "დასაქმებულს ეკრძალება სამუშაო დროს დამსაქმებელი სტაჟიორი ვალდებულია გადაიხადოს ჯარიმა")
+
+
+def test_strip_removes_running_header_glued_to_clause_label():
+    """რეალური სკანი: გვერდის სათაური „ქ. თბილისი 2026-11-01" OCR-მა შემდეგი პუნქტის ნომერთან („10.6") ერთ ხაზად წაიკითხა
+    და წინადადების შუაში „ჩამატებულ ციფრებად" ჩანდა. სათაური იშლება, ნომერი რჩება."""
+    from hrsorter.textcompare import _norm_line, _strip
+    header = _norm_line("ქ. თბილისი 2026-11-01")
+    assert _strip("ტექსტი ერთი\n10.6 ქ. თბილისი 2026-11-01\nმხარეები ვალდებულებას", [header]) == "ტექსტი ერთი\n10.6\nმხარეები ვალდებულებას"
+    assert _strip("10.6 სხვა წინადადება", [header]) == "10.6 სხვა წინადადება"      # არასათაურო ხაზი უცვლელია
+    assert _strip("ქ. თბილისი 2026-11-01\nა", [header]) == "ა"                       # ჩვეულებრივი სათაურის ხაზი ისევ იშლება
+
+
+def test_pure_insertion_of_known_company_tokens_is_stamp_noise():
+    """რეალური სკანი, გვ. 8: ბეჭდის „2009" Tesseract-მა სუფთად (0.7+) წაიკითხა და ნუმერაციის სვეტთან ერთად „ჩამატებულ ციფრებად"
+    ჩანდა. ცნობილი ტოკენებით (კომპანიის სახელი/ს/კ MHR-დან) შემდგარი სუფთა ჩამატება ბეჭედია. ნამდვილი ახალი რიცხვი რჩება."""
+    from hrsorter.config import make_config
+    from hrsorter.textcompare import compare_texts
+    cfg = make_config()
+    orig = ["7.1 შორის მიღწეული ორმხრივი შეთანხმების საფუძველზე წინამდებარე ხელშეკრულება წყდება.\n7.2 სხვა პირობა.\n7.3 კიდევ ერთი.\n7.4 ბოლო."]
+    scan = ["7.1 შორის მიღწეული ორმხრივი 2009 7.2 7.3 7.4 შეთანხმების საფუძველზე წინამდებარე ხელშეკრულება წყდება.\n7.2 სხვა პირობა.\n7.3 კიდევ ერთი.\n7.4 ბოლო."]
+    labels = {"7.1", "7.2", "7.3", "7.4"}
+    known = ["შპს", "არბო", "2009", "205273498"]
+    assert not [d for d in compare_texts(orig, scan, cfg, original_paginated=False, labels=labels, known=known) if d.significant]
+    bad = [d for d in compare_texts(orig, scan, cfg, original_paginated=False, labels=labels, known=["არბო"]) if d.significant]
+    assert bad and "ციფრები" in bad[0].reason
+    scan2 = [scan[0].replace("2009", "2500")]
+    assert [d for d in compare_texts(orig, scan2, cfg, original_paginated=False, labels=labels, known=known) if d.significant]
+
+
+def test_table_noise_tolerates_one_short_garbage_token():
+    """ბოლო გვერდის რეკვიზიტები: ხელმოწერის ნაკაწრი ქართულ ასოებად („ალლი") ცხრილის გადაადგილებულ სიტყვებს შორის."""
+    from hrsorter.textcompare import _table_noise
+    a_bag = ["ბანკი", "tbc", "ა/ა", "ge00", "დირექტორი", "დავით", "გელაშვილი", "დამსაქმებელი"]
+    b = ["ბანკი", "tbc", "ა/ა", "დირექტორი", "დავით", "გელაშვილი", "ალლი", "დამსაქმებელი"]
+    assert _table_noise(["ბანკი", "tbc", "ა/ა"], b, a_bag, b + ["ge00"], [])
+    assert not _table_noise(["ბანკი", "tbc", "ა/ა"], b + ["ახალი", "პირობა"], a_bag, b + ["ge00"], [])   # ორი უცნობი სიტყვა
+    assert not _table_noise(["ბანკი", "tbc", "ა/ა"], [x if x != "ალლი" else "კონფიდენციალური" for x in b], a_bag, b + ["ge00"], [])
+
+
+def test_last_page_line_matches_compact_window_when_phrase_repeats():
+    """„ქ. თბილისი, პეკინის ქ." შაბლონში პრეამბულაშიც არის და რეკვიზიტებშიც: SequenceMatcher-ის ბლოკები იფანტება და
+    რეალური სკანის რეკვიზიტების სტრიქონი „ჩამატებულად" ჩანდა. კომპაქტური ფანჯარა ასწორებს."""
+    from hrsorter.textcompare import unmatched_long_lines
+    template = ("შპს არბო ქ თბილისი პეკინის ქ 17 წარმოდგენილი დირექტორის მიერ " + "სიტყვა " * 300 +
+                "მისამართი ქ თბილისი პეკინის ქ 17 მისამართი ვარკეთილი ზემო უბნის 5").split()
+    line = "მისამართი: თბილისი, პეკინის ქ., #%17 მისამართი: ვარკეთილი. ზემო უბნის 5,"
+    assert unmatched_long_lines(template, line) == []
+    assert unmatched_long_lines(template, "აქ სულ ახალი წინადადება ჩაემატა შვიდი სიტყვით მაინც ხო") == \
+        ["აქ სულ ახალი წინადადება ჩაემატა შვიდი სიტყვით მაინც ხო"]
+
+
+def test_last_page_signature_block_reordered_is_noise():
+    """რეალური სკანი, ბოლო გვერდი: „დირექტორი დავით გელაშვილი დამსაქმებელი" OCR-მა რეკვიზიტების ცხრილის სხვა ადგილას წაიკითხა
+    (+ ხელმოწერის ნაკაწრი „i ალლი") — ყველა სიტყვა ორიგინალშია, ჩამატება არ არის. სულ ახალი წინადადება კი ჩანს."""
+    from hrsorter.config import make_config
+    from hrsorter.textcompare import compare_texts
+    cfg = make_config()
+    orig = ["11.1 რეკვიზიტები\nშპს არბო 2009 ეკა ჯავახიშვილი\nდირექტორი ტელ: 555000222\nდავით გელაშვილი ბანკი: TBC\nა/ა GE00TB0000000000000000\nდამსაქმებელი სტაჟიორი"]
+    scan = ["11.1 რეკვიზიტები\nშპს არბო 2009 ეკა ჯავახიშვილი\nტელ: 555000222\nბანკი: TBC\nა/ა GE00TB0000000000000000 დირექტორი დავით გელაშვილი i ალლი დამსაქმებელი\nსტაჟიორი"]
+    assert not [d for d in compare_texts(orig, scan, cfg, original_paginated=False, labels={"11.1"}) if d.significant]
+    scan2 = [scan[0].replace("დირექტორი დავით გელაშვილი i ალლი", "სტაჟიორი ვალდებულია აანაზღაუროს ზიანი სრულად")]
+    assert [d for d in compare_texts(orig, scan2, cfg, original_paginated=False, labels={"11.1"}) if d.significant]

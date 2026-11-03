@@ -210,8 +210,9 @@ def _ai_review_pending(repo, cfg, review_fn: ReviewFn | None, counts: dict[str, 
         return
     limit = int(ai_review.settings(cfg).get("per_sweep") or 3)
     q = ",".join("?" for _ in AI_REVIEW_STATUSES)
+    # error (MhrError/unauthenticated …) — შედარება არ შესრულებულა, გასაანალიზებელი არაფერია; revalidate-ის შემდეგ ეშვება
     for row in repo.q(f"SELECT document_id, status FROM mhr_items WHERE status IN ({q}) AND ai_review IS NULL"
-                      f" ORDER BY updated_at LIMIT ?", (*AI_REVIEW_STATUSES, limit)):
+                      f" AND error IS NULL ORDER BY updated_at LIMIT ?", (*AI_REVIEW_STATUSES, limit)):
         doc_id = row["document_id"]
         try:
             res = (review_fn or ai_review.review_document)(repo, cfg, doc_id)

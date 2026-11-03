@@ -296,7 +296,7 @@ def test_claude_code_needs_no_secret_and_parses_result(img):
     assert res.text == "ბრძანება № 15/2024" and res.mean_confidence is None
     args, kw = run.calls[0]
     assert args[0] == sys.executable and "-p" in args and args[args.index("--model") + 1] == "opus"
-    assert args[args.index("--allowedTools") + 1] == "Read" and "--output-format" in args
+    assert args[args.index("--allowedTools") + 1] == "Read" and "--output-format" in args and "--safe-mode" in args
     assert kw["cwd"] and kw["timeout"] == 5.0
     assert usage_totals == {"pages": 1, "cost_usd": 0.12}
 
@@ -338,3 +338,16 @@ def test_claude_code_auth_status_and_login_launch(monkeypatch):
     spawned = []
     assert cc.launch_login(sys.executable, popen=lambda args, **kw: spawned.append(args)) is True
     assert spawned[0][1:] == ["auth", "login", "--claudeai"]
+
+
+def test_claude_code_recognize_printed_uses_recheck_prompt(img):
+    """ხელახალი წაკითხვა (validation._recheck_diffs): ინსტრუქცია ბეჭდებს/ხელმოწერებს საერთოდ გამოტოვებს — რეალურ სკანზე
+    ჩვეულებრივი OCR-ინსტრუქციით მოდელი „[ბეჭედი: შპს არბო 2009 …]"-ს წერდა და ის ორიგინალთან შედარებაში ჩანდა."""
+    from hrsorter.ocr.claude_code_vision import PROMPT, RECHECK_PROMPT, ClaudeCodeVisionProvider
+    run = FakeClaude({"is_error": False, "subtype": "success", "result": "მუხლი 5", "total_cost_usd": 0.1})
+    p = ClaudeCodeVisionProvider(_cc_cfg(claude_cmd=sys.executable), runner=run, secret_getter=lambda s, n: None)
+    assert p.recognize_printed(img, "kat").text == "მუხლი 5"
+    sent = run.calls[0][0][2]
+    assert "omit" in sent and "stamps" in sent and sent != PROMPT.format(path="x") and RECHECK_PROMPT.split("{path}")[0] in sent
+    p.recognize(img, "kat")
+    assert "Mark handwritten" in run.calls[1][0][2]   # ჩვეულებრივი OCR უცვლელია

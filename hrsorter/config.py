@@ -161,11 +161,16 @@ DEFAULTS: dict[str, Any] = {
         "upload_type_ids": [],              # რომელი ტიპები იტვირთება (ცარიელი = ყველა, unknown-ის გარდა)
         "contract_type_ids": ["contract"],  # რომელ ტიპებზე ხდება შედარება MHR-ის ორიგინალთან
         "require_approval": True,           # ოპერატორის დადასტურება ატვირთვამდე
+        "recheck": {                        # წესებმა ტექსტური სხვაობა იპოვა Tesseract-ის გვერდზე → გვერდი ონლაინ OCR-ით
+            "enabled": True,                # (Claude) ხელახლა იკითხება და შედარება მეორდება (validation._recheck_diffs);
+            "max_pages": 4,                 # მოქმედებს მხოლოდ ocr.online.enabled-ზე. ≤ ამდენი გვერდი ერთ დოკუმენტზე
+        },
         "ai_review": {                      # ვალიდაციის შემდეგ Opus-ის „მეორე აზრი“ (ai_review.py); მოქმედებს მხოლოდ
             "enabled": True,                # ocr.online.enabled + provider=claude_code რეჟიმში. მხოლოდ სთავაზობს, არ ტვირთავს
             "model": "opus",
             "timeout_seconds": 300,
             "max_chars": 60000,             # ტექსტის მაქსიმუმი პრომპტში
+            "max_noise": 200,               # ამდენი „ხმაურის" სხვაობა გადაეცემა ანალიზს (ყველა, თუ ნაკლებია)
             "per_sweep": 3,                 # ერთ გავლაზე ამდენი დოკუმენტი (თითო ~0.5–2 წთ)
         },
         "signature_every_page": True,       # ხელშეკრულება: ხელმოწერა ყველა (არაცარიელ) გვერდზე, თორემ — სხვაობა
