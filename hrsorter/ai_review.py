@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from .config import Config
 from .db import now_iso
+from .ocr.claude_code_vision import SAFE_MODE, run_safe_mode
 
 log = logging.getLogger("hrsorter.ai_review")
 
@@ -186,9 +187,9 @@ def run_claude(prompt: str, *, model: str, timeout: float, cmd: str | None = Non
     if not cmd:
         raise AiReviewError("claude not found")
     # --safe-mode: მომხმარებლის CLAUDE.md/სკილები/hook-ები არ იტვირთება (პირადი წესები JSON-პასუხს არ შეცვლის); ავტორიზაცია რჩება
-    args = [cmd, "-p", "--output-format", "json", "--safe-mode", "--tools", "", "--model", model]
+    args = [cmd, "-p", "--output-format", "json", SAFE_MODE, "--tools", "", "--model", model]
     try:
-        proc = runner(args, input=prompt.encode("utf-8"), capture_output=True, timeout=timeout, **_no_window())
+        proc = run_safe_mode(runner, args, input=prompt.encode("utf-8"), capture_output=True, timeout=timeout, **_no_window())
     except subprocess.TimeoutExpired as e:
         raise AiReviewError(f"timeout after {int(timeout)}s") from e
     except OSError as e:

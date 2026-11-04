@@ -56,6 +56,18 @@ def reset_usage() -> None:
         usage_totals.update(pages=0, cost_usd=0.0)
 
 
+SAFE_MODE = "--safe-mode"
+
+
+def run_safe_mode(run: Runner, args: list[str], **kwargs: Any) -> "subprocess.CompletedProcess[bytes]":
+    """`--safe-mode` მხოლოდ ახალ Claude Code-შია. ძველი ვერსია მას „unknown option"-ით უარყოფს (სხვა კომპიუტერზე რა ვერსია
+    დგას, წინასწარ არ ვიცით) და ამოცნობა/AI ანალიზი გაჩერდებოდა — ამიტომ ერთხელ მეორდება დროშის გარეშე."""
+    proc = run(args, **kwargs)
+    if proc.returncode != 0 and f"unknown option '{SAFE_MODE}'" in (proc.stderr or b"").decode("utf-8", errors="replace"):
+        proc = run([a for a in args if a != SAFE_MODE], **kwargs)
+    return proc
+
+
 def _no_window() -> dict[str, Any]:
     return {"creationflags": subprocess.CREATE_NO_WINDOW} if hasattr(subprocess, "CREATE_NO_WINDOW") else {}
 
@@ -128,13 +140,13 @@ class ClaudeCodeVisionProvider(OnlineVisionProvider):
     def _call(self, cmd: str, path: Path, cwd: str, prompt: str = PROMPT) -> OcrResult:
         # --safe-mode: მომხმარებლის CLAUDE.md/სკილები/hook-ები არ იტვირთება — თორემ „ყოველი პასუხის ბოლოს შეჯამება"-ს ტიპის
         # პირადი წესი ტრანსკრიფციას ბოლოში ტექსტს უმატებს (რეალურ სკანზე ასე მოხდა). ავტორიზაცია (გამოწერა) რჩება.
-        args = [cmd, "-p", prompt.format(path=path), "--output-format", "json", "--safe-mode",
+        args = [cmd, "-p", prompt.format(path=path), "--output-format", "json", SAFE_MODE,
                 "--allowedTools", "Read", "--model", self.model_version]
         kwargs: dict[str, Any] = {"capture_output": True, "timeout": self.timeout, "cwd": cwd}
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
-            proc = self._run(args, **kwargs)
+            proc = run_safe_mode(self._run, args, **kwargs)
         except subprocess.TimeoutExpired as e:
             raise OcrError(f"claude timeout after {self.timeout}s", retryable=True) from e
         except OSError as e:

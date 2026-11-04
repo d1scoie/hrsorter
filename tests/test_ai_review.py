@@ -132,3 +132,19 @@ def test_review_document_errors_are_returned_not_raised(tmp_path):
     assert res.verdict == "error" and res.error == "non-JSON response"
     assert ar.review_document(repo, cfg, "doc_missing", runner=FakeRun()).error == "document_not_found"
     repo.close()
+
+
+def test_run_claude_retries_without_safe_mode_on_old_cli():
+    calls = []
+
+    def run(args, **kw):
+        calls.append(args)
+        if "--safe-mode" in args:
+            return subprocess.CompletedProcess(args, 1, b"", b"error: unknown option '--safe-mode'\n")
+        return subprocess.CompletedProcess(args, 0, _claude_json('{"verdict":"check"}'), b"")
+    assert ar.run_claude("p", model="opus", timeout=5, cmd="claude.exe", runner=run) == '{"verdict":"check"}'
+    assert len(calls) == 2 and "--safe-mode" not in calls[1] and "--tools" in calls[1]
+    other = FakeRun(returncode=1)   # სხვა შეცდომა — არ მეორდება
+    with pytest.raises(ar.AiReviewError):
+        ar.run_claude("p", model="opus", timeout=5, cmd="claude.exe", runner=other)
+    assert len(other.calls) == 1

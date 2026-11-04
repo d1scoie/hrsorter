@@ -351,3 +351,27 @@ def test_claude_code_recognize_printed_uses_recheck_prompt(img):
     assert "omit" in sent and "stamps" in sent and sent != PROMPT.format(path="x") and RECHECK_PROMPT.split("{path}")[0] in sent
     p.recognize(img, "kat")
     assert "Mark handwritten" in run.calls[1][0][2]   # ჩვეულებრივი OCR უცვლელია
+
+
+def test_claude_code_retries_without_safe_mode_on_old_cli(img):
+    """ძველი Claude Code `--safe-mode`-ს არ იცნობს (`error: unknown option`, ასე პასუხობს რეალური CLI): ამოცნობა არ უნდა
+    გაჩერდეს — ერთხელ მეორდება დროშის გარეშე. სხვა შეცდომა არ მეორდება."""
+    from hrsorter.ocr.base import OcrError
+    from hrsorter.ocr.claude_code_vision import ClaudeCodeVisionProvider
+    ok = json.dumps({"is_error": False, "subtype": "success", "result": "ტექსტი"}).encode()
+    calls = []
+
+    def run(args, **kw):
+        calls.append(args)
+        if "--safe-mode" in args:
+            return subprocess.CompletedProcess(args, 1, b"", b"error: unknown option '--safe-mode'\n")
+        return subprocess.CompletedProcess(args, 0, ok, b"")
+    p = ClaudeCodeVisionProvider(_cc_cfg(claude_cmd=sys.executable), runner=run, secret_getter=lambda s, n: None)
+    assert p.recognize(img, "kat").text == "ტექსტი"
+    assert len(calls) == 2 and "--safe-mode" in calls[0] and "--safe-mode" not in calls[1] and "--allowedTools" in calls[1]
+
+    other = FakeClaude(rc=1, stdout=b"")
+    p2 = ClaudeCodeVisionProvider(_cc_cfg(claude_cmd=sys.executable), runner=other, secret_getter=lambda s, n: None)
+    with pytest.raises(OcrError):
+        p2.recognize(img, "kat")
+    assert len(other.calls) == 1
