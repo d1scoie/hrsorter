@@ -108,17 +108,42 @@ border-right:1px solid var(--border)}
 .side-foot{margin-top:auto;display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:12px;background:var(--surface-2);font-size:13px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:var(--mute)}.dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}
 .main{padding:32px clamp(16px,4vw,48px) 96px;max-width:1180px;width:100%}
-h1{font-size:26px;line-height:1.25;margin:0 0 6px;font-weight:650;letter-spacing:-.01em}h2{font-size:18px;margin:32px 0 12px;font-weight:620}
+h1{font-size:26px;line-height:1.25;margin:0 0 6px;font-weight:650;letter-spacing:-.01em}h2{font-size:17px;margin:28px 0 10px;font-weight:620;color:var(--text-2);text-transform:none;letter-spacing:.01em}
 .sub{color:var(--text-2);margin:0 0 24px}
 .hero{display:flex;gap:16px;align-items:center;padding:22px 24px;border-radius:16px;background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow);margin-bottom:20px}
 .hero .big{display:grid;place-items:center;width:52px;height:52px;border-radius:14px;flex:none}
 .hero h1{margin:0}.hero p{margin:2px 0 0;color:var(--text-2)}
+.dochead{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:18px}
+.dochead h1{font-size:22px;margin:6px 0 2px}.dochead .sub{margin:0}
+.next{padding:16px 18px;margin-bottom:14px;border-radius:14px;border:1px solid var(--border);border-left-width:4px;background:var(--surface);box-shadow:var(--shadow)}
+.next.tone-ok{border-color:var(--ok);background:var(--ok-soft);color:var(--text)}.next.tone-warn{border-left-color:var(--warn);background:var(--surface);color:var(--text)}
+.next.tone-bad{border-left-color:var(--bad);background:var(--surface);color:var(--text)}.next.tone-info{border-left-color:var(--accent);background:var(--surface);color:var(--text)}
+.next .lbl{font-size:12.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-2);margin-bottom:6px}
+.next .ttl{font-size:16px;font-weight:620;margin-bottom:4px}.next p{margin:0 0 12px;color:var(--text-2);font-size:14px}
+.next .reasons{display:flex;flex-direction:column;gap:8px;margin:4px 0 12px}.next .manual{margin-top:4px}
+.facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;padding:16px 18px}
+.facts div{min-width:0}.facts dt{color:var(--text-2);font-size:12.5px;margin-bottom:2px}.facts dd{margin:0;font-weight:560;overflow-wrap:anywhere}
+.facts .wide{grid-column:1/-1}
+.strip{display:flex;gap:8px 18px;flex-wrap:wrap;align-items:center;color:var(--text-2);font-size:13.5px;margin:-14px 0 22px}
+.strip span{display:inline-flex;align-items:center;gap:6px}
+.tasks{display:flex;flex-direction:column;gap:10px;margin-bottom:28px}
+.task{display:flex;gap:16px;align-items:center;padding:16px 18px;border-radius:14px;background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow)}
+.task .no{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;flex:none;font-weight:650;font-size:17px}
+.task .b{flex:1;min-width:0}.task .b b{display:block;font-size:16px;font-weight:620;line-height:1.3}.task .b span{color:var(--text-2);font-size:14px}
+.task .act{flex:none}
+.task.ok{border-color:transparent;background:var(--ok-soft)}.task.ok .b span{color:var(--text)}
+.task.tone-bad{border-left:4px solid var(--bad);background:var(--surface);color:var(--text)}
+.task.tone-warn{border-left:4px solid var(--warn);background:var(--surface);color:var(--text)}
+.task.tone-info{border-left:4px solid var(--accent);background:var(--surface);color:var(--text)}
+.task.tone-mute{border-left:4px solid var(--mute);background:var(--surface);color:var(--text)}
+@media (max-width:640px){.task{flex-wrap:wrap}.task .act{width:100%}.task .act .btn{width:100%}}
 .tone-ok{color:var(--ok);background:var(--ok-soft)}.tone-warn{color:var(--warn);background:var(--warn-soft)}
 .tone-bad{color:var(--bad);background:var(--bad-soft)}.tone-info{color:var(--accent);background:var(--accent-soft)}.tone-mute{color:var(--mute);background:var(--mute-soft)}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
 .tile{display:block;padding:18px;border-radius:14px;background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow);color:var(--text);
 transition:border-color .15s,transform .15s}a.tile:hover{border-color:var(--accent);text-decoration:none;transform:translateY(-1px)}
-.tile .n{font-size:30px;font-weight:650;line-height:1.1;font-variant-numeric:tabular-nums;margin-top:10px}.tile .l{color:var(--text-2);font-size:14px}
+.tile .n{font-size:26px;font-weight:650;line-height:1.1;font-variant-numeric:tabular-nums;margin-top:8px}.tile .l{color:var(--text-2);font-size:13.5px}
+.tile{padding:14px 16px}
 .ib{display:inline-grid;place-items:center;width:34px;height:34px;border-radius:10px;flex:none}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)}
 .list{display:flex;flex-direction:column}.row{display:flex;gap:14px;align-items:center;padding:14px 18px;border-top:1px solid var(--border)}
@@ -129,7 +154,7 @@ transition:border-color .15s,transform .15s}a.tile:hover{border-color:var(--acce
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:0 16px;border-radius:10px;border:1px solid var(--border);
 background:var(--surface);color:var(--text);font:inherit;font-weight:560;cursor:pointer;transition:background .15s,border-color .15s}
 .btn:hover{background:var(--surface-2);text-decoration:none}.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.btn.primary:hover{filter:brightness(1.07)}.btn.sm{min-height:34px;padding:0 12px;font-size:13.5px}.btn.ghost{border-color:transparent;background:transparent}
+.btn.primary:hover{filter:brightness(1.07)}.btn.sm{min-height:36px;padding:0 12px;font-size:13.5px}.btn.ghost{border-color:transparent;background:transparent}
 .btns{display:flex;gap:8px;flex-wrap:wrap}form.inline{display:inline}
 .rcard{padding:18px 20px;display:flex;flex-direction:column;gap:12px}
 .rcard .head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
@@ -330,40 +355,66 @@ def create_app(config_path: str | None = None) -> FastAPI:
         sorted_n = d.get("auto_saved", 0) + d.get("proposed", 0)
         trial = c.section("processing")["trial_mode"]
 
+        m = s["mhr"] if s["mhr_enabled"] else {}
+        mhr_stuck = m.get("upload_failed", 0) + m.get("needs_check", 0)
+        cur = s["current"]
+
+        # ამოცანები პრიორიტეტით: (ტონი, სათაური, ახსნა, მოქმედება) — მოქმედება: (ბმული|form-action, წარწერა, primary?)
+        tasks: list[tuple[str, str, str, tuple | None]] = []
         if s["paused"]:
-            hero = ("pause", "mute", "დამუშავება შეჩერებულია", "ახალი ფაილები რიგში დაგროვდება. გასაგრძელებლად დააჭირე „გაგრძელებას“.")
+            tasks.append(("mute", "დამუშავება შეჩერებულია", "ახალი სკანები რიგში გროვდება და არ მუშავდება.",
+                          ("post:/control/resume", "გაგრძელება", True)))
         elif not s["worker_alive"]:
-            hero = ("x", "bad", "ფონური პროცესი არ მუშაობს", "გახსენი „HR გადამრჩევი“ დაწყების მენიუდან ან გადატვირთე კომპიუტერი.")
-        elif s["current"] or busy:
-            cur = s["current"]
-            txt = (f"ახლა: {cur['file']} — {cur['done']}/{cur['total']} გვერდი" if cur else "ფაილები მზადდება დასამუშავებლად")
-            hero = ("refresh", "info", f"მუშავდება · რიგში {busy}", txt)
-        elif errors:
-            hero = ("alert", "bad", f"{errors} ფაილი ვერ დამუშავდა", "ნახე „ფაილები“ → „სად გაიჭედა“.")
-        elif review:
-            hero = ("inbox", "warn", f"{review} დოკუმენტი გელოდება", "პროგრამა ვერ დარწმუნდა — გადახედე და გადაწყვიტე.")
+            tasks.append(("bad", "ფონური პროცესი არ მუშაობს", "გახსენი „HR გადამრჩევი“ დაწყების მენიუდან ან გადატვირთე კომპიუტერი.", None))
+        if errors:
+            tasks.append(("bad", f"{errors} ფაილი ვერ დამუშავდა", "ნახე, სად გაიჭედა, და გაუშვი თავიდან.", ("/stats#stuck", "სად გაიჭედა", True)))
+        if review:
+            tasks.append(("warn", f"{review} დოკუმენტი გადასამოწმებელია", "პროგრამა ვერ დარწმუნდა — თითოეულზე წერია, რატომ და რა გააკეთო.",
+                          ("/review", "გადახედვა", True)))
+        if m.get("failed"):
+            tasks.append(("warn", f"{m['failed']} ხელშეკრულებამ ვერ გაიარა MHR-ის შემოწმება",
+                          "რაღაც არ ემთხვევა, ან MHR-ში ხელშეკრულება ვერ მოიძებნა. ნახე რატომ; თუ დოკუმენტი სწორია, ატვირთე მაინც.",
+                          ("/mhr?tab=failed", "ნახე რატომ", True)))
+        if mhr_stuck:
+            tasks.append(("warn", f"{mhr_stuck} ატვირთვა გასარკვევია", "ატვირთვა ვერ მოხერხდა ან შედეგი გაურკვეველია — შეამოწმე MHR-ში.",
+                          ("/mhr?tab=other", "ნახე", False)))
+        if m.get("ready"):
+            tasks.append(("info", f"{m['ready']} ხელშეკრულება მზადაა MHR-ზე ასატვირთად", "ყველაფერი ემთხვევა — ერთი ღილაკით აიტვირთება თანამშრომლის ბარათზე.",
+                          ("post:/mhr-approve-all", f"ყველას ატვირთვა ({m['ready']})", True)))
+        if cur or busy:
+            txt = (f"{cur['file']} — {cur['done']}/{cur['total']} გვერდი" if cur else f"რიგში {busy} ფაილი") + ". ჩარევა არ სჭირდება."
+            tasks.append(("info", "მუშავდება", txt, None))
+
+        def task_html(n: int, tone: str, title: str, text: str, act: tuple | None) -> str:
+            btn = ""
+            if act:
+                href, lbl, primary = act
+                cls = "btn primary" if primary else "btn"
+                btn = (f'<form method="post" action="{e(href[5:])}" class="act"><button class="{cls}">{e(lbl)}</button></form>'
+                       if href.startswith("post:") else f'<a class="{cls} act" href="{e(href)}">{e(lbl)}</a>')
+            return (f'<div class="task tone-{tone}"><span class="no tone-{tone}">{n}</span><div class="b"><b>{e(title)}</b>'
+                    f'<span>{e(text)}</span></div>{btn}</div>')
+
+        if tasks:
+            out = [f'<h1>რა გავაკეთო ახლა</h1><p class="sub">{len(tasks)} რამ ელოდება — თანმიმდევრობით.</p>'
+                   + '<div class="tasks">' + "".join(task_html(n, *t) for n, t in enumerate(tasks, 1)) + "</div>"]
         else:
-            hero = ("check", "ok", "ყველაფერი რიგზეა", "ახალი სკანები ავტომატურად დამუშავდება.")
-        ic, tone, title, text = hero
+            out = ['<h1>რა გავაკეთო ახლა</h1><p class="sub">არაფერი — ყველაფერი რიგზეა.</p>'
+                   f'<div class="tasks"><div class="task ok"><span class="no tone-ok">{icon("check", 22)}</span><div class="b">'
+                   '<b>ყველაფერი რიგზეა</b><span>ახალი სკანი Inbox საქაღალდეში ავტომატურად დამუშავდება. აქ გამოჩნდება, თუ რამე შენს გადაწყვეტილებას დასჭირდება.</span></div></div></div>']
         prog = ""
-        if s["current"] and s["current"]["total"]:
-            pct = 100 * s["current"]["done"] / max(1, s["current"]["total"])
-            prog = f'<div class="pbar" style="margin-top:10px;max-width:420px"><span style="width:{pct:.0f}%"></span></div>'
-        out = [f'<div class="hero"><span class="big tone-{tone}">{icon(ic, 26)}</span><div style="flex:1">'
-               f'<h1>{e(title)}</h1><p>{e(text)}</p>{prog}</div></div>']
+        if cur and cur["total"]:
+            pct = 100 * cur["done"] / max(1, cur["total"])
+            prog = f'<div class="pbar" style="margin:-16px 0 22px;max-width:420px"><span style="width:{pct:.0f}%"></span></div>'
+        out.append(prog)
+        state = ("<span class='dot'></span>შეჩერებულია" if s["paused"] else
+                 "<span class='dot ok'></span>მუშაობს" if s["worker_alive"] else "<span class='dot bad'></span>გაჩერებულია")
+        strip = [f"<span>{state}</span>", f"<span>{icon('clock', 14)}რიგში {busy}</span>"]
         if trial:
-            out.append(f'<div class="banner tone-info">{icon("shield", 18)}<div><b>საცდელი რეჟიმი ჩართულია.</b> '
-                       'შედეგები ჯერ შემოთავაზებულია (Proposed საქაღალდე) — საბოლოოდ არაფერი ინაცვლებს, სანამ შენ არ ჩართავ.</div></div>')
-        if s["mhr_enabled"]:
-            m = s["mhr"]
-            if m.get("ready"):
-                out.append(f'<div class="banner tone-info">{icon("cloud", 18)}<div style="flex:1"><b>{m["ready"]} ხელშეკრულება შემოწმდა და '
-                           f'მზადაა MHR-ზე ასატვირთად.</b> <a href="/mhr">სია →</a></div>'
-                           f'<form method="post" action="/mhr-approve-all" class="inline"><button class="btn primary">'
-                           f'{icon("cloud", 16)}ყველას ატვირთვა ({m["ready"]})</button></form></div>')
-            if m.get("failed"):
-                out.append(f'<div class="banner tone-warn">{icon("alert", 18)}<div><b>{m["failed"]} ხელშეკრულება შაბლონს ან MHR-ის მონაცემებს '
-                           f'არ ემთხვევა.</b> <a href="/mhr?tab=failed">ნახე სხვაობები →</a></div></div>')
+            strip.append(f"<span title='შედეგები Proposed საქაღალდეშია — საბოლოოდ არაფერი ინაცვლებს, სანამ არ ჩართავ'>{icon('shield', 14)}საცდელი რეჟიმი</span>")
+        strip.append(f"<span>{icon('cloud', 14)}MHR {'ჩართულია' if s['mhr_enabled'] else 'გამორთულია'}</span>")
+        out.append('<div class="strip">' + "".join(strip) + "</div>")
+        out.append("<h2>მიმოხილვა</h2>")
         sorted_lbl = "შემოთავაზებული" if trial else "დალაგდა"
         out.append('<div class="tiles">' + "".join(
             f'<a class="tile" href="{href}"><span class="ib tone-{t}">{icon(i, 18)}</span><div class="n">{n}</div><div class="l">{e(lbl)}</div></a>'
@@ -390,6 +441,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             f'{_outcome_chip(f["status"], counts.get(f["id"], {}))}</a>' for f in files)
         out.append('<h2>ბოლოს შემოსული ფაილები</h2><div class="card list">'
                    + (rows or empty("scan", "info", "ჯერ არაფერი შემოსულა", "დაასკანერე დოკუმენტი Inbox საქაღალდეში.")) + "</div>")
+        out = [x for x in out if x]
         return page("მთავარი", "".join(out), "/", side_info(s), watch=True)
 
     @app.post("/control/{action}")
@@ -508,19 +560,24 @@ def create_app(config_path: str | None = None) -> FastAPI:
                      for k in reasons)
         flags = "".join(chip(FLAGS.get(fl, fl), "mute") for fl in meta.get("flags", [])
                         if not (mhr_on and fl == "employee_unverified"))
-        body = (f'<p><a href="javascript:history.back()">← უკან</a></p>{_flash(msg, err)}<div class="split"><div class="card section">'
-                f'<div class="chips" style="margin-bottom:10px">{status_chip(x["status"])}</div>'
-                f'<h1 style="font-size:20px">{e(t.name_ka if t else "დოკუმენტი")}{" · " + e(name) if name else ""}</h1>'
-                f'<dl class="kv" style="margin:16px 0">{"".join(f"<dt>{e(k)}</dt><dd>{e(v)}</dd>" for k, v in kv)}</dl>'
-                + (f'<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">{rs}</div>' if rs else "")
-                + (f'<div class="chips" style="margin-bottom:14px">{flags}</div>' if flags else "")
-                + f'<div class="btns"><a class="btn primary" href="/file/output/{e(doc_id)}" target="_blank">{icon("open", 16)}PDF-ის გახსნა</a>'
+        nxt = _doc_next(c, x, mhr_item, rs, mhr_on)
+        skip = {"—", "უცნობია", "", None}
+        facts = "".join(f'<div{" class=wide" if k in ("MHR", "AI ანალიზი") else ""}><dt>{e(k)}</dt><dd>{e(v)}</dd></div>'
+                        for k, v in kv if k != "წყარო" and v not in skip and not (k == "წელი" and x["document_date"]))
+        head = (f'<p style="margin:0 0 10px"><a href="javascript:history.back()">← უკან</a></p>{_flash(msg, err)}'
+                f'<div class="dochead"><div><div class="chips">{status_chip(x["status"])}{mhr_chip(mhr_item["status"]) if mhr_item else ""}</div>'
+                f'<h1>{e(t.name_ka if t else "დოკუმენტი")}{" · " + e(name) if name else ""}</h1>'
+                f'<p class="sub">{e(Path(x["first_path"]).name)} · გვ. {x["page_start"] + 1}–{x["page_end"] + 1} · {e(x["document_date"] or "თარიღი უცნობია")}</p></div>'
+                f'<div class="btns"><a class="btn" href="/file/output/{e(doc_id)}" target="_blank">{icon("open", 16)}PDF ცალკე</a>'
                 f'<a class="btn" href="/file/source/{e(doc_id)}#page={x["page_start"] + 1}" target="_blank">{icon("file", 16)}წყარო</a>'
-                f'<a class="btn" href="/doc/{e(doc_id)}/text">{icon("search", 16)}ამოკითხული ტექსტი</a>'
-                + (f'<a class="btn" href="/mhr/{e(doc_id)}">{icon("cloud", 16)}MHR შედარება</a>' if mhr_item else "")
-                + f'<form class="inline" method="post" action="/jobs/{e(x["job_id"])}/reprocess"><button class="btn">{icon("refresh", 16)}თავიდან დამუშავება</button></form></div>'
-                + (_manual_block(c, x, mhr_item, f"/doc/{doc_id}") if mhr_on else "")
-                + f'<details style="margin-top:18px"><summary>ტექნიკური დეტალები</summary><p class="muted mono">{e(x["output_path"])}</p>'
+                f'<a class="btn" href="/doc/{e(doc_id)}/text">{icon("search", 16)}ამოკითხული ტექსტი</a></div></div>')
+        body = (head + f'<div class="split"><div>{nxt}<dl class="card facts" style="margin:0 0 14px">{facts}</dl>'
+                + (f'<div class="chips" style="margin-bottom:14px">{flags}</div>' if flags else "")
+                + f'<details style="border:0;padding:0"><summary style="font-size:13.5px;font-weight:500">სხვა მოქმედებები და ტექნიკური დეტალები</summary>'
+                f'<div class="btns" style="margin:12px 0">'
+                + (f'<a class="btn sm" href="/mhr/{e(doc_id)}">{icon("cloud", 16)}MHR შედარება</a>' if mhr_item else "")
+                + f'<form class="inline" method="post" action="/jobs/{e(x["job_id"])}/reprocess"><button class="btn sm">{icon("refresh", 16)}თავიდან დამუშავება</button></form></div>'
+                f'<p class="muted mono">{e(x["output_path"])}</p>'
                 f'<pre class="mono" style="white-space:pre-wrap;word-break:break-word">{e(json.dumps(meta, ensure_ascii=False, indent=2))}</pre></details></div>'
                 f'<iframe class="pdf" src="/file/output/{e(doc_id)}" title="დოკუმენტის გადახედვა"></iframe></div>')
         return page("დოკუმენტი", body, "/review" if x["status"] == "needs_review" else "/documents", side_info(status_data()))
@@ -545,9 +602,17 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 f'ყველას ატვირთვა ({counts.get("ready", 0)})</button></form>' if tab == "ready" and counts.get("ready") else "")
         off = ("" if c.section("mhr")["enabled"] else
                f'<div class="banner tone-warn">{icon("alert", 18)}<div>MHR ინტეგრაცია გამორთულია — ჩართე „პარამეტრებში“.</div></div>')
-        body = (f'<h1>MHR</h1><p class="sub">ყოველი დასკანერებული ხელშეკრულება ავტომატურად მოწმდება: თანამშრომელი MHR-ში, '
-                f'პირადი მონაცემები, ხელმოწერები ყველა გვერდზე და ტექსტი — შაბლონთან/ორიგინალთან. „მზადაა“ — ყველაფერი ემთხვევა, '
-                f'ერთი ღილაკით აიტვირთება თანამშრომლის ბარათზე. „ვერ გაიარა“ — ნახე სხვაობები და გადაწყვიტე.</p>{off}'
+        tip = {"ready": "ყველაფერი ემთხვევა — „ატვირთვა“ ან „ყველას ატვირთვა“, და დოკუმენტი თანამშრომლის ბარათზე აიტვირთება.",
+               "failed": "რაღაც არ ემთხვევა ან შედარება ვერ მოხერხდა — „დეტალები“ აჩვენებს, ზუსტად რა. "
+                         "დარწმუნებული რომ ხარ — „ატვირთვა მაინც“ ან „ხელით ატვირთვა“.",
+               "queue": "ელოდება შემოწმებას ან ატვირთვას — ჩარევა არ სჭირდება.",
+               "done": "უკვე MHR-შია.", "other": "გამოტოვებული, ვერ ატვირთული ან უარყოფილი — თითოეულზე წერია, რატომ."}[tab]
+        body = (f'<h1>MHR</h1><p class="sub">{e(tip)}</p>{off}'
+                '<details style="border:0;padding:0;margin:-12px 0 18px"><summary style="font-size:13.5px;font-weight:500">როგორ მოწმდება?</summary>'
+                '<p class="muted" style="font-size:13.5px;margin:6px 0 0">ყოველი დასკანერებული ხელშეკრულება ავტომატურად მოწმდება: თანამშრომელი MHR-ში '
+                'პირადი ნომრით, პირადი მონაცემები, ხელმოწერები ყველა გვერდზე და ტექსტი — MHR-ში დაგენერირებულ ხელშეკრულებასთან. '
+                'თუ ბარათზე დაგენერირებული ხელშეკრულება არ არის, შედარება არ ხდება და დოკუმენტი აქ გაფრთხილებით რჩება — '
+                'ქაღალდზე ნახვის შემდეგ „ხელით ატვირთვა“ მაინც მუშაობს. ატვირთვა მხოლოდ შენი დადასტურებით ხდება.</p></details>'
                 f'<div class="toolbar"><div class="seg">{seg}</div><a class="btn" href="/manual">{icon("upload", 16)}ხელით ატვირთვა</a>{bulk}</div>'
                 f'<div class="card list">{rows or empty("cloud", "mute", "აქ ჯერ არაფერია")}</div>')
         return page("MHR", body, "/mhr", side_info(status_data()), watch=True)
@@ -563,7 +628,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
             r.close()
         if not m:
             raise HTTPException(404)
-        return page("MHR — შედარება", _flash(msg, err) + _mhr_detail_body(c, m, d), "/mhr", side_info(status_data()))
+        s = status_data()
+        return page("MHR — შედარება", _flash(msg, err) + _mhr_detail_body(c, m, d, s["worker_alive"]), "/mhr", side_info(s))
 
     @app.post("/mhr/{doc_id}/override")
     async def mhr_override(doc_id: str, request: Request):
@@ -940,7 +1006,7 @@ def mhr_chip(status: str) -> str:
 def _mhr_doc_status(m) -> str:
     """დოკუმენტის გვერდისთვის: მოიძებნა თუ არა თანამშრომელი MHR-ში და სად არის პროცესში."""
     if m is None:
-        return "არ გადაეცა (მხოლოდ სანდოდ დამუშავებული დოკუმენტი მოწმდება)"
+        return "არ შემოწმებულა"
     v = json.loads(m["validation"] or "{}")
     found = "თანამშრომელი მოიძებნა" if m["employee_id"] else (
         "თანამშრომელი ვერ მოიძებნა" if v else "ჯერ არ შემოწმებულა")
@@ -970,7 +1036,8 @@ def _mhr_row(c: Config, x) -> str:
     return (f'<div class="row"><div class="grow"><a class="t" href="/mhr/{e(x["document_id"])}" style="display:block;color:var(--text)">'
             f'{e(name or "თანამშრომელი უცნობია")}</a><div class="m">{e(meta)}</div>'
             f'{f"<div class=m>{e(summary)}</div>" if summary else ""}</div>{ai_chip}{mhr_chip(x["status"])}'
-            f'<div class="btns">{btns}<a class="btn sm" href="/mhr/{e(x["document_id"])}">დეტალები</a></div></div>')
+            f'<div class="btns">{btns}<a class="btn sm{"" if btns else " primary"}" href="/mhr/{e(x["document_id"])}">'
+            f'{"ნახე სხვაობები" if x["status"] == "failed" and not _no_compare(v) else "დეტალები"}</a></div></div>')
 
 
 def _ai_load(m) -> dict | None:
@@ -981,7 +1048,7 @@ def _ai_load(m) -> dict | None:
     return json.loads(raw) if raw else None
 
 
-def _ai_block(c: Config, m) -> str:
+def _ai_block(c: Config, m, worker_alive: bool = True) -> str:
     """AI ანალიზის (Opus) ბლოკი MHR-ის დეტალურ გვერდზე: გადაწყვეტილება, ახსნა პუნქტობრივად, რისკები."""
     from .. import ai_review
     if not ai_review.enabled(c):
@@ -991,10 +1058,13 @@ def _ai_block(c: Config, m) -> str:
     rerun = (f'<form class="inline" method="post" action="/mhr/{doc_id}/ai-review"><button class="btn sm">'
              f'{icon("refresh", 14)}ხელახალი AI ანალიზი</button></form>')
     if ai is None:
-        if m["status"] in ("ready", "failed"):
-            return (f'<div class="banner tone-info">{icon("clock", 18)}<div><b>AI ანალიზი (Opus) რიგშია.</b> წესებით შემოწმება '
-                    'უკვე დასრულდა (ქვემოთ). რამდენიმე წუთში აქ გამოჩნდება დეტალური ახსნა და რეკომენდაცია — განაახლე გვერდი.</div></div>')
-        return ""
+        if m["status"] not in ("ready", "failed"):
+            return ""
+        if not worker_alive:   # ანალიზს ფონური პროცესი აკეთებს — თუ არ მუშაობს, „რიგშია" შეცდომაში შეიყვანს
+            return (f'<div class="banner tone-warn">{icon("alert", 18)}<div><b>AI ანალიზი ვერ დაიწყება — ფონური პროცესი არ მუშაობს.</b> '
+                    'გახსენი „HR გადამრჩევი“ დაწყების მენიუდან; წესებით შემოწმება ქვემოთ უკვე ჩანს.</div></div>')
+        return (f'<div class="banner tone-info">{icon("clock", 18)}<div><b>AI ანალიზი (Opus) რიგშია.</b> წესებით შემოწმება '
+                'უკვე დასრულდა (ქვემოთ). რამდენიმე წუთში აქ გამოჩნდება დეტალური ახსნა და რეკომენდაცია — განაახლე გვერდი.</div></div>')
     verdict = ai.get("verdict") or "error"
     lbl, tone = AI_KA.get(verdict, AI_KA["error"])
     if verdict == "error":
@@ -1022,7 +1092,14 @@ def _ai_block(c: Config, m) -> str:
 _CHECK_KA_AI = {"ok": ("წესრიგშია", "ok"), "warn": ("ყურადღება", "warn"), "bad": ("პრობლემა", "bad")}
 
 
-def _mhr_detail_body(c: Config, m, d) -> str:
+def _no_compare(v: dict) -> bool:
+    """ვალიდაცია შედარებამდე გაჩერდა: MHR-ში დაგენერირებული ხელშეკრულება (ან მისი ფაილი) არ არის. ეს ცვლილება არ არის —
+    გაფრთხილებაა, ამიტომ ოპერატორს იქვე სთავაზობს ხელით ატვირთვას."""
+    return any(ch.get("field") == "original_contract" and ch.get("status") == "missing_in_mhr"
+               for ch in (v.get("checks") or []))
+
+
+def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True) -> str:
     v = json.loads(m["validation"] or "{}")
     emp = v.get("employee") or {}
     out = [f'<p><a href="/mhr">← MHR</a></p><div class="chips" style="margin-bottom:8px">{mhr_chip(m["status"])}</div>'
@@ -1031,7 +1108,7 @@ def _mhr_detail_body(c: Config, m, d) -> str:
            + (f' · ატვირთვის ID {e(m["remote_id"])}' if m["remote_id"] else "") + "</p>"]
     if m["error"]:
         out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(m["error"])}</div></div>')
-    out.append(_ai_block(c, m))
+    out.append(_ai_block(c, m, worker_alive))
     if v.get("summary"):
         tone = "ok" if v.get("status") == "passed" else "warn"
         out.append(f'<div class="banner tone-{tone}">{icon("check" if tone == "ok" else "alert", 18)}<div>'
@@ -1048,17 +1125,29 @@ def _mhr_detail_body(c: Config, m, d) -> str:
     out.append('<div class="btns" style="margin-bottom:20px">' + "".join(
         f'<form class="inline" method="post" action="/mhr/{e(m["document_id"])}/{a}"><button class="btn {cls}">{e(lbl)}</button></form>'
         for a, lbl, cls in btn) + links + "</div>")
-    if d is not None and not (m["status"] == "failed" and m["employee_id"]):
-        out.append(_manual_block(c, d, m, f"/mhr/{m['document_id']}").replace('margin-top:16px', 'margin-bottom:20px'))
+    no_compare = _no_compare(v)
+    if d is not None and (no_compare or not (m["status"] == "failed" and m["employee_id"])):
+        blk = _manual_block(c, d, m, f"/mhr/{m['document_id']}")
+        if blk:
+            title = "ხელით ატვირთვა — შედარების გარეშე" if no_compare else "ხელით ატვირთვა"
+            out.append(f'<div class="card" style="padding:14px 16px;margin-bottom:20px"><b>{title}</b>'
+                       + ('<div class="muted" style="font-size:13.5px;margin-top:4px">დოკუმენტი ქაღალდზე ნახე; თუ სწორია, '
+                          'ერთი დაჭერით აიტვირთება თანამშრომლის ბარათზე.</div>' if no_compare else "")
+                       + blk.replace("margin-top:16px", "margin-top:6px") + "</div>")
     if m["status"] == "failed" and m["employee_id"]:
         ai = _ai_load(m)
         ai_ok = bool(ai and ai.get("verdict") == "upload")
-        lead = ("AI-მ სხვაობები გადახედა და თვლის, რომ ეს წაკითხვის შეცდომებია — დოკუმენტი სწორია" if ai_ok
-                else "ქვემოთ მოცემული სხვაობები ვნახე — დოკუმენტი სწორია")
+        if no_compare:
+            lead = "შედარება არ მომხდარა — დოკუმენტი თვითონ ვნახე და სწორია"
+            hint = ("MHR-ში დაგენერირებული ხელშეკრულება ვერ მოიძებნა, ამიტომ ტექსტი არაფერს შედარებია. "
+                    "ატვირთვა ჟურნალში ჩაიწერება, როგორც შენი გადაწყვეტილება.")
+        else:
+            lead = ("AI-მ სხვაობები გადახედა და თვლის, რომ ეს წაკითხვის შეცდომებია — დოკუმენტი სწორია" if ai_ok
+                    else "ქვემოთ მოცემული სხვაობები ვნახე — დოკუმენტი სწორია")
+            hint = "მაგ. ბეჭედი ან ხელმოწერა შეცდომით ჩაითვალა ცვლილებად. ატვირთვა ჟურნალში ჩაიწერება, როგორც შენი გადაწყვეტილება."
         out.append(f'<form method="post" action="/mhr/{e(m["document_id"])}/override" class="card" style="padding:14px 16px;margin-bottom:20px">'
                    f'<label class="switch" style="margin-bottom:10px"><input type="checkbox" name="confirm" value="1" required>'
-                   f'<span><b>{lead}</b><br><span class="muted" style="font-size:13.5px">'
-                   'მაგ. ბეჭედი ან ხელმოწერა შეცდომით ჩაითვალა ცვლილებად. ატვირთვა ჟურნალში ჩაიწერება, როგორც შენი გადაწყვეტილება.'
+                   f'<span><b>{lead}</b><br><span class="muted" style="font-size:13.5px">{hint}'
                    f'</span></span></label><button class="btn{" primary" if ai_ok else ""}">ატვირთვა მაინც</button></form>')
     checks = v.get("checks") or []
     if checks:
@@ -1103,6 +1192,48 @@ _MANUAL_ERR = {"document_not_found": "დოკუმენტი ვერ მ�
 _MANUAL_UPLOAD_KA = {"approved": "MHR მიუწვდომელია — ფონური პროცესი მოგვიანებით თავად სცდის",
                      "upload_failed": "ატვირთვა ვერ მოხერხდა", "needs_check": "შედეგი გაურკვეველია — ნახე MHR გვერდზე",
                      "rejected": "დოკუმენტი ჩანაცვლებულია"}
+
+
+def _doc_next(c: Config, x, item, reasons_html: str, mhr_on: bool) -> str:
+    """დოკუმენტის გვერდის თავში ერთი ბარათი: რა მდგომარეობაშია დოკუმენტი და რა არის შემდეგი ნაბიჯი (ერთი მთავარი ღილაკი)."""
+    doc_id = x["id"]
+    st = item["status"] if item else None
+    v = json.loads(item["validation"] or "{}") if item else {}
+    why = (v.get("summary") or [""])[0]
+    manual = _manual_block(c, x, item, f"/doc/{doc_id}") if mhr_on else ""
+
+    def card(tone: str, title: str, text: str, inner: str = "") -> str:
+        return (f'<div class="next tone-{tone}"><div class="lbl">შემდეგი ნაბიჯი</div><div class="ttl">{e(title)}</div>'
+                + (f"<p>{e(text)}</p>" if text else "") + inner + "</div>")
+
+    emp = v.get("employee") or {}
+    emp_name = " ".join(x for x in (emp.get("first_name"), emp.get("last_name")) if x)
+    alt = (f'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
+           f'<div class="muted" style="font-size:13px;margin-bottom:6px">ან, თუ დოკუმენტი სწორია — ატვირთე ხელით</div>{manual}</div>') if manual else ""
+    if st == "uploaded":
+        return card("ok", "ატვირთულია MHR-ზე", f"თანამშრომლის ბარათზეა{' · ' + emp_name if emp_name else ''}.",
+                    f'<a class="btn sm" href="/mhr/{e(doc_id)}">დეტალები</a>')
+    if st in ("approved", "uploading"):
+        return card("info", "იტვირთება MHR-ზე", "ჩარევა არ სჭირდება.")
+    if st == "ready":
+        return card("info", "მზადაა MHR-ზე ასატვირთად", "",
+                    f'<div class="btns"><form class="inline" method="post" action="/mhr/{e(doc_id)}/approve"><button class="btn primary">'
+                    f'{icon("cloud", 16)}ატვირთვა MHR-ზე</button></form><a class="btn" href="/mhr/{e(doc_id)}">რა შემოწმდა</a></div>')
+    if st == "failed" and _no_compare(v):   # შედარება ვერ მოხდა (ორიგინალი MHR-ში არ არის) — გაფრთხილება, არა ცვლილება
+        return card("warn", "MHR-ში ხელშეკრულება ვერ მოიძებნა", why,
+                    (manual or f'<div class="btns"><a class="btn" href="/mhr/{e(doc_id)}">დეტალები</a></div>'))
+    if st == "failed":
+        return card("warn", "MHR-ს არ ემთხვევა", why,
+                    f'<div class="btns"><a class="btn primary" href="/mhr/{e(doc_id)}">{icon("search", 16)}ნახე სხვაობები</a></div>{alt}')
+    if st in ("upload_failed", "needs_check"):
+        return card("bad" if st == "upload_failed" else "warn", MHR_KA[st][0], item["error"] or "",
+                    f'<div class="btns"><a class="btn primary" href="/mhr/{e(doc_id)}">რა მოხდა</a></div>')
+    if x["status"] == "needs_review":
+        return card("warn", "გადახედე და გადაწყვიტე", "",
+                    (f'<div class="reasons">{reasons_html}</div>' if reasons_html else "") + (manual or ""))
+    if manual:   # დამუშავებულია, MHR-ში ჯერ არ არის (გამოტოვებული, რიგში, უარყოფილი…)
+        return card("info", "MHR-ზე ჯერ არ ატვირთულა", (MHR_KA.get(st, ("", ""))[0] + (f" — {why}" if why else "")) if st else "", manual)
+    return card("ok", "დამუშავებულია", "გასაკეთებელი არაფერია.")
 
 
 def _mhr_emp_name(emp) -> str:
@@ -1152,20 +1283,19 @@ def _manual_block(c: Config, doc, item, back: str) -> str:
     known = _mhr_name(v)
     t = c.doc_type(doc["type_id"] or "")
     unknown = not t or t.id == "unknown"
-    who = (f"MHR-ში ამ პირადი ნომრით: <b>{e(known)}</b>." if known else
-           f"თანამშრომელი MHR-ში მოიძებნება პირადი ნომრით <b>{e(pn)}</b>." if pn else
-           "პირადი ნომერი დოკუმენტიდან არ იკითხება — გამოიყენე ქვემოთ ბმული და ჩაწერე ხელით.")
+    who = (f"თანამშრომელი MHR-ში: <b>{e(known)}</b>" if known else
+           f"თანამშრომელი MHR-ში — პირადი ნომრით <b>{e(pn)}</b>" if pn else
+           "პირადი ნომერი არ იკითხება — ჩაწერე ხელით:")
     sel = ""
     if unknown:
         sel = ('<select name="type_id" required><option value="">ტიპი — აირჩიე</option>'
                + "".join(f'<option value="{e(dt.id)}">{e(dt.name_ka)}</option>' for dt in c.active_types) + "</select>")
     btn = (f'<button class="btn primary" {"disabled" if not pn else ""}>{icon("upload", 16)}ხელით ატვირთვა MHR-ზე</button>')
     link = "/manual?" + urlencode({"pn": pn, "first": first, "last": last})
-    return (f'<form method="post" action="/doc/{e(doc["id"])}/manual-upload" class="card" style="padding:14px 16px;margin-top:16px">'
-            f'<input type="hidden" name="back" value="{e(back)}"><div style="margin-bottom:10px"><b>ხელით ატვირთვა</b> — ავტომატური შედარების '
-            f'გარეშე, მაშინვე. {who}<br><span class="muted" style="font-size:13px">ატვირთვა ჟურნალში შენს გადაწყვეტილებად იწერება. '
-            f'სხვა თანამშრომელზე ან პ/ნ-ის გარეშე — <a href="{e(link)}">ხელით ატვირთვის გვერდი</a>.</span></div>'
-            f'<div class="btns" style="align-items:center">{sel}{btn}</div></form>')
+    other = f'<a href="{e(link)}" style="font-size:13px;white-space:nowrap">{"ჩაწერე ხელით →" if not pn else "სხვა თანამშრომელი →"}</a>'
+    return (f'<form method="post" action="/doc/{e(doc["id"])}/manual-upload" class="manual">'
+            f'<input type="hidden" name="back" value="{e(back)}"><div style="font-size:14px;margin-bottom:8px">{who}</div>'
+            f'<div class="btns" style="align-items:center">{sel}{btn}{other}</div></form>')
 
 
 def _manual_lookup(c: Config, q: dict[str, str]) -> dict:

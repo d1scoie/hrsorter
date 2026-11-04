@@ -431,6 +431,10 @@ def test_mhr_pages_show_ai_review(client):
     doc = "doc_" + "d" * 32
     repo.mhr_enqueue(doc, "01001000001")
     repo.mhr_transition(doc, ("pending",), "failed", validation=v, employee_id="E2")
+    page = c.get(f"/mhr/{doc}").text          # ფონური პროცესი არ მუშაობს → „რიგშია" შეცდომაში შეიყვანდა
+    assert "AI ანალიზი ვერ დაიწყება — ფონური პროცესი არ მუშაობს" in page and "რიგშია" not in page
+    import time
+    repo.set_control("worker_heartbeat", str(time.time()))
     page = c.get(f"/mhr/{doc}").text
     assert "AI ანალიზი (Opus) რიგშია" in page and "ქვემოთ მოცემული სხვაობები ვნახე" in page
 
@@ -457,4 +461,41 @@ def test_mhr_pages_show_ai_review(client):
     data["ocr"]["online"]["enabled"] = False
     cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     assert "AI ანალიზი" not in c.get(f"/mhr/{doc}").text
+    repo.close()
+
+
+def test_missing_original_is_a_warning_with_working_manual_upload(client, tmp_path):
+    """MHR-ში დაგენერირებული ხელშეკრულება არ არის: შედარება არ ხდება, დოკუმენტი „ვერ გაიარა“-ში გაფრთხილებით რჩება,
+    მაგრამ „ხელით ატვირთვა“ იქვეა და მუშაობს (მომხმარებლის წესი: გააფრთხილე, დააწვება — აიტვირთოს)."""
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    mock = tmp_path / "mhr2"
+    mock.mkdir()
+    (mock / "employees.json").write_text(json.dumps([{"id": "E7", "personal_number": "01001000001", "first_name": "ნინო",
+                                                      "last_name": "ბერიძე"}], ensure_ascii=False), encoding="utf-8")
+    data["mhr"] = {"enabled": True, "mode": "mock", "mock_dir": str(mock)}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    sid = repo.insert_source(sha256="e" * 64, size=1, page_count=1, archive_path="x.pdf", first_path="in/x.pdf", profile_id="batch")
+    doc = "doc_" + "e" * 32
+    _pdf_doc(repo, tmp_path, doc, sid)
+    note = "ხელშეკრულების ორიგინალი MHR-ში ვერ მოიძებნა: ამ თანამშრომელს დაგენერირებული ხელშეკრულება არ აქვს — ჯერ MHR-ში დააგენერირე"
+    v = {"status": "failed", "employee": {"employee_id": "E7", "first_name": "ნინო", "last_name": "ბერიძე"},
+         "checks": [{"field": "original_contract", "label_ka": "ორიგინალი MHR-ში", "document_value": None, "mhr_value": None,
+                     "status": "missing_in_mhr", "blocking": True, "note": note}], "diffs": [], "summary": [note]}
+    repo.mhr_enqueue(doc, "01001000001")
+    repo.mhr_transition(doc, ("pending",), "failed", validation=v, employee_id="E7")
+
+    page = c.get(f"/mhr/{doc}").text
+    assert "ჯერ MHR-ში დააგენერირე" in page                                  # გაფრთხილება ჩანს
+    assert "ხელით ატვირთვა — შედარების გარეშე" in page and f'action="/doc/{doc}/manual-upload"' in page
+    assert "შედარება არ მომხდარა" in page and "ატვირთვა მაინც" in page       # ორივე გზა ღიაა
+    assert "MHR-ში ხელშეკრულება ვერ მოიძებნა" in c.get(f"/doc/{doc}").text   # დოკუმენტის გვერდზე სწორი სათაური
+    home = c.get("/").text
+    assert "1 ხელშეკრულებამ ვერ გაიარა MHR-ის შემოწმება" in home and "ნახე რატომ" in home and "ნახე სხვაობები" not in home
+    assert "ნახე სხვაობები" not in c.get("/mhr?tab=failed").text              # შესადარებელი არაფერია — ღილაკი „დეტალები“
+
+    r = c.post(f"/doc/{doc}/manual-upload", data={"back": f"/mhr/{doc}"}, headers={"origin": LOCAL}, follow_redirects=False)
+    assert r.status_code == 303 and "ატვირთულია MHR-ზე — ნინო ბერიძე" in c.get(r.headers["location"]).text
+    assert repo.mhr_get(doc)["status"] == "uploaded" and repo.mhr_get(doc)["decided_by"] == "operator (manual)"
     repo.close()
