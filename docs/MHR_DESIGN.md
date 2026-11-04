@@ -94,6 +94,15 @@ def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg,
 `sweep` იყენებს `validate_fn or validation.validate_document` (lazy import), შედეგს წერს `mhr_items.validation`-ში
 (`ValidationResult.to_dict()`), `employee_id`-ს — თანამშრომლის ID-ს.
 
+**ორიგინალის არჩევა** (`original_candidates`, 2026-11-04): მხოლოდ `kind: generated`; დოკ. ნომერი სათაურში > სკანის
+თარიღის ±`ORIGINAL_DATE_TOLERANCE_DAYS` (7) და უახლოესი > **უახლესი დაგენერირებული** (±7-ის გარეთაც — `original_date_note`
+info-check ბლოკირების გარეშე). დაგენერირებული საერთოდ არ არის → ბლოკირებადი `original_contract: missing_in_mhr`
+`NO_ORIGINAL_NOTE`-ით („ჯერ MHR-ში დააგენერირე…"); თანამდებობის შაბლონთან შედარება (`_compare_with_template`) მხოლოდ
+`mhr.template_fallback=true`-ზე (ნაგულისხმევად false). მომხმარებლის მოთხოვნა: ყოველთვის დაგენერირებულს შეადაროს.
+UI-ში ეს კედელი არ არის: `_no_compare(validation)` (check `original_contract: missing_in_mhr`) → MHR-ის დეტალებში ჩანს
+„ხელით ატვირთვა — შედარების გარეშე“ ბარათი (ჩვეულებრივ failed+employee_id-ზე ის იმალება) და „ატვირთვა მაინც“ ფორმა სხვა
+ტექსტით, დოკუმენტის გვერდზე კი ბარათი „MHR-ში ხელშეკრულება ვერ მოიძებნა“ ხელით ატვირთვის ღილაკით.
+
 **საეჭვო გვერდის ხელახალი წაკითხვა** (`validation._recheck_diffs`): ორიგინალთან/შაბლონთან შედარებამ ტექსტური
 სხვაობა (`changed|added|removed`, significant) იპოვა Tesseract-ით წაკითხულ გვერდზე → ეს გვერდი (≤ `mhr.recheck.max_pages`)
 ონლაინ OCR-ით (`build_ocr_chain(cfg).online`, Claude) ხელახლა იკითხება, ტექსტი `page_texts`-ში ინახება

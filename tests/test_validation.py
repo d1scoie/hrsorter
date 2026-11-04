@@ -462,7 +462,7 @@ def test_pick_original_generated_only_by_document_date_tie_newest():
     assert pick_original(refs, None, "2024-06-05").doc_id == "b"
     assert pick_original(refs, None, "2024-06-04").doc_id == "b"           # uploaded (u) არასდროს
     assert pick_original(refs, None, "2024-06-07").doc_id == "c"          # 3 დღე vs 3 დღე (b) → უახლესი
-    assert pick_original(refs, None, "2023-01-01") is None   # შორეული თარიღის ორიგინალი არ შეედრება
+    assert pick_original(refs, None, "2023-01-01").doc_id == "c"   # ±7 დღეში არ არის → მაინც უახლესი დაგენერირებული (თარიღი — შენიშვნად)
     assert pick_original(refs, None, None).doc_id == "c"
     assert pick_original([ref("u", "2024-06-04", "uploaded")], None, "2024-06-04") is None
 
@@ -553,14 +553,13 @@ def test_multiple_matches_is_blocking_failure_not_unavailable(repo, cfg):
     assert r2.status == "failed" and r2.error == "MhrError" and r2.checks == []
 
 
-def test_pick_original_requires_matching_date():
+def test_pick_original_far_date_still_newest_generated():
     from hrsorter.mhr_models import MhrDocRef
     from hrsorter.validation import pick_original
     old = MhrDocRef("459", "contract", raw={"kind": "generated", "document_date": "2026-09-28"})
-    old.raw["document_date"] = "2026-09-28"
     refs = [old]
-    # წინა თვის ხელშეკრულება ახალ (2026-10-28) სკანს არ შეედარება
-    assert pick_original(refs, None, "2026-10-28") is None
+    # MHR-ში მხოლოდ წინა თვის ხელშეკრულებაა: მაინც მას შევადარებთ (შაბლონს — არა), თარიღის სხვაობა შენიშვნაა
+    assert pick_original(refs, None, "2026-10-28") is old
     assert pick_original(refs, None, "2026-09-30") is old
 
 
@@ -626,6 +625,7 @@ def template_client(lines=None) -> FakeClient:
 
 
 def test_no_original_compares_with_position_template(repo, cfg):
+    cfg.data["mhr"]["template_fallback"] = True
     client = template_client()
     r = validate_document(repo, cfg, add_doc(repo), client)
     assert r.status == "passed", r.summary
@@ -634,12 +634,14 @@ def test_no_original_compares_with_position_template(repo, cfg):
 
 
 def test_template_literal_text_change_fails(repo, cfg):
+    cfg.data["mhr"]["template_fallback"] = True
     lines = [x.replace("ორ ეგზემპლარად", "სამ ეგზემპლარად") for x in _template_lines()]
     r = validate_document(repo, cfg, add_doc(repo), template_client(lines))
     assert r.status == "failed" and any(d.page == 2 for d in r.significant_diffs)
 
 
 def test_no_original_and_no_template_fails(repo, cfg):
+    cfg.data["mhr"]["template_fallback"] = True
     r = validate_document(repo, cfg, add_doc(repo), FakeClient(employee=employee(), docs=[]))
     assert r.status == "failed"
     assert any("შაბლონი" in s for s in r.summary)
@@ -647,6 +649,7 @@ def test_no_original_and_no_template_fails(repo, cfg):
 
 def test_template_file_missing_on_server_gives_clear_reason(repo, cfg):
     """რეალური MHR: შაბლონის ჩანაწერი არის, ფაილი სერვერზე — არა (`sha256: null`) → გასაგები მიზეზი, არა „MHR-ის შეცდომა“."""
+    cfg.data["mhr"]["template_fallback"] = True
     client = template_client()
     client.template.raw["sha256"] = None
     r = validate_document(repo, cfg, add_doc(repo), client)
@@ -793,3 +796,30 @@ def test_recheck_skipped_when_disabled_or_offline_or_failing(repo, cfg, monkeypa
 def test_clean_recheck_text_drops_model_markers():
     t = "მუხლი 5\n[ბეჭედი: შპს არბო 2009, 205273498]\nხელფასი 1300 [?] ლარი [ხელნაწერი: ა. მ.]"
     assert validation._clean_recheck_text(t).split() == ["მუხლი", "5", "ხელფასი", "1300", "ლარი"]
+
+
+def test_no_generated_original_fails_without_template_fallback(repo, cfg):
+    """ნაგულისხმევი: დაგენერირებული ხელშეკრულება ბარათზე არ არის → „ვერ გაიარა" მკაფიო მიზეზით, შაბლონი არც იძებნება."""
+    client = template_client()
+    r = validate_document(repo, cfg, add_doc(repo), client)
+    assert r.status == "failed" and r.original is None
+    c = next(c for c in r.checks if c.field == "original_contract")
+    assert c.status == "missing_in_mhr" and c.blocking and "დაგენერირებული" in c.note and "წინა ჩანაწერზე" in c.note
+    assert not any(x.startswith("contract_template") or x.startswith("download_template") for x in client.calls)
+    assert any("ჯერ MHR-ში" in s for s in r.summary)
+
+
+def test_original_far_from_document_date_gives_note_not_block(repo, cfg):
+    """ორიგინალი სკანის თარიღის ±7 დღის გარეთ შეიქმნა: მაინც მას ადარებს (გავიდა), თარიღის სხვაობა — შენიშვნა."""
+    ref = MhrDocRef("D1", "CONTRACTS", "შრომითი ხელშეკრულება", "2024-01-10T10:00:00", "contract.pdf")
+    client = FakeClient(employee=employee(), docs=[ref], files={"D1": make_pdf([CONTRACT_P1, CONTRACT_P2])})
+    r = validate_document(repo, cfg, add_doc(repo, doc_number=None, doc_date="2024-03-12"), client)
+    assert r.status == "passed", r.summary
+    note = next(c for c in r.checks if c.field == "original_date")
+    assert note.status == "info" and not note.blocking and "62 დღით ადრე" in note.note
+    assert any("62 დღით ადრე" in s for s in r.summary)
+    # ±7 დღეში — შენიშვნა არ არის
+    ref2 = MhrDocRef("D2", "CONTRACTS", "შრომითი ხელშეკრულება", "2024-03-10T10:00:00", "contract.pdf")
+    client2 = FakeClient(employee=employee(), docs=[ref2], files={"D2": make_pdf([CONTRACT_P1, CONTRACT_P2])})
+    r2 = validate_document(repo, cfg, add_doc(repo, doc_id="doc_2", doc_number=None, doc_date="2024-03-12"), client2)
+    assert r2.status == "passed" and not any(c.field == "original_date" for c in r2.checks)

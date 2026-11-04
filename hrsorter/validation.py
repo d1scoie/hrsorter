@@ -211,14 +211,32 @@ def original_candidates(refs: list[MhrDocRef], doc_number: str | None, doc_date:
 
     target = _date(doc_date)
     if target is not None:
-        # მხოლოდ იმავე თარიღის (±ORIGINAL_DATE_TOLERANCE_DAYS) ორიგინალი — თორემ სხვა (მაგ. წინა) ხელშეკრულებას შევადარებდით
+        # უპირატესობა იმავე თარიღის (±ORIGINAL_DATE_TOLERANCE_DAYS) ორიგინალს; ასეთი რომ არ იყოს, მაინც უახლესი დაგენერირებული
+        # აიღება (ხელშეკრულება MHR-შია და მხოლოდ მას ვადარებთ) — თარიღის სხვაობა შენიშვნად ჩნდება (original_date_note)
         dated = [r for r in pool if _ref_date(r) is not None
                  and abs((_ref_date(r) - target).days) <= ORIGINAL_DATE_TOLERANCE_DAYS]
         if dated:
             return sorted(dated, key=lambda r: (-abs((_ref_date(r) - target).days), newest(r)), reverse=True)
-        if any(_ref_date(r) is not None for r in pool):
-            return []
     return sorted(pool, key=newest, reverse=True)
+
+
+NO_ORIGINAL_NOTE = ("ხელშეკრულების ორიგინალი MHR-ში ვერ მოიძებნა: ამ თანამშრომელს დაგენერირებული ხელშეკრულება არ აქვს — ჯერ MHR-ში "
+                    "დააგენერირე, მერე დაბეჭდე, მოაწერინე და დაასკანერე (ატვირთული სკანი ორიგინალად არ ითვლება; ხელახლა აყვანილის "
+                    "შემთხვევაში ხელშეკრულება შეიძლება MHR-ის წინა ჩანაწერზე იყოს)")
+
+
+def original_date_note(ref: MhrDocRef, doc_date: str | None) -> Check | None:
+    """ორიგინალი სკანის თარიღის ±ORIGINAL_DATE_TOLERANCE_DAYS-ის გარეთ შეიქმნა → შენიშვნა (არ ბლოკავს): შეიძლება HR-მა
+    ძველი ვერსია დაბეჭდა, ან ხელშეკრულება ხელახლა დააგენერირა ხელმოწერის შემდეგ."""
+    target, created = _date(doc_date), _ref_date(ref)
+    if target is None or created is None:
+        return None
+    delta = (created - target).days
+    if abs(delta) <= ORIGINAL_DATE_TOLERANCE_DAYS:
+        return None
+    return Check("original_date", "ორიგინალის თარიღი", doc_date, created.isoformat(), "info", False,
+                 note=f"ორიგინალი MHR-ში {abs(delta)} დღით {'გვიან' if delta > 0 else 'ადრე'} შეიქმნა ({created.isoformat()}), ვიდრე "
+                      f"დოკუმენტის თარიღია ({target.isoformat()}) — დარწმუნდი, რომ სწორი ვერსია დაიბეჭდა")
 
 
 def pick_original(refs: list[MhrDocRef], doc_number: str | None, doc_date: str | None) -> MhrDocRef | None:
@@ -704,8 +722,15 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     if uploaded:
         checks.append(uploaded)
     if ref is None:
-        return _compare_with_template(result, cfg, client, employee, scanned, repo, row)
+        if mhr.get("template_fallback"):   # ძველი ქცევა, მხოლოდ კონფიგით: თანამდებობის შაბლონთან შედარება
+            return _compare_with_template(result, cfg, client, employee, scanned, repo, row)
+        checks.append(Check("original_contract", LABELS_KA["original_contract"], None, None, "missing_in_mhr", True,
+                            note=NO_ORIGINAL_NOTE))
+        return _finish(result)
     result.original = ref
+    date_note = original_date_note(ref, row["document_date"] or meta.get("document_date"))
+    if date_note:
+        checks.append(date_note)
     missing_file = Check("original_contract", LABELS_KA["original_contract"], None, ref.doc_id, "missing_in_mhr", True,
                          note="ორიგინალის ფაილი MHR-ის სერვერზე არ არის (ჩანაწერი არსებობს, ფაილი — არა)")
     if "sha256" in (ref.raw or {}) and not ref.raw.get("sha256"):   # API: sha256 null = ფაილი სერვერზე ვერ მოიძებნა
@@ -778,10 +803,10 @@ def clause_labels(pages: list[str]) -> set[str]:
 
 def _compare_with_template(result: ValidationResult, cfg: Config, client, employee: MhrEmployee,
                            scanned: list[dict[str, Any]], repo: Repository | None = None, row=None) -> ValidationResult:
-    """ორიგინალი არ არის → თანამდებობის + ხელშეკრულების ტიპის შაბლონი MHR-დან. `${…}` ცვლადები (სახელი, პ/ნ, თარიღი,
-    ხელფასი) შედარებისას გამოტოვებულია — ისინი MHR-ის მონაცემებს ზემოთ ველებად შედარდა; ხელფასის სხვაობა ბლოკავს."""
-    missing = (f"ამ თარიღის (±{ORIGINAL_DATE_TOLERANCE_DAYS} დღე) ხელშეკრულების ორიგინალი MHR-ში ვერ მოიძებნა "
-               "(ხელახლა აყვანილის შემთხვევაში ძველი შეიძლება MHR-ის წინა ჩანაწერზე იყოს)")
+    """მხოლოდ `mhr.template_fallback=true`-ზე (ნაგულისხმევად გამორთულია): დაგენერირებული ორიგინალი არ არის → თანამდებობის +
+    ხელშეკრულების ტიპის შაბლონი MHR-დან. `${…}` ცვლადები (სახელი, პ/ნ, თარიღი, ხელფასი) შედარებისას გამოტოვებულია —
+    ისინი MHR-ის მონაცემებს ზემოთ ველებად შედარდა; ხელფასის სხვაობა ბლოკავს."""
+    missing = NO_ORIGINAL_NOTE
     template = client.get_contract_template(employee.employee_id)
     orig, why = None, "არ არის"
     if template and "sha256" in (template.raw or {}) and not template.raw.get("sha256"):

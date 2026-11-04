@@ -160,6 +160,8 @@ DEFAULTS: dict[str, Any] = {
         "categories": {"contract_annex": "annex"},   # type_id → MHR-ის კატეგორია (არ არის = type_id)
         "upload_type_ids": [],              # რომელი ტიპები იტვირთება (ცარიელი = ყველა, unknown-ის გარდა)
         "contract_type_ids": ["contract"],  # რომელ ტიპებზე ხდება შედარება MHR-ის ორიგინალთან
+        "template_fallback": False,         # ორიგინალი (დაგენერირებული ხელშეკრულება) არ არის → true: თანამდებობის შაბლონთან
+                                            # შედარება; false (ნაგულისხმევი): „ვერ გაიარა" — ჯერ MHR-ში დააგენერირე
         "require_approval": True,           # ოპერატორის დადასტურება ატვირთვამდე
         "recheck": {                        # წესებმა ტექსტური სხვაობა იპოვა Tesseract-ის გვერდზე → გვერდი ონლაინ OCR-ით
             "enabled": True,                # (Claude) ხელახლა იკითხება და შედარება მეორდება (validation._recheck_diffs);
