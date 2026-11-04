@@ -297,8 +297,13 @@ def _table_noise(a: list[str], b: list[str], a_bag: list[str], b_page: list[str]
     geo = [w for w in b if _GEO_WORD.search(w)]
     if lits:
         unknown = [w for w in geo if not _found(w, a_bag) and not _found(w, known)]
-        # ≤1 უცნობი მოკლე (≤4 ასო) ტოკენი — ხელმოწერის ნაკაწრი ქართულ ასოებად („ალლი"); ნამდვილი სიტყვა უფრო გრძელია
-        return not unknown or (len(unknown) == 1 and len(unknown[0]) <= 4)
+        if not unknown:
+            return True
+        # 1 უცნობი მოკლე (≤4 ასო) ტოკენი — ხელმოწერის ნაკაწრი ქართულ ასოებად („ალლი"), მაგრამ მხოლოდ თუ დანარჩენი სიტყვები
+        # შაბლონში/MHR-ში თითქმის ზუსტად არის: „აღარ არის პასუხისმგებელი" (ბუნდოვანი 0.6 დამთხვევები) ჩამატებაა და უნდა გამოჩნდეს
+        rest = [w for w in geo if w not in unknown]
+        return (len(unknown) == 1 and len(unknown[0]) <= 4
+                and all(_found(w, a_bag, 0.8) or _found(w, known, 0.8) for w in rest))
     # სუფთა ჩამატება — ცვლადების მნიშვნელობები მეორე სვეტიდან: MHR-ის ≥2 მონაცემი უნდა ერიოს (სახელი, პ/ნ…), უცნობი
     # ქართული სიტყვა ≤4 (მისამართი MHR-ში სხვანაირად წერია). ჩამატებული წინადადება ასეთი არ არის — ჩანს.
     hits = sum(1 for w in b if _found(w, known, 0.8))
