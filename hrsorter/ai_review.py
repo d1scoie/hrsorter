@@ -135,7 +135,8 @@ def build_prompt(doc: dict[str, Any], validation: dict[str, Any], pages: list[di
                        f"{' — ' + d['reason'] if d.get('reason') else ''}" for d in sig) or "- (არ არის)",
              f"წვრილი სხვაობები, რომლებიც პროგრამამ წაკითხვის ხმაურად ჩათვალა ({len(noise)}"
              + (f"; ნაჩვენებია პირველი {max_noise}" if len(noise) > max_noise else "; ყველა ნაჩვენებია") + "):",
-             "\n".join(f"- გვ. {d.get('page')}: «{d.get('original')}» → «{d.get('scanned')}»" for d in noise[:max_noise]) or "- (არ არის)",
+             "\n".join(f"- გვ. {d.get('page')}: «{d.get('original')}» → «{d.get('scanned')}»" if d.get("original") or d.get("scanned")
+                       else f"- გვ. {d.get('page')}: {d.get('reason') or d.get('kind')}" for d in noise[:max_noise]) or "- (არ არის)",
              "## დოკუმენტის ამოკითხული ტექსტი",
              _pages_text(pages, max_chars)]
     return "\n\n".join(parts)
@@ -208,6 +209,7 @@ def run_claude(prompt: str, *, model: str, timeout: float, cmd: str | None = Non
 
 def review_document(repo, cfg: Config, document_id: str, *, runner: Runner | None = None) -> AiReview:
     """ერთი დოკუმენტის AI ანალიზი. შეცდომაზე გამონაკლისი არ გამოდის — AiReview(verdict="error", error=…)."""
+    from .validation import document_pages   # ვალიდაცია მძიმე მოდულია — მხოლოდ საჭიროებისას
     s = settings(cfg)
     model = str(s.get("model") or DEFAULT_MODEL)
     row = repo.get_document(document_id)
@@ -216,12 +218,12 @@ def review_document(repo, cfg: Config, document_id: str, *, runner: Runner | Non
         return AiReview("error", error="document_not_found", model=model, reviewed_at=now_iso())
     meta = json.loads(row["metadata"] or "{}")
     t = cfg.doc_type(row["type_id"] or "")
+    part = meta.get("part") or {}
     fields = {k: (v or {}).get("value") for k, v in (meta.get("fields") or {}).items() if isinstance(v, dict)}
-    doc = {"type_ka": t.name_ka if t else row["type_id"], "page_count": int(row["page_end"]) - int(row["page_start"]) + 1,
+    pages = document_pages(repo, row, meta)
+    doc = {"type_ka": part.get("title") or (t.name_ka if t else row["type_id"]), "page_count": len(pages),
            "fields": fields, "signature_status": meta.get("signature_status"),
            "reasons": json.loads(row["review_reasons"] or "[]")}
-    texts = repo.load_page_texts(row["job_id"])
-    pages = [texts.get(i) or {} for i in range(int(row["page_start"]), int(row["page_end"]) + 1)]
     prompt = build_prompt(doc, json.loads(m["validation"] or "{}"), pages, max_chars=int(s.get("max_chars") or 60000),
                           max_noise=int(s.get("max_noise") or 200))
     try:

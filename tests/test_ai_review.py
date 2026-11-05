@@ -38,6 +38,9 @@ def test_build_prompt_contains_data_and_truncates():
               "დასაქმებული — აკლია", "ხელნაწერის ეჭვი", "მეორე გვერდი", "იგნორირება", '"verdict"'):
         assert s in p, s
     assert '"raw"' not in p and "შემოკლებულია" not in p
+    empty = {"page": 3, "kind": "signature", "original": "", "scanned": "", "significant": False, "reason": "ხელმოწერის ადგილი ამ გვერდზე არ არის"}
+    p2 = ar.build_prompt(doc, {**val, "diffs": [*val["diffs"], empty]}, pages)
+    assert "- გვ. 3: ხელმოწერის ადგილი ამ გვერდზე არ არის" in p2 and "«» → «»" not in p2   # ცარიელ ჩანაწერს AI ეჭვით უყურებდა
     short = ar.build_prompt(doc, val, pages, max_chars=250)
     assert "ტექსტი შემოკლებულია" in short and "მეორე გვერდი" not in short
 

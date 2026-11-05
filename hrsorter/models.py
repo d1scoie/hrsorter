@@ -73,6 +73,7 @@ class DocumentStatus(str, Enum):
     AUTO_SAVED = "auto_saved"      # Sorted/-ში საბოლოოდ შენახული
     PROPOSED = "proposed"          # საცდელი რეჟიმი: Proposed/-ში შემოთავაზებული
     NEEDS_REVIEW = "needs_review"  # NeedsReview/-ში, მიზეზის კოდით
+    SPLIT = "split"                # სკანში რამდენიმე MHR-ის ფაილია — მუშავდება ნაწილებად (documents.part_of)
     SUPERSEDED = "superseded"      # ხელახალი დამუშავებით ჩანაცვლებული
 
 
@@ -133,6 +134,11 @@ class PageText:
     signature_parties: dict[str, bool] = field(default_factory=dict)
     handwriting_suspected: bool = False
     warnings: list[str] = field(default_factory=list)
+    # ვებ-გვერდზე მოსანიშნად, გვერდის ზომის მეათასედებში: OCR სიტყვები [ტექსტი, x0, y0, x1, y1], არატექსტური ნიშნები [x0, y0, x1, y1],
+    # მხარე → სად იპოვა ხელმოწერა ან სად უნდა ყოფილიყო
+    words: list[list[Any]] = field(default_factory=list)
+    marks: list[list[int]] = field(default_factory=list)
+    signature_boxes: dict[str, list[int]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

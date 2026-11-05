@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS documents (
     superseded_by TEXT,
     metadata TEXT,                -- სრული sidecar JSON
     purged_at TEXT,               -- შედეგის PDF წაიშალა MHR-ში ატვირთვის შემდეგ (cleanup.uploaded_days)
+    part_of TEXT,                 -- სკანის ნაწილი: მთლიანი სკანის document_id (ერთი MHR-ის ფაილის გვერდები)
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -207,7 +208,8 @@ class Repository:
             self.conn.execute("ALTER TABLE jobs ADD COLUMN not_before REAL")
         for table, col, typ in (("inbox_files", "moved_kind", "TEXT"), ("inbox_files", "moved_to", "TEXT"), ("inbox_files", "moved_at", "REAL"),
                                 ("inbox_files", "deleted_at", "REAL"), ("documents", "purged_at", "TEXT"),
-                                ("sources", "purged_at", "TEXT"), ("mhr_items", "ai_review", "TEXT")):
+                                ("sources", "purged_at", "TEXT"), ("mhr_items", "ai_review", "TEXT"),
+                                ("documents", "part_of", "TEXT")):
             if col not in {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
@@ -334,9 +336,9 @@ class Repository:
             c.execute("UPDATE jobs SET status='queued', lease_owner=NULL, lease_until=NULL, not_before=?, updated_at=?"
                       " WHERE id=?", (time.time() + delay_seconds if delay_seconds else None, ts, job_id))
 
-    def recover_stale_jobs(self, max_attempts: int) -> list[str]:
+    def recover_stale_jobs(self, max_attempts: int, orphaned: bool = False) -> list[str]:
         """ავარიის/გადატვირთვის შემდეგ: ვადაგასული lease-ის მქონე running სამუშაოები ბრუნდება რიგში."""
-        now = time.time()
+        now = float("inf") if orphaned else time.time()   # orphaned: ფონური პროცესი ახლა ჩაირთო და ერთადერთია — ყველა running სამუშაო უპატრონოა
         recovered = []
         for row in self.q("SELECT id, attempt, report_path FROM jobs WHERE status='running'"
                           " AND (lease_until IS NULL OR lease_until < ?)", (now,)):

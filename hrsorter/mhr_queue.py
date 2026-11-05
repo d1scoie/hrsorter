@@ -22,7 +22,7 @@ from typing import Any, Callable
 from . import PIPELINE_VERSION
 from .db import now_iso
 from .mhr_client import MhrClient, MhrUploadUncertain, build_mhr_client
-from .mhr_models import MhrEmployee, MhrError, MhrStatus as S, MhrUnavailable, ValidationResult
+from .mhr_models import MhrEmployee, MhrError, MhrStatus as S, MhrUnavailable, ValidationResult, clean_file_title
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +81,12 @@ def revalidate(repo, document_id: str) -> bool:
     return ok
 
 
+def revalidate_refused(repo) -> int:
+    """ახალი ტოკენი შეინახეს: MHR-მა ვისზეც უარი თქვა (შედარება არ მომხდარა), თავიდან მოწმდება. რამდენი ფაილი."""
+    rows = repo.q("SELECT document_id FROM mhr_items WHERE status=? AND error='MhrError'", (S.FAILED.value,))
+    return sum(revalidate(repo, r["document_id"]) for r in rows)
+
+
 def rerun_ai_review(repo, document_id: str) -> bool:
     """ready|failed: AI ანალიზის გასუფთავება — worker შემდეგ გავლაზე თავიდან გააკეთებს."""
     m = repo.mhr_get(document_id)
@@ -101,7 +107,7 @@ def retry_upload(repo, document_id: str) -> bool:
 
 
 # ხელით ატვირთვა ამ სტატუსებიდან არ იწყება — ატვირთვა უკვე მიდის ან დასრულდა
-MANUAL_BLOCKED = (S.APPROVED.value, S.UPLOADING.value, S.UPLOADED.value, S.NEEDS_CHECK.value)
+MANUAL_BLOCKED = (S.APPROVED.value, S.UPLOADING.value, S.UPLOADED.value, S.NEEDS_CHECK.value, S.SPLIT.value)
 _MANUAL_FROM = tuple(s.value for s in S if s.value not in MANUAL_BLOCKED)
 
 
@@ -161,7 +167,7 @@ def sweep(repo, cfg, client: MhrClient | None = None, validate_fn: ValidateFn | 
     ready|failed AI ანალიზის გარეშე → AI ანალიზი; approved → ატვირთვა. აბრუნებს მთვლელებს.
     `mhr.enabled=false` → არაფერს აკეთებს."""
     counts = {k: 0 for k in ("requeued", "ready", "approved", "failed", "skipped", "unavailable", "uploaded",
-                             "upload_retry", "upload_failed", "needs_check", "rejected", "recovered", "ai_reviewed")}
+                             "upload_retry", "upload_failed", "needs_check", "rejected", "recovered", "ai_reviewed", "split")}
     m = cfg.section("mhr")
     if not m.get("enabled"):
         return counts
@@ -271,7 +277,7 @@ def _validate_one(repo, cfg, m: dict[str, Any], client: MhrClient, validate_fn: 
             _event(repo, doc_id, "rejected (document superseded)")
         return
     type_id = doc["type_id"] or "unknown"
-    if not _uploadable(m, type_id):
+    if m.get("upload_type_ids") and not _uploadable(m, type_id):   # უცნობი ტიპი MHR-ის ფაილებს შეედრება — დამთხვევისას ტიპი იქიდან დგება
         res = ValidationResult(status="skipped", summary=["დოკუმენტის ეს ტიპი MHR-ზე არ იტვირთება"],
                                validated_at=now_iso())
         if repo.mhr_transition(doc_id, pending, S.SKIPPED.value, validation=res.to_dict()):
@@ -295,6 +301,8 @@ def _validate_one(repo, cfg, m: dict[str, Any], client: MhrClient, validate_fn: 
     if res.status == "passed":
         to = S.APPROVED if not m.get("require_approval", True) else S.READY
         fields.update(attempts=0, next_try=None)
+    elif res.status == "split":   # ნაწილები უკვე რიგშია — თითოეული შემდეგ გავლაზე ცალკე მოწმდება
+        to = S.SPLIT
     elif res.status in ("failed", "skipped"):
         to = S(res.status)
     else:   # unavailable (ან უცნობი სტატუსი) — მოგვიანებით ხელახლა
@@ -305,24 +313,32 @@ def _validate_one(repo, cfg, m: dict[str, Any], client: MhrClient, validate_fn: 
         _event(repo, doc_id, to.value, type_id, level="warning" if to == S.UNAVAILABLE else "info")
 
 
+def _signed_original(row) -> dict[str, Any] | None:
+    """ვალიდაციის ორიგინალი, თუ ის MHR-ის დაგენერირებული ფაილია და იმავე თანამშრომლისაა — სკანი მისი ხელმოწერილი ასლია."""
+    v = json.loads(row["validation"] or "{}") if row["validation"] else {}
+    orig = v.get("original") or {}
+    oraw = orig.get("raw") or {}
+    if orig.get("doc_id") and oraw.get("kind") == "generated" and \
+            str(oraw.get("employee_id") or row["employee_id"]) == str(row["employee_id"]):
+        return orig
+    return None
+
+
 def _upload_meta(repo, cfg, row, doc, type_id: str, sha: str) -> dict[str, Any]:
     """MHR-ის upload ველები (კონტრაქტის სახელებით): external_id = ჩვენი document_id, sha256 — გასაგზავნი ბაიტების,
     signed_copy_of — ვალიდაციის ორიგინალი (kind generated, იგივე თანამშრომელი)."""
     t = cfg.doc_type(type_id)
     v = json.loads(row["validation"] or "{}") if row["validation"] else {}
-    orig = v.get("original") or {}
-    oraw = orig.get("raw") or {}
-    signed_copy_of = None
-    if orig.get("doc_id") and oraw.get("kind") == "generated" and \
-            str(oraw.get("employee_id") or row["employee_id"]) == str(row["employee_id"]):
-        signed_copy_of = str(orig["doc_id"])
+    orig = _signed_original(row)
+    signed_copy_of = str(orig["doc_id"]) if orig else None
+    name = clean_file_title(orig.get("filename")) if orig else ""   # ფაილის სახელი უფრო ზუსტია: „… თანამდებობრივი ინსტრუქცია"
     src = repo.get_source(doc["source_id"])
     date = doc["document_date"] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", doc["document_date"] or "") else None
     number = (doc["doc_number"] or "").strip()
     return {
         "external_id": doc["id"],
         "sha256": sha,
-        "title": f"{t.name_ka if t else type_id} — ხელმოწერილი სკანი"[:255],
+        "title": f"{name or (t.name_ka if t else type_id)} — ხელმოწერილი სკანი"[:255],
         "document_date": date,
         "document_number": number if 0 < len(number) <= 100 else None,
         "signed_copy_of": signed_copy_of,
@@ -363,7 +379,8 @@ def _upload_one(repo, cfg, m: dict[str, Any], client: MhrClient, row, retry_at: 
     if doc["output_sha256"] and doc["output_sha256"] != sha:
         return fail("output file changed")
     meta = _upload_meta(repo, cfg, row, doc, type_id, sha)
-    category = (m.get("categories") or {}).get(type_id, type_id)
+    orig = _signed_original(row)   # ხელმოწერილი ასლი ორიგინალის კატეგორიაში ჯდება
+    category = (orig or {}).get("category") or (m.get("categories") or {}).get(type_id, type_id)
     try:
         remote_id = client.upload(row["employee_id"], pdf, filename=Path(doc["output_path"]).name,
                                   category=category, meta=meta)

@@ -11,6 +11,14 @@ from enum import Enum
 from typing import Any
 
 
+def clean_file_title(filename: str | None) -> str:
+    """MHR-ის ფაილის სახელი → სათაური: „ლიფტის წესები.docx.docx" → „ლიფტის წესები"."""
+    name = (filename or "").strip()
+    while name.lower().endswith((".docx", ".doc", ".pdf")):
+        name = name.rsplit(".", 1)[0].strip()
+    return name
+
+
 class MhrStatus(str, Enum):
     PENDING = "pending"              # ვალიდაციას ელოდება
     UNAVAILABLE = "unavailable"      # MHR მიუწვდომელი იყო — worker მოგვიანებით ცდის
@@ -23,6 +31,7 @@ class MhrStatus(str, Enum):
     UPLOAD_FAILED = "upload_failed"  # ატვირთვა ვერ მოხერხდა (error)
     NEEDS_CHECK = "needs_check"      # ავარია ატვირთვისას — შეიძლება ატვირთულია; ავტომატურად აღარ ვცდით
     REJECTED = "rejected"            # ოპერატორმა უარყო
+    SPLIT = "split"                  # სკანში რამდენიმე ფაილია — თითოეული ცალკე ჩანაწერია (documents.part_of)
 
 
 class MhrUnavailable(Exception):
@@ -77,6 +86,11 @@ class TextDiff:
     scanned: str                # დასკანერებულის ფრაგმენტი
     significant: bool           # True — შინაარსობრივი ცვლილება (ციფრები, ახალი/ამოღებული ტექსტი, ხელნაწერი); False — OCR-ის ხმაური
     reason: str = ""
+    suspect: bool = False       # ხმაურია, მაგრამ პატარა ნამდვილი ცვლილებაც შეიძლება იყოს — გვერდი Claude-მა უნდა გადაამოწმოს
+    orig_parts: list[str] = field(default_factory=list)   # [სიტყვები წინ, შეცვლილი სიტყვები, სიტყვები შემდეგ] — ორიგინალში
+    scan_parts: list[str] = field(default_factory=list)   # იგივე დასკანერებულში
+    clause: str = ""            # ორიგინალის უახლოესი პუნქტის ნომერი
+    boxes: list[list[int]] = field(default_factory=list)  # სად არის გვერდზე: [x0, y0, x1, y1] გვერდის ზომის მეათასედებში
 
 
 @dataclass
@@ -87,6 +101,7 @@ class ValidationResult:
     diffs: list[TextDiff] = field(default_factory=list)
     original: MhrDocRef | None = None
     summary: list[str] = field(default_factory=list)   # ოპერატორისთვის, ქართულად
+    parts: list[dict[str, Any]] = field(default_factory=list)   # status="split": {document_id, title, pages, matched}
     validated_at: str | None = None
     error: str | None = None
 

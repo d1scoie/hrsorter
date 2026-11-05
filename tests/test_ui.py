@@ -47,6 +47,19 @@ def test_foreign_origin_and_host_rejected(client):
     assert c.get("/api/status").json()["paused"] is False
 
 
+def test_paused_home_does_not_say_the_file_is_being_processed(client):
+    c, cfg_path = client
+    cfg = load_config(cfg_path)
+    repo = Repository(cfg.paths.db)
+    sid = repo.insert_source(sha256="a" * 64, size=1, page_count=1, archive_path="x.pdf", first_path="in/x.pdf", profile_id="batch")
+    repo.create_job(source_id=sid, profile_id="batch", mode="batch_pdf", config_version=cfg.version, config_snapshot=cfg.snapshot())
+    assert "ჩარევა არ სჭირდება" in c.get("/").text
+    c.post("/control/pause", headers={"origin": LOCAL})
+    home = c.get("/").text
+    assert "დამუშავება შეჩერებულია" in home and "ჩარევა არ სჭირდება" not in home
+    repo.close()
+
+
 def test_settings_save_creates_new_version(client):
     c, cfg_path = client
     before = load_config(cfg_path).version
@@ -418,6 +431,202 @@ def test_manual_upload_button_on_document_and_mhr_pages(client, tmp_path):
     assert c.post("/doc/doc_nope/manual-upload", data={}, headers={"origin": LOCAL}).status_code == 404
 
 
+def test_pages_without_original_do_not_claim_the_text_matches(client, tmp_path):
+    """ორიგინალი არ არის: „ტექსტი: ემთხვევა“ და „წესრიგშია“ ტყუილია, შედარება საერთოდ არ მომხდარა."""
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    emp = {"employee_id": "E1", "first_name": "ნინო", "last_name": "ბერიძე"}
+    no_original = {"status": "failed", "employee": emp, "diffs": [], "summary": ["ორიგინალი ვერ მოიძებნა"],
+                   "checks": [{"field": "original_contract", "label_ka": "ორიგინალი MHR-ში", "status": "missing_in_mhr", "blocking": True, "note": "ორიგინალი ვერ მოიძებნა"}]}
+    compared = {"status": "passed", "employee": emp, "diffs": [], "summary": ["ყველა შემოწმება გავიდა"], "checks": [],
+                "original": {"doc_id": "o1", "filename": "ხელშეკრულება.docx"}}
+
+    sid = repo.insert_source(sha256="e" * 64, size=1, page_count=1, archive_path="x.pdf", first_path="in/x.pdf", profile_id="batch")
+
+    def pages(doc, status, v):
+        _pdf_doc(repo, tmp_path, doc, sid)
+        repo.save_page_text("j", 0, {"text": "გვერდის ტექსტი", "page_index": 0, "text_source": "ocr:tesseract"})
+        repo.mhr_enqueue(doc, "01001000001")
+        repo.mhr_transition(doc, ("pending",), status, validation=v, employee_id="E1")
+        return c.get(f"/mhr/{doc}").text, c.get(f"/mhr/{doc}/page/1").text
+
+    whole, one = pages("doc_" + "7" * 32, "failed", no_original)
+    assert "ტექსტი: არ შედარებულა" in whole and "ტექსტი: ემთხვევა" not in whole
+    assert "ამ გვერდზე პრობლემა არ არის" not in one and "ტექსტი არაფერს შედარებია" in one
+    whole, one = pages("doc_" + "8" * 32, "ready", compared)
+    assert "ტექსტი: ემთხვევა" in whole and "ტექსტი: არ შედარებულა" not in whole
+    assert "ამ გვერდზე პრობლემა არ არის" in one
+    repo.close()
+
+
+def test_field_problem_shows_where_it_is_on_paper(client, tmp_path):
+    """ხელფასი განსხვავდება: ბარათმა უნდა თქვას, რომელ გვერდზეა და მონიშნოს; ის გვერდი „წესრიგშია“ აღარ არის.
+    ამოღებისას გვერდი სკანის ნომრითაა: სკანის მე-15 გვერდი ამ ფაილის პირველია."""
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    sid = repo.insert_source(sha256="f" * 64, size=1, page_count=2, archive_path="x.pdf", first_path="in/x.pdf", profile_id="batch")
+    doc = "doc_" + "9" * 32
+    _pdf_doc(repo, tmp_path, doc, sid, page_start=14, page_end=15,
+             metadata={"fields": {"salary": {"value": "1300", "raw": "1300 ლარს", "page": 15}, "position": {"value": "მენეჯერი", "page": 99}}})
+    words = [["ხელფასი", 100, 200, 180, 220, 0.9], ["1300", 190, 200, 240, 220, 0.9], ["ლარს", 250, 200, 300, 220, 0.9]]
+    repo.save_page_text("j", 14, {"text": "ხელფასი 1300 ლარს", "page_index": 14, "text_source": "ocr:tesseract", "words": words})
+    repo.save_page_text("j", 15, {"text": "მეორე გვერდი", "page_index": 15, "text_source": "ocr:tesseract"})
+    check = {"field": "salary", "label_ka": "ხელფასი", "document_value": "1300", "mhr_value": "1500.00", "status": "mismatch", "blocking": True,
+             "note": "MHR-ის დასაქმების პერიოდი: 2026-11-01 – 2026-12-01"}
+    unknown = {"field": "position", "label_ka": "თანამდებობა", "document_value": "მენეჯერი", "mhr_value": "მოლარე", "status": "mismatch", "blocking": True, "note": ""}
+    v = {"status": "failed", "employee": {"employee_id": "E1", "first_name": "ნინო", "last_name": "ბერიძე"}, "diffs": [], "checks": [check, unknown],
+         "summary": ["ხელფასი განსხვავდება"], "original": {"doc_id": "o1", "filename": "ხელშეკრულება.docx"}}
+    repo.mhr_enqueue(doc, "01001000001")
+    repo.mhr_transition(doc, ("pending",), "failed", validation=v, employee_id="E1")
+    whole = c.get(f"/mhr/{doc}").text
+    assert "გვერდი 1 (სკანის გვერდი 15)" in whole and f"/page/{doc}/14.png?dpi=170&crop=" in whole and f'href="/mhr/{doc}/page/1"' in whole
+    assert "ქაღალდზე და MHR-ის ჩანაწერში სხვადასხვა მნიშვნელობა წერია" in whole and "MHR-ის დასაქმების პერიოდი" in whole
+    assert "დოკუმენტის მონაცემები და MHR-ის ბარათი" in whole          # თანამდებობის გვერდი ფაილში არ არის: ადგილს არ იგონებს
+    assert "ხელფასი განსხვავდება" in whole and whole.count("პრობლემა</span>") >= 1
+    one = c.get(f"/mhr/{doc}/page/1").text
+    assert "ამ გვერდზე პრობლემა არ არის" not in one and "1500.00" in one and 'class="hl' in one
+    two = c.get(f"/mhr/{doc}/page/2").text
+    assert "ამ გვერდზე პრობლემა არ არის" in two and "1500.00" not in two
+    repo.close()
+
+
+def test_unreachable_mhr_page_claims_nothing_was_checked(client, tmp_path):
+    """MHR გათიშულია: „თანამშრომელი ვერ მოიძებნა“ და „ხელმოწერები ადგილზეა“ ტყუილია, შემოწმება ჯერ არ მომხდარა;
+    ღილაკი, რომელიც შედარებას აგვერდს უვლის, „ჩარევა არ სჭირდება“ ტექსტის გვერდით არ უნდა იყოს."""
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    sid = repo.insert_source(sha256="d" * 64, size=1, page_count=1, archive_path="x.pdf", first_path="in/x.pdf", profile_id="batch")
+    doc = "doc_" + "e" * 32
+    _pdf_doc(repo, tmp_path, doc, sid)
+    repo.save_page_text("j", 0, {"text": "ტექსტი", "page_index": 0, "text_source": "ocr:tesseract", "signature_parties": {"employer": True, "employee": False}})
+    repo.mhr_enqueue(doc, "01001000001")
+    v = {"status": "unavailable", "employee": None, "checks": [], "diffs": [], "original": None, "error": "MhrUnavailable",
+         "summary": ["MHR მიუწვდომელია — მოგვიანებით ხელახლა შემოწმდება"]}
+    repo.mhr_transition(doc, ("pending",), "unavailable", validation=v, error="MhrUnavailable")
+    page = c.get(f"/mhr/{doc}").text
+    assert "MHR ახლა მიუწვდომელია" in page and "ახლავე ცდა" in page
+    for s in ("MhrUnavailable", "MHR-ში ვერ მოიძებნა", "ხელმოწერები ადგილზეა", "ხელით ატვირთვა MHR-ზე"):
+        assert s not in page, s
+    assert "ხელით ატვირთვა MHR-ზე" in c.get(f"/doc/{doc}").text        # დოკუმენტის გვერდიდან გზა ღიაა
+    repo.close()
+
+
+def test_new_token_rechecks_files_that_mhr_refused(client, monkeypatch):
+    """ტოკენი ვადაგასულია, 10 ფაილი გაჩერდა: ახალი ტოკენის შემდეგ თითოეულზე ხელით დაჭერა ზედმეტია. სხვა მიზეზით გაჩერებული ფაილი ადგილზე რჩება."""
+    from hrsorter import secrets
+    saved = {}
+    monkeypatch.setattr(secrets, "set_secret", lambda name, value: saved.update({name: value}))
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True, "auth": {"secret_name": "hrsorter/mhr"}}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    refused, stopped = "doc_" + "1" * 32, "doc_" + "2" * 32
+    repo.mhr_enqueue(refused, "01001000001")
+    repo.mhr_transition(refused, ("pending",), "failed", validation={"status": "failed", "error": "MhrError"}, error="MhrError")
+    repo.mhr_enqueue(stopped, "01001000002")
+    repo.mhr_transition(stopped, ("pending",), "failed", validation={"status": "failed"})
+    r = c.post("/settings/secret", data={"name": "hrsorter/employee_api", "value": "x"}, headers={"origin": LOCAL}, follow_redirects=False)
+    assert repo.mhr_get(refused)["status"] == "failed" and r.status_code == 303      # სხვა სერვისის გასაღები MHR-ს არ ეხება
+    page = c.post("/settings/secret", data={"name": "hrsorter/mhr", "value": "x"}, headers={"origin": LOCAL}).text
+    assert saved["hrsorter/mhr"] == "x" and "1 ფაილი თავიდან შემოწმდება" in page
+    assert repo.mhr_get(refused)["status"] == "pending" and repo.mhr_get(refused)["error"] is None
+    assert repo.mhr_get(stopped)["status"] == "failed"
+    repo.close()
+
+
+def test_refused_token_page_claims_nothing_was_checked(client, tmp_path):
+    """MHR-მა ტოკენი არ მიიღო: შედარება არ მომხდარა, AI-საც არაფერი აქვს გასაანალიზებელი და „რიგშია“ არასდროს შესრულდება."""
+    import time
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True}
+    data["ocr"] = {"online": {"enabled": True, "provider": "claude_code"}}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    repo.set_control("worker_heartbeat", str(time.time()))
+    sid = repo.insert_source(sha256="c" * 64, size=1, page_count=1, archive_path="x.pdf", first_path="in/x.pdf", profile_id="batch")
+    doc = "doc_" + "f" * 32
+    _pdf_doc(repo, tmp_path, doc, sid)
+    repo.save_page_text("j", 0, {"text": "ტექსტი", "page_index": 0, "text_source": "ocr:tesseract", "signature_parties": {"employer": True, "employee": True}})
+    repo.mhr_enqueue(doc, "01001000001")
+    v = {"status": "failed", "employee": None, "checks": [], "diffs": [], "original": None, "error": "MhrError",
+         "summary": ["MHR-მა ტოკენი არ მიიღო: ტოკენი არასწორია ან ვადაგასულია. ჩაწერე ახალი ტოკენი პარამეტრებში"]}
+    repo.mhr_transition(doc, ("pending",), "failed", validation=v, error="MhrError")
+    page = c.get(f"/mhr/{doc}").text
+    assert "ტოკენი არ მიიღო" in page and "ხელახლა შედარება" in page
+    for s in ("MhrError", "MHR-ში ვერ მოიძებნა", "ხელმოწერები ადგილზეა", "(Opus) რიგშია", "ხელით ატვირთვა MHR-ზე"):
+        assert s not in page, s
+    repo.close()
+
+
+def test_card_says_honestly_what_the_readers_saw():
+    """„ეს წაკითხვის შეცდომა არ არის“ ტყუილი იყო: ნამდვილ გვერდზე Claude-მა შეცდა."""
+    from hrsorter.ui.app import _clean_reason, _why_diff
+    from hrsorter.validation import RECHECK_DISAGREE, RECHECK_STILL
+    both = f"სიტყვა შეცვლილია — {RECHECK_STILL}"
+    assert "სხვაობა დარჩა" in _why_diff({"kind": "changed", "reason": both, "significant": True}, {})
+    assert "წაკითხვის შეცდომა არ არის" not in _why_diff({"kind": "changed", "reason": both, "significant": True}, {})
+    one = f"სიტყვა შეცვლილია — {RECHECK_DISAGREE}"
+    text = _why_diff({"kind": "changed", "reason": one, "suspect": True}, {})
+    assert "ერთ-ერთი ცდება" in text and "არ აჩერებს" in text and "არ აიხსნება" not in text
+    assert "მაინც აჩერებს" in _why_diff({"kind": "changed", "reason": f"ციფრები განსხვავდება — {RECHECK_DISAGREE}", "significant": True}, {})
+    assert _clean_reason(one) == "სიტყვა შეცვლილია" and _clean_reason(both) == "სიტყვა შეცვლილია"
+
+
+def test_page_after_approval_stops_asking_to_upload(client):
+    """დადასტურებულ ფაილზე „მზადაა“, „რა ვქნა“ და „ხელახალი AI ანალიზი“ (ღილაკი, რომელიც აღარაფერს აკეთებს) ძველი ტექსტია."""
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True}
+    data["ocr"] = {"online": {"enabled": True, "provider": "claude_code"}}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    emp = {"employee_id": "E1", "first_name": "ნინო", "last_name": "ბერიძე"}
+    clean = {"status": "passed", "employee": emp, "diffs": [], "summary": ["ყველა შემოწმება გავიდა"],
+             "checks": [{"field": "already_uploaded", "label_ka": "ორჯერ ატვირთვა", "status": "match", "blocking": False,
+                         "note": "ბარათზე ამ ფაილის ატვირთული ასლი არ არის"}]}
+    stopped = {"status": "failed", "employee": emp, "checks": [], "summary": ["გვერდი 1: ხელმოწერა აკლია: სტაჟიორი"],
+               "diffs": [{"page": 1, "kind": "signature", "original": "", "scanned": "", "significant": True, "reason": "ხელმოწერა აკლია: სტაჟიორი"}]}
+    ai = {"verdict": "upload", "confidence": "high", "summary": "დოკუმენტი სწორია", "items": [], "risks": [], "model": "opus"}
+
+    def item(doc, status, v, review=ai):
+        repo.mhr_enqueue(doc, "01001000001")
+        repo.mhr_transition(doc, ("pending",), status, validation=v, employee_id="E1", remote_id="7" if status == "uploaded" else None)
+        repo.mhr_set_ai_review(doc, review)
+        return c.get(f"/mhr/{doc}").text
+
+    done = item("doc_" + "1" * 32, "uploaded", clean)
+    assert "ყველა შემოწმება გავიდა, ფაილი ატვირთულია." in done and "ატვირთვამდე შემოწმდა: ბარათზე ამ ფაილის ატვირთული ასლი არ არის" in done
+    for s in ("მზადაა ატვირთვისთვის", "დააჭირე ატვირთვას", "ხელახალი AI ანალიზი"):
+        assert s not in done, s
+
+    forced = item("doc_" + "2" * 32, "uploaded", stopped)
+    assert "ფაილი ატვირთულია შენი გადაწყვეტილებით." in forced and "ხელმოწერა აკლია: სტაჟიორი" in forced and "რა ნახა შემოწმებამ" in forced
+    for s in ("ფაილი გაჩერდა", "რა ვქნა", "ატვირთვა მაინც", "<h2>რატომ გაჩერდა"):
+        assert s not in forced, s
+
+    assert "ფაილი ატვირთვის რიგშია შენი გადაწყვეტილებით." in item("doc_" + "3" * 32, "approved", stopped)
+
+    broken = item("doc_" + "4" * 32, "uploaded", clean, {"verdict": "error", "error": "claude exit 1"})
+    assert "claude exit 1" in broken and "ხელახალი AI ანალიზი" not in broken and "სცადე თავიდან" not in broken
+
+    waiting = item("doc_" + "5" * 32, "failed", stopped)      # ვერ გაიარა: ყველაფერი ისევ ადგილზეა
+    for s in ("ფაილი გაჩერდა", "რა ვქნა", "ატვირთვა მაინც", "<h2>რატომ გაჩერდა", "ხელახალი AI ანალიზი", "დააჭირე ატვირთვას"):
+        assert s in waiting, s
+    assert "მზადაა ატვირთვისთვის" in item("doc_" + "6" * 32, "ready", clean)
+    repo.close()
+
+
 def test_mhr_pages_show_ai_review(client):
     c, cfg_path = client
     data = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -436,7 +645,7 @@ def test_mhr_pages_show_ai_review(client):
     import time
     repo.set_control("worker_heartbeat", str(time.time()))
     page = c.get(f"/mhr/{doc}").text
-    assert "AI ანალიზი (Opus) რიგშია" in page and "ქვემოთ მოცემული სხვაობები ვნახე" in page
+    assert "AI ანალიზი (Opus) რიგშია" in page and "ზემოთ მოცემული პრობლემები ქაღალდზე ვნახე" in page
 
     repo.mhr_set_ai_review(doc, {"verdict": "upload", "confidence": "high", "summary": "ხელფასი სწორად იკითხება, დოკუმენტი სწორია.",
                                  "items": [{"topic": "ხელფასი", "status": "ok", "explanation": "2200 სხვაგან ჩანს"}],
@@ -492,7 +701,7 @@ def test_missing_original_is_a_warning_with_working_manual_upload(client, tmp_pa
     assert "შედარება არ მომხდარა" in page and "ატვირთვა მაინც" in page       # ორივე გზა ღიაა
     assert "MHR-ში ხელშეკრულება ვერ მოიძებნა" in c.get(f"/doc/{doc}").text   # დოკუმენტის გვერდზე სწორი სათაური
     home = c.get("/").text
-    assert "1 ხელშეკრულებამ ვერ გაიარა MHR-ის შემოწმება" in home and "ნახე რატომ" in home and "ნახე სხვაობები" not in home
+    assert "1 ფაილმა ვერ გაიარა MHR-ის შემოწმება" in home and "ნახე რატომ" in home and "ნახე სხვაობები" not in home
     assert "ნახე სხვაობები" not in c.get("/mhr?tab=failed").text              # შესადარებელი არაფერია — ღილაკი „დეტალები“
 
     r = c.post(f"/doc/{doc}/manual-upload", data={"back": f"/mhr/{doc}"}, headers={"origin": LOCAL}, follow_redirects=False)

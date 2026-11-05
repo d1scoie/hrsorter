@@ -29,7 +29,7 @@ from .extractor import extract
 from .features import page_features
 from .models import (DocumentOutcome, ErrorCode, InputMode, PageRole, PageText, Segment, SegmentKind)
 from .ocr import build_ocr_chain
-from .output import publish, retire_previous
+from .output import MATCH_RESOLVED_REASONS, publish, retire_previous
 from .pageanalysis import analyze_page
 from .pdfio import PdfDocument, sha256_file
 from .resolve import resolve_company, resolve_year
@@ -65,7 +65,6 @@ def _process(repo: Repository, job: sqlite3.Row, cfg: Config) -> None:
     if not Path(archive_path).exists() or sha256_file(archive_path) != src["sha256"]:
         raise JobError(ErrorCode.ARCHIVE_HASH_MISMATCH.value, "archived source missing or changed")
     mode = InputMode(job["mode"])
-    chunk = max(1, int(cfg.section("processing")["chunk_pages"]))
 
     # 1) გვერდების ანალიზი (resume-ით)
     chain = build_ocr_chain(cfg)
@@ -86,8 +85,7 @@ def _process(repo: Repository, job: sqlite3.Row, cfg: Config) -> None:
                 repo.save_page_text(job_id, i, pt.to_dict())
             pages.append(pt)
             page_hashes.append(doc.page_content_hash(i))
-            if (i + 1) % chunk == 0 or i + 1 == n:
-                repo.update_job_progress(job_id, done=i + 1)
+            repo.update_job_progress(job_id, done=i + 1)
 
     # 2) საზღვრები
     repo.update_job_progress(job_id, stage="segmentation")
@@ -117,7 +115,7 @@ def _process(repo: Repository, job: sqlite3.Row, cfg: Config) -> None:
         outcome = publish(repo, outcome, cfg)
         outcomes.append(outcome)
         # MHR: სანდოდ დამუშავებული დოკუმენტი → ვალიდაციის რიგი (ვალიდაციასა და ატვირთვას worker-ის sweep აკეთებს)
-        if cfg.section("mhr")["enabled"] and outcome.decision.outcome in ("proposed", "auto_saved"):
+        if cfg.section("mhr")["enabled"] and _goes_to_mhr(outcome):
             pn = outcome.extraction.fields.get("personal_number")
             repo.mhr_enqueue(outcome.document_id, pn.value if pn else None)
         role = PageRole.DOCUMENT if s.kind == SegmentKind.DOCUMENT else PageRole.UNCERTAIN
@@ -132,6 +130,15 @@ def _process(repo: Repository, job: sqlite3.Row, cfg: Config) -> None:
     report = _write_report(cfg, job, src, n, seg, outcomes, assignments, time.time() - t0)
     repo.update_job_progress(job_id, stage="done")
     repo.conn.execute("UPDATE jobs SET report_path=? WHERE id=?", (str(report), job_id))
+
+
+def _goes_to_mhr(outcome: DocumentOutcome) -> bool:
+    """სანდოდ დამუშავებული დოკუმენტი, ან გადასამოწმებელი, რომელსაც მხოლოდ ტიპი/კომპანია აკლია და პირადი ნომერი იკითხება —
+    თანამშრომლის დაგენერირებულ ფაილს შეიძლება დაემთხვეს (ცალკე დასკანერებული ინსტრუქცია, წესები, დანართი)."""
+    if outcome.decision.outcome in ("proposed", "auto_saved"):
+        return True
+    pn = outcome.extraction.fields.get("personal_number")
+    return bool(pn and pn.value) and set(outcome.decision.review_reasons) <= MATCH_RESOLVED_REASONS
 
 
 def _build_outcome(repo, job, src, cfg: Config, s: Segment, pages: list[PageText], page_hashes: list[str],

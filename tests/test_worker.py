@@ -285,6 +285,18 @@ def test_stale_lease_recovered_periodically_not_only_at_start(cfg, repo):
     assert repo.get_job(jid2)["status"] == "queued"
 
 
+def test_restart_takes_back_job_of_crashed_worker_at_once(cfg, repo):
+    """ფონური პროცესი ერთადერთია (InstanceLock), ამიტომ ჩართვისას ყველა running სამუშაო დაობლებულია.
+    ნამდვილ გათიშვაზე სამუშაო 15 წუთი „4/14“-ზე იდგა და ლოდინი ტყუილი იყო."""
+    jid = add_job(repo, cfg)
+    repo.claim_next_job("crashed", lease_seconds=900)
+    assert repo.recover_stale_jobs(3) == []             # მუშაობისას: სხვისი ცოცხალი lease ხელუხლებელია
+    stop = threading.Event()
+    stop.set()
+    make_worker(cfg, Recorder()).run_forever(stop)
+    assert repo.get_job(jid)["status"] == "queued"
+
+
 def test_crash_after_pipeline_finished_marks_done(cfg, repo):
     jid = add_job(repo, cfg)
     repo.claim_next_job("crashed", lease_seconds=-1)

@@ -65,7 +65,6 @@ DEFAULTS: dict[str, Any] = {
         "concurrency": 1,
         "dpi": 300,
         "analysis_dpi": 100,
-        "chunk_pages": 20,
         "max_attempts": 5,
         "retry_backoff_seconds": 60,
         "lease_seconds": 900,
@@ -165,7 +164,7 @@ DEFAULTS: dict[str, Any] = {
         "require_approval": True,           # ოპერატორის დადასტურება ატვირთვამდე
         "recheck": {                        # წესებმა ტექსტური სხვაობა იპოვა Tesseract-ის გვერდზე → გვერდი ონლაინ OCR-ით
             "enabled": True,                # (Claude) ხელახლა იკითხება და შედარება მეორდება (validation._recheck_diffs);
-            "max_pages": 4,                 # მოქმედებს მხოლოდ ocr.online.enabled-ზე. ≤ ამდენი გვერდი ერთ დოკუმენტზე
+            "max_pages": 6,                 # მოქმედებს მხოლოდ ocr.online.enabled-ზე. ≤ ამდენი გვერდი ერთ დოკუმენტზე
         },
         "ai_review": {                      # ვალიდაციის შემდეგ Opus-ის „მეორე აზრი“ (ai_review.py); მოქმედებს მხოლოდ
             "enabled": True,                # ocr.online.enabled + provider=claude_code რეჟიმში. მხოლოდ სთავაზობს, არ ტვირთავს

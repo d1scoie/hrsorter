@@ -245,6 +245,19 @@ _PARTY_MIN_H_IN = 0.2          # ბეჭდური სიტყვის ს
 _TEXT_WORD_MAX_H_IN = 0.22     # OCR-ის სიტყვა ამ სიმაღლემდე ბეჭდური ტექსტია (ხელმოწერის „სიტყვები" უფრო მაღალია)
 _RULE_MIN_LEN_IN = 0.3         # ამაზე გრძელი თხელი ჰორიზონტალური ხაზი — ხელმოწერის ადგილის ხაზი, არა მელანი
 _SAME_LINE_IN = 0.15
+_BLOCK_ABOVE_IN = 1.0          # მარცხენა სვეტის დასაყრდენი მარჯვენაზე ამდენით მაღლა შეიძლება იყოს …
+_BLOCK_BELOW_IN = 3.0          # … და ამდენით დაბლა („პ/ნ" ზემოთაა, „დირექტორი" კი ქვემოთ)
+_BLOCK_COLUMN_GAP_IN = 0.4     # მარჯვენა სვეტის სიტყვის წინ ამაზე დიდი ცარიელი ადგილი → სვეტებია, არა ტექსტის სტრიქონი
+_BLOCK_BOTTOM_SHARE = 0.9      # გვერდის ძირის ბლანკი (კომპანიის რეკვიზიტები) ზონაში არ შედის
+_BLOCK_SPLIT_IN = 0.5          # მარჯვენა სვეტი იწყება დასაყრდენი სიტყვიდან ამდენით მარცხნივ
+_BLOCK_ZONE_IN = 1.8           # ვებ-გვერდზე მოსანიშნი ადგილის სიმაღლე, როცა ხელმოწერა აკლია
+_DIRECTOR_FORM = "დირექტორი"
+_BLOCK_LEFT_WORDS = {"შპს", "ს/ნ", "ს/კ"}                  # კომპანიის სვეტი, თუ წარწერა ვერ წაიკითხა (Tesseract მთელ სტრიქონს ხანდახან ტოვებს)
+_BLOCK_RIGHT_WORD = re.compile(r"(?:პ/ნ|3/6|3/ნ|პ/6|\d{11})")   # თანამშრომლის სვეტი
+
+
+def _matches_form(t: str, form: str) -> bool:
+    return (len(t) >= len(form) - 3 and form.startswith(t)) or (len(t) == len(form) and t[:-1] == form[:-1])
 
 
 def _label_party(text: str) -> str | None:
@@ -254,9 +267,8 @@ def _label_party(text: str) -> str | None:
     if not t or t.endswith("ს"):
         return None
     for party, forms in _PARTY_LABELS.items():
-        for f in forms:
-            if (len(t) >= len(f) - 3 and f.startswith(t)) or (len(t) == len(f) and t[:-1] == f[:-1]):
-                return party
+        if any(_matches_form(t, f) for f in forms):
+            return party
     return None
 
 
@@ -328,9 +340,10 @@ def drop_stamp_words(text: str, words: list[tuple[str, tuple[int, int, int, int]
     return "".join(parts)
 
 
-def party_blobs(arr: np.ndarray, words: list[tuple[str, tuple[int, int, int, int], float]], cell: int, dpi: int) -> list[Blob]:
-    """გვერდის ქვედა მესამედის მელანი ხელმოწერის მხარეებისთვის, ბეჭდური ნაწილის გარეშე: ინიშნება ყველა ნამდვილი ქართული
-    სიტყვა და ყველა ბეჭდური სიმაღლის სიტყვა (წაუკითხავი წარწერა, გვერდის ნომერი, მკრთალი ტექსტი — სანდოობის
+def party_blobs(arr: np.ndarray, words: list[tuple[str, tuple[int, int, int, int], float]], cell: int, dpi: int,
+                top: int | None = None) -> list[Blob]:
+    """გვერდის ქვედა მესამედის (ან `top`-იდან ქვემოთ) მელანი ხელმოწერის მხარეებისთვის, ბეჭდური ნაწილის გარეშე: ინიშნება ყველა
+    ნამდვილი ქართული სიტყვა და ყველა ბეჭდური სიმაღლის სიტყვა (წაუკითხავი წარწერა, გვერდის ნომერი, მკრთალი ტექსტი — სანდოობის
     მიუხედავად); ხელმოწერა/ბეჭედი Tesseract-ს უფრო მაღალ ნაგვის „სიტყვებად" უჩანს და რჩება. ხაზებიც იშლება."""
     max_h = _TEXT_WORD_MAX_H_IN * dpi
     page_h = arr.shape[0]
@@ -343,7 +356,7 @@ def party_blobs(arr: np.ndarray, words: list[tuple[str, tuple[int, int, int, int
         text_height = box[3] - box[1] <= max_h and (line_y is None or box[3] <= line_y)   # ტექსტი ხაზამდე/ხაზზე
         if real or number or text_height:
             printed.append(box)
-    y0 = int(page_h * 0.66)
+    y0 = int(page_h * 0.66) if top is None else max(0, top)
     part = arr[y0:] & ~_mask_from_px_boxes(arr.shape, printed, pad=2)[y0:]
     if not part.any():
         return []
@@ -353,10 +366,11 @@ def party_blobs(arr: np.ndarray, words: list[tuple[str, tuple[int, int, int, int
 
 
 _REAL_WORD = re.compile(r"[ა-ჰ]{3,}")
+MARKS_KEPT = 12                # ამდენი ყველაზე დიდი ნიშანი ინახება ვებ-გვერდზე მოსანიშნად
 
 
 def signature_parties(words: list[tuple[str, tuple[int, int, int, int], float]], blobs: list[Blob], page_w: int,
-                      page_h: int, dpi: int) -> dict[str, bool]:
+                      page_h: int, dpi: int, zones: dict[str, tuple[float, float, float, float]] | None = None) -> dict[str, bool]:
     """თითოეული მხარის ხელმოწერა ცალკე. გვერდის ქვედა მეოთხედში ყველაზე დაბალი წარწერა („დამსაქმებელი",
     „დასაქმებული"/„სტაჟიორი"); ორივე სხვადასხვა სტრიქონზე → ზედა ტექსტის ნახსენებია, რჩება ქვედა. ერთი წარწერა ვერ
     წაიკითხა (ბეჭედი ფარავს, მკრთალია) → მისი ადგილი მეორის სარკეა. ზონა: წარწერის თავიდან 1in ქვემოთ, მარცხნივ 0.5in,
@@ -386,8 +400,79 @@ def signature_parties(words: list[tuple[str, tuple[int, int, int, int], float]],
             elif other != party and orr < l:
                 x0 = max(x0, orr + 0.1 * dpi)
         y0, y1 = t - 0.1 * dpi, b + 1.0 * dpi
-        out[party] = any(x0 <= (m.x0 + m.x1) / 2 <= x1 and m.y1 > y0 and m.y0 < y1 for m in marks)
+        mine = [m for m in marks if x0 <= (m.x0 + m.x1) / 2 <= x1 and m.y1 > y0 and m.y0 < y1]
+        out[party] = bool(mine)
+        if zones is not None:
+            zones[party] = _biggest_box(mine) or (x0, y0, x1, y1)
     return out
+
+
+def _biggest_box(blobs: list[Blob]) -> tuple[float, float, float, float] | None:
+    b = max(blobs, key=lambda m: m.cells, default=None)
+    return (b.x0, b.y0, b.x1, b.y1) if b else None
+
+
+def signature_block(words: list[tuple[str, tuple[int, int, int, int], float]], page_w: int,
+                    dpi: int) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None:
+    """ხელმოწერის ორსვეტიანი ბლოკი გვერდის შუაში (ინსტრუქცია, წესები, დანართი). მარცხენა სვეტის დასაყრდენი: „დამსაქმებელი",
+    „დირექტორი", „შპს", „ს/ნ"; მარჯვენასი: „სტაჟიორი"/„დასაქმებული", „პ/ნ", პირადი ნომერი — და მის წინ ცარიელი ადგილი (ტექსტში
+    ნახსენები სიტყვა სტრიქონის შუაშია). რამდენიმე წყვილიდან — ქვედა."""
+    def strip(t: str) -> str:
+        return t.strip().strip(_LABEL_STRIP)
+    lefts = [b for t, b, _c in words if (b[0] + b[2]) / 2 < 0.45 * page_w and (
+        _label_party(t) == "employer" or _matches_form(strip(t), _DIRECTOR_FORM) or strip(t) in _BLOCK_LEFT_WORDS)]
+    rights = [b for t, b, _c in words if (b[0] + b[2]) / 2 > 0.45 * page_w and (
+        _label_party(t) == "employee" or _BLOCK_RIGHT_WORD.fullmatch(strip(t)))]
+    best = None
+    for right in rights:
+        before = [b[2] for _t, b, _c in words if b[2] <= right[0] and b[1] < right[3] and b[3] > right[1]]
+        if before and right[0] - max(before) < _BLOCK_COLUMN_GAP_IN * dpi:
+            continue
+        for left in lefts:
+            if not -_BLOCK_ABOVE_IN * dpi <= left[1] - right[1] <= _BLOCK_BELOW_IN * dpi:
+                continue
+            if best is None or max(left[1], right[1]) > max(best[0][1], best[1][1]):
+                best = (left, right)
+    return best
+
+
+def block_parties(block: tuple[tuple[int, int, int, int], tuple[int, int, int, int]], blobs: list[Blob], page_h: int,
+                  dpi: int, zones: dict[str, tuple[float, float, float, float]] | None = None,
+                  words: list[tuple[str, tuple[int, int, int, int], float]] | None = None, page_w: int = 0) -> dict[str, bool]:
+    """ბლოკის თითო სვეტში ცალკე: დასაყრდენი სიტყვიდან ქვემოთ ხელმოწერის ზომის ლაქა (ბეჭედი დამსაქმებლის მხარეს ითვლება)."""
+    left, right = block
+    y0, y1 = min(left[1], right[1]) - 0.1 * dpi, _BLOCK_BOTTOM_SHARE * page_h
+    split = right[0] - _BLOCK_SPLIT_IN * dpi
+    marks = [m for m in blobs if m.h >= _PARTY_MIN_H_IN * dpi and m.cells >= _PARTY_MIN_CELLS and y0 <= (m.y0 + m.y1) / 2 <= y1]
+    left_marks = [m for m in marks if (m.x0 + m.x1) / 2 < split]
+    right_marks = [m for m in marks if (m.x0 + m.x1) / 2 >= split]
+    if zones is not None:   # აკლია → სვეტის ადგილი ბოლო ბეჭდური სტრიქონის ქვემოთ, სადაც ხელმოწერა უნდა ყოფილიყო
+        for party, mine, (x0, x1) in (("employer", left_marks, (0.0, split)), ("employee", right_marks, (split, float(page_w or split * 2)))):
+            printed = [b[3] for _t, b, _c in words or [] if x0 <= (b[0] + b[2]) / 2 < x1 and y0 <= b[1] and b[3] <= y1]
+            top = max(printed, default=y0)
+            other = _biggest_box(left_marks if party == "employee" else right_marks)
+            if other:   # ხელმოწერები ერთ დონეზეა: მეორე მხარის ხელმოწერის გასწვრივ
+                top = max(top, other[1])
+            zones[party] = _biggest_box(mine) or (x0, top, x1, min(top + _BLOCK_ZONE_IN * dpi, y1))
+    return {"employer": bool(left_marks), "employee": bool(right_marks)}
+
+
+def page_parties(arr: np.ndarray, words: list[tuple[str, tuple[int, int, int, int], float]], cell: int, dpi: int,
+                 zones: dict[str, tuple[float, float, float, float]] | None = None) -> dict[str, bool]:
+    """გვერდის ქვედა სტრიქონის წარწერები (ხელშეკრულება), ან — თუ იქ არ არის — ორსვეტიანი ბლოკი გვერდის შუაში."""
+    page_h, page_w = arr.shape[:2]
+    parties = signature_parties(words, party_blobs(arr, words, cell, dpi), page_w, page_h, dpi, zones)
+    if parties:
+        return parties
+    block = signature_block(words, page_w, dpi)
+    if block is None:
+        return {}
+    return block_parties(block, party_blobs(arr, words, cell, dpi, top=min(block[0][1], block[1][1])), page_h, dpi, zones, words, page_w)
+
+
+def _permille(box, page_w: int, page_h: int) -> list[int]:
+    x0, y0, x1, y1 = box
+    return [round(1000 * x0 / page_w), round(1000 * y0 / page_h), round(1000 * x1 / page_w), round(1000 * y1 / page_h)]
 
 
 def _text_block_like(b: Blob, dpi: int) -> bool:
@@ -490,9 +575,15 @@ def analyze_page(doc: PdfDocument, index: int, cfg: Config, chain: OcrChain | No
     small.close()
     # ხელმოწერის მხარეებისთვის ფერადი მელანიც (ლურჯი კალამი): მკრთალი ლურჯი ნაცრისფრად ზღურბლს ვერ გადის, ქრომა კი
     # ქაღალდსა და შავ ტექსტზე 0-ია — რეალურ სკანზე სტაჟიორის ხელმოწერა 45 პიქსელიდან ~300-მდე გაიზარდა
-    rgb = np.asarray(doc.render(index, dpi=analysis_dpi, grayscale=False), dtype=np.int16)
+    color = doc.render(index, dpi=analysis_dpi, grayscale=False)
+    if rotation:   # იგივე მიმართულება, რაც `small`-ს: გვერდით შებრუნებულ ფურცელზე სხვაგვარად ზომები არ ემთხვევა
+        color = apply_rotation(color, rotation)
+    if angle:
+        color = color.rotate(angle, resample=Image.BICUBIC, expand=False, fillcolor=(255, 255, 255))
+    rgb = np.asarray(color, dtype=np.int16)
     arr_sig = arr | ((rgb.max(axis=2) - rgb.min(axis=2)) > COLOR_INK_CHROMA)
     del rgb
+    color.close()
     alnum = _alnum_count(text)
     cell = max(4, round(analysis_dpi * 0.08))
     if mask_available:
@@ -538,11 +629,16 @@ def analyze_page(doc: PdfDocument, index: int, cfg: Config, chain: OcrChain | No
 
     if word_boxes and text:
         text = drop_stamp_words(text, word_boxes, stamp_boxes(arr_sig, word_boxes, cell, analysis_dpi))
+    zones: dict[str, tuple[float, float, float, float]] = {}
+    parties = page_parties(arr_sig, word_boxes, cell, analysis_dpi, zones) if has_text and word_boxes else {}
+    page_w_px = arr.shape[1]
     return PageText(
         page_index=index, text=text, text_source=text_source, ocr_quality=round(float(quality), 4),
         is_blank=is_blank, has_marks=has_marks, marks_only=marks_only, ink_ratio=round(ink, 6),
         rotation_applied=int(rotation), deskew_angle=float(angle), provider=provider, model_version=model_version,
         signature_hint=sig.value, handwriting_suspected=handwriting, warnings=warnings,
-        signature_parties=(signature_parties(word_boxes, party_blobs(arr_sig, word_boxes, cell, analysis_dpi),
-                                             arr.shape[1], arr.shape[0], analysis_dpi) if has_text and word_boxes else {}),
+        signature_parties=parties,
+        words=[[t, *_permille(b, page_w_px, page_h_px)] for t, b, _c in word_boxes],
+        marks=[_permille((b.x0, b.y0, b.x1, b.y1), page_w_px, page_h_px) for b in sorted(marks, key=lambda m: -m.cells)[:MARKS_KEPT]],
+        signature_boxes={p: _permille(z, page_w_px, page_h_px) for p, z in zones.items()},
     )

@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import html
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,8 +20,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 from ..config import Config, ConfigError, load_config
 from ..db import Repository
+from ..mhr_models import clean_file_title
 
-STATUS_KA = {"auto_saved": "დალაგდა", "proposed": "შემოთავაზებული", "needs_review": "გადასამოწმებელი",
+STATUS_KA = {"split": "დაიყო ფაილებად", "auto_saved": "დალაგდა", "proposed": "შემოთავაზებული", "needs_review": "გადასამოწმებელი",
              "superseded": "ჩანაცვლებული", "publishing": "იწერება", "queued": "რიგში", "running": "მუშავდება",
              "done": "დასრულდა", "failed": "შეცდომა", "cancelled": "გაუქმდა"}
 STATUS_TONE = {"auto_saved": "ok", "proposed": "info", "needs_review": "warn", "superseded": "mute", "publishing": "info",
@@ -38,6 +40,7 @@ REASONS = {
     "mode_mismatch": ("ფაილში რამდენიმე დოკუმენტი ჩანს", "ეს ფაილი Single საქაღალდეში მოვიდა — შეიძლება Batch-ში უნდა ყოფილიყო."),
     "type_not_auto_enabled": ("ტიპი ავტომატურზე ჩართული არ არის", "ჩართე ავტომატური შენახვა ამ ტიპისთვის, როცა მზად იქნები."),
     "ocr_unreadable": ("ტექსტი ვერ წაიკითხა", "სკანი ცუდი ხარისხისაა. ხელახლა დაასკანერე ან ხელით გადაამოწმე."),
+    "pages_not_in_mhr": ("ეს გვერდები MHR-ის ფაილებს არ ემთხვევა", "სკანის ეს ნაწილი თანამშრომლის არცერთ დაგენერირებულ ფაილს არ ჰგავს. ნახე, რა არის; თუ საჭიროა, ტიპი აურჩიე და ატვირთე ხელით."),
     "other": ("სხვა მიზეზი", "იხილე ტექნიკური დეტალები."),
 }
 FLAGS = {"year_unknown": "წელი უცნობია", "date_unknown": "თარიღი უცნობია", "signature_uncertain": "ხელმოწერა გაურკვეველია",
@@ -193,6 +196,24 @@ details{border-top:1px solid var(--border);padding-top:14px}summary{cursor:point
 border-right:0;border-top:1px solid var(--border);z-index:10}.brand,.side-foot{display:none}.nav{display:flex;width:100%;justify-content:space-around}
 .nav a{flex-direction:column;gap:2px;font-size:10.5px;padding:6px 2px;min-height:52px;flex:1 1 0;min-width:0;text-align:center;justify-content:center}.nav a span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nav .count{display:none}
 .split{grid-template-columns:1fr}.main{padding-top:20px}.co-row{grid-template-columns:1fr}.stack{display:none}}
+.prob{padding:16px 18px;border-top:1px solid var(--border)}.prob:first-child{border-top:0}
+.prob-h{display:flex;gap:12px;align-items:flex-start;margin-bottom:12px}.prob-h b{display:block;font-size:15.5px;font-weight:620;line-height:1.35}.prob-h .m{color:var(--text-2);font-size:13px}
+.prob-b{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+.lines{display:flex;flex-direction:column;gap:10px;font-size:14px;min-width:0}.lines .lbl{display:block;color:var(--text-2);font-size:12.5px;font-weight:560;margin-bottom:1px}
+.lines .val{overflow-wrap:anywhere}
+mark.o{background:var(--ok-soft);color:var(--ok);font-weight:620;padding:0 3px;border-radius:4px}
+mark.s{background:var(--bad-soft);color:var(--bad);font-weight:620;padding:0 3px;border-radius:4px}
+.pgfig{position:relative;display:block;line-height:0;background:#fff;border:1px solid var(--border);border-radius:8px;overflow:hidden}.pgfig img{width:100%;display:block}
+.hl{position:absolute;border:2px solid #DC2626;background:rgba(220,38,38,.14);border-radius:3px;pointer-events:none}
+.hl.ok{border-color:#16A34A;background:rgba(22,163,74,.10)}.hl.warn{border-color:#D97706;background:rgba(217,119,6,.14)}
+.pgmap{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px}
+.pgcard{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);box-shadow:var(--shadow);font-size:12.5px;line-height:1.4}
+.pgcard:hover{border-color:var(--accent);text-decoration:none}.pgcard.bad{border-color:var(--bad);border-width:2px}.pgcard.warn{border-color:var(--warn);border-width:2px}
+.pgcard .cap{display:flex;justify-content:space-between;gap:6px;align-items:center;font-size:13.5px}.pgcard .m{color:var(--text-2)}
+.pgview{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:20px;align-items:start}
+.steps{display:flex;flex-direction:column}.steps .st{display:flex;gap:12px;padding:12px 16px;border-top:1px solid var(--border);align-items:flex-start}.steps .st:first-child{border-top:0}
+.steps .st b{display:block;font-weight:600}.steps .st span.d{color:var(--text-2);font-size:13.5px;overflow-wrap:anywhere}
+@media (max-width:900px){.prob-b,.pgview{grid-template-columns:minmax(0,1fr)}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 """
 
@@ -372,16 +393,16 @@ def create_app(config_path: str | None = None) -> FastAPI:
             tasks.append(("warn", f"{review} დოკუმენტი გადასამოწმებელია", "პროგრამა ვერ დარწმუნდა — თითოეულზე წერია, რატომ და რა გააკეთო.",
                           ("/review", "გადახედვა", True)))
         if m.get("failed"):
-            tasks.append(("warn", f"{m['failed']} ხელშეკრულებამ ვერ გაიარა MHR-ის შემოწმება",
-                          "რაღაც არ ემთხვევა, ან MHR-ში ხელშეკრულება ვერ მოიძებნა. ნახე რატომ; თუ დოკუმენტი სწორია, ატვირთე მაინც.",
+            tasks.append(("warn", f"{m['failed']} ფაილმა ვერ გაიარა MHR-ის შემოწმება",
+                          "რაღაც არ ემთხვევა, ან MHR-ში ფაილი ვერ მოიძებნა. ნახე რატომ; თუ დოკუმენტი სწორია, ატვირთე მაინც.",
                           ("/mhr?tab=failed", "ნახე რატომ", True)))
         if mhr_stuck:
             tasks.append(("warn", f"{mhr_stuck} ატვირთვა გასარკვევია", "ატვირთვა ვერ მოხერხდა ან შედეგი გაურკვეველია — შეამოწმე MHR-ში.",
                           ("/mhr?tab=other", "ნახე", False)))
         if m.get("ready"):
-            tasks.append(("info", f"{m['ready']} ხელშეკრულება მზადაა MHR-ზე ასატვირთად", "ყველაფერი ემთხვევა — ერთი ღილაკით აიტვირთება თანამშრომლის ბარათზე.",
+            tasks.append(("info", f"{m['ready']} ფაილი მზადაა MHR-ზე ასატვირთად", "ყველაფერი ემთხვევა — ერთი ღილაკით აიტვირთება თანამშრომლის ბარათზე.",
                           ("post:/mhr-approve-all", f"ყველას ატვირთვა ({m['ready']})", True)))
-        if cur or busy:
+        if cur or (busy and not s["paused"]):
             txt = (f"{cur['file']} — {cur['done']}/{cur['total']} გვერდი" if cur else f"რიგში {busy} ფაილი") + ". ჩარევა არ სჭირდება."
             tasks.append(("info", "მუშავდება", txt, None))
 
@@ -535,6 +556,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
         try:
             x = r.one("SELECT d.*, s.first_path FROM documents d JOIN sources s ON s.id=d.source_id WHERE d.id=?", (doc_id,))
             mhr_item = r.mhr_get(doc_id)
+            page_rows = _file_pages(r, x) if x else []
+            parent = r.mhr_get(x["part_of"]) if x and x["part_of"] else None
         finally:
             r.close()
         if not x:
@@ -556,7 +579,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
             ai = _ai_load(mhr_item) if mhr_item else None
             if ai and ai.get("verdict") in AI_KA and ai.get("verdict") != "error":
                 kv.insert(5, ("AI ანალიზი", f'{AI_KA[ai["verdict"]][0]} — {ai.get("summary") or ""}'))
-        rs = "".join(f'<div class="reason">{icon("alert", 18)}<div><b>{e(REASONS.get(k, (k, ""))[0])}</b><span>{e(REASONS.get(k, ("", ""))[1])}</span></div></div>'
+        rs = "".join(f'<div class="reason">{icon("alert", 18)}<div><b>{e(REASONS.get(k, (k, ""))[0])}</b><span>{e(REASONS.get(k, ("", ""))[1])}</span>'
+                     + "".join(f'<span style="display:block;margin-top:4px;color:var(--text)">{d_line}</span>' for d_line in _reason_where(k, meta, page_rows, parent)) + "</div></div>"
                      for k in reasons)
         flags = "".join(chip(FLAGS.get(fl, fl), "mute") for fl in meta.get("flags", [])
                         if not (mhr_on and fl == "employee_unverified"))
@@ -566,7 +590,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                         for k, v in kv if k != "წყარო" and v not in skip and not (k == "წელი" and x["document_date"]))
         head = (f'<p style="margin:0 0 10px"><a href="javascript:history.back()">← უკან</a></p>{_flash(msg, err)}'
                 f'<div class="dochead"><div><div class="chips">{status_chip(x["status"])}{mhr_chip(mhr_item["status"]) if mhr_item else ""}</div>'
-                f'<h1>{e(t.name_ka if t else "დოკუმენტი")}{" · " + e(name) if name else ""}</h1>'
+                f'<h1>{e((meta.get("part") or {}).get("title") or (t.name_ka if t else "დოკუმენტი"))}{" · " + e(name) if name else ""}</h1>'
                 f'<p class="sub">{e(Path(x["first_path"]).name)} · გვ. {x["page_start"] + 1}–{x["page_end"] + 1} · {e(x["document_date"] or "თარიღი უცნობია")}</p></div>'
                 f'<div class="btns"><a class="btn" href="/file/output/{e(doc_id)}" target="_blank">{icon("open", 16)}PDF ცალკე</a>'
                 f'<a class="btn" href="/file/source/{e(doc_id)}#page={x["page_start"] + 1}" target="_blank">{icon("file", 16)}წყარო</a>'
@@ -624,12 +648,28 @@ def create_app(config_path: str | None = None) -> FastAPI:
         try:
             m = r.mhr_get(doc_id)
             d = r.one("SELECT d.*, s.first_path FROM documents d JOIN sources s ON s.id=d.source_id WHERE d.id=?", (doc_id,))
+            pts = _file_pages(r, d) if d else []
         finally:
             r.close()
         if not m:
             raise HTTPException(404)
         s = status_data()
-        return page("MHR — შედარება", _flash(msg, err) + _mhr_detail_body(c, m, d, s["worker_alive"]), "/mhr", side_info(s))
+        return page("MHR — შედარება", _flash(msg, err) + _mhr_detail_body(c, m, d, s["worker_alive"], pts, _part_states(doc_id, repo)), "/mhr", side_info(s))
+
+    @app.get("/mhr/{doc_id}/page/{n}", response_class=HTMLResponse)
+    def mhr_page(doc_id: str, n: int):
+        """ფაილის ერთი გვერდი დიდად: მონიშნული ადგილები და ყველაფერი, რაც ამ გვერდზე ნახა პროგრამამ."""
+        c = cfg()
+        r = repo()
+        try:
+            m = r.mhr_get(doc_id)
+            d = r.get_document(doc_id)
+            pts = _file_pages(r, d) if d else []
+        finally:
+            r.close()
+        if not m or not d or not 1 <= n <= len(pts):
+            raise HTTPException(404)
+        return page(f"გვერდი {n}", _page_view(c, m, d, pts, n), "/mhr", side_info(status_data()))
 
     @app.post("/mhr/{doc_id}/override")
     async def mhr_override(doc_id: str, request: Request):
@@ -679,7 +719,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             r = repo()
             try:
                 rows = r.q("SELECT d.*, s.first_path, m.status AS mhr_status FROM documents d JOIN sources s ON s.id=d.source_id"
-                           " LEFT JOIN mhr_items m ON m.document_id=d.id WHERE d.active=1 AND d.output_path IS NOT NULL"
+                           " LEFT JOIN mhr_items m ON m.document_id=d.id WHERE d.active=1 AND d.status<>'split' AND d.output_path IS NOT NULL"
                            " AND d.purged_at IS NULL ORDER BY d.created_at DESC LIMIT 3000")
             finally:
                 r.close()
@@ -792,20 +832,36 @@ def create_app(config_path: str | None = None) -> FastAPI:
         return page("ამოკითხული ტექსტი", body, "/documents", side_info(status_data()))
 
     @app.get("/page/{doc_id}/{index}.png")
-    def page_image(doc_id: str, index: int):
+    def page_image(doc_id: str, index: int, dpi: int = 100, crop: str = ""):
+        """გვერდის სურათი იმავე მიმართულებით, რა მიმართულებითაც წაიკითხა (მონიშვნები ზუსტად დაჯდეს); `crop` — x0,y0,x1,y1, მეათასედებში."""
         from fastapi.responses import Response
+        from PIL import Image
         from ..pdfio import PdfDocument
+        from ..preprocess import apply_rotation
         r = repo()
         try:
             x = r.get_document(doc_id)
             src = r.get_source(x["source_id"]) if x else None
+            pt = r.load_page_texts(x["job_id"]).get(index, {}) if x else {}
         finally:
             r.close()
         if not x or not src or not (x["page_start"] <= index <= x["page_end"]) or not Path(src["archive_path"]).exists():
             raise HTTPException(404)
         import io
         with PdfDocument(src["archive_path"]) as d:
-            img = d.render(index, 100)
+            img = d.render(index, max(40, min(dpi, 200)), grayscale=False)
+        if pt.get("rotation_applied"):
+            img = apply_rotation(img, int(pt["rotation_applied"]))
+        if pt.get("deskew_angle"):
+            img = img.rotate(float(pt["deskew_angle"]), resample=Image.BICUBIC, expand=False, fillcolor=(255, 255, 255))
+        if crop:
+            try:
+                x0, y0, x1, y1 = (max(0, min(int(v), 1000)) for v in crop.split(","))
+            except ValueError:
+                raise HTTPException(404) from None
+            if x1 <= x0 or y1 <= y0:
+                raise HTTPException(404)
+            img = img.crop((img.width * x0 // 1000, img.height * y0 // 1000, img.width * x1 // 1000, img.height * y1 // 1000))
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         return Response(buf.getvalue(), media_type="image/png")
@@ -916,6 +972,16 @@ def create_app(config_path: str | None = None) -> FastAPI:
         if not name or not value:
             return RedirectResponse("/settings?" + urlencode({"err": "სახელი და მნიშვნელობა სავალდებულოა"}), status_code=303)
         secrets.set_secret(name, value)
+        rechecked = 0
+        if name == cfg().section("mhr")["auth"].get("secret_name"):
+            from .. import mhr_queue
+            r = repo()
+            try:
+                rechecked = mhr_queue.revalidate_refused(r)
+            finally:
+                r.close()
+        if rechecked:
+            return RedirectResponse("/settings?" + urlencode({"msg": f"გასაღები „{name}“ შენახულია. {rechecked} ფაილი თავიდან შემოწმდება."}), status_code=303)
         return RedirectResponse("/settings?" + urlencode({"msg": f"გასაღები „{name}“ შენახულია Windows-ის დაცულ საცავში"}), status_code=303)
 
     @app.post("/settings/claude-login")
@@ -984,13 +1050,13 @@ MHR_KA = {"pending": ("ვალიდაციას ელოდება", "m
           "failed": ("ვალიდაცია ვერ გაიარა", "bad"), "skipped": ("გამოტოვებული", "mute"), "ready": ("მზადაა ატვირთვისთვის", "info"),
           "approved": ("ატვირთვის რიგში", "info"), "uploading": ("იტვირთება", "info"), "uploaded": ("ატვირთულია", "ok"),
           "upload_failed": ("ატვირთვა ვერ მოხერხდა", "bad"), "needs_check": ("საჭიროებს შემოწმებას", "warn"),
-          "rejected": ("უარყოფილი", "mute")}
+          "rejected": ("უარყოფილი", "mute"), "split": ("დაიყო ფაილებად", "mute")}
 AI_KA = {"upload": ("AI: ატვირთვა შეიძლება", "ok"), "check": ("AI: გადაამოწმე", "warn"),
          "reject": ("AI: არ ატვირთო", "bad"), "error": ("AI ანალიზი ვერ შესრულდა", "mute")}
 _AI_CONF_KA = {"high": "მაღალი დარწმუნებულობა", "medium": "საშუალო დარწმუნებულობა", "low": "დაბალი დარწმუნებულობა"}
 _MHR_TABS = {"ready": ("მზადაა", ("ready",)), "failed": ("ვერ გაიარა", ("failed",)),
              "queue": ("მიმდინარე", ("pending", "unavailable", "approved", "uploading")),
-             "done": ("ატვირთულია", ("uploaded",)), "other": ("სხვა", ("skipped", "upload_failed", "needs_check", "rejected"))}
+             "done": ("ატვირთულია", ("uploaded",)), "other": ("სხვა", ("skipped", "upload_failed", "needs_check", "rejected", "split"))}
 _CHECK_KA = {"match": ("ემთხვევა", "ok"), "mismatch": ("განსხვავდება", "bad"), "missing_in_document": ("დოკუმენტში არ არის", "mute"),
              "missing_in_mhr": ("MHR-ში არ არის", "warn"), "skipped": ("—", "mute"), "info": ("გაფრთხილება", "warn")}
 _DIFF_KA = {"changed": "შეცვლილია", "added": "დამატებულია", "removed": "ამოღებულია", "handwriting": "ხელნაწერი / მიწერა",
@@ -1022,20 +1088,21 @@ def _mhr_row(c: Config, x) -> str:
     v = json.loads(x["validation"] or "{}")
     t = c.doc_type(x["type_id"] or "")
     name = _mhr_name(v)
-    summary = (v.get("summary") or [x["error"] or ""])[0]
-    meta = " · ".join(y for y in (name, x["personal_number"], t.name_ka if t else None,
+    summary = _main_reason(v) or (_error_text(x["error"]) if x["error"] else "")
+    title = clean_file_title((v.get("original") or {}).get("filename")) or (t.name_ka if t else None)
+    meta = " · ".join(y for y in (name, x["personal_number"], title,
                                   f'{Path(x["first_path"]).name} · გვ. {x["page_start"] + 1}–{x["page_end"] + 1}' if x["first_path"] else None) if y)
     btns = ""
     if x["status"] == "ready":
         btns = (f'<form class="inline" method="post" action="/mhr/{e(x["document_id"])}/approve"><button class="btn sm primary">'
                 f'{icon("cloud", 14)}ატვირთვა</button></form>')
     ai = _ai_load(x)
-    if ai and ai.get("verdict") != "error" and ai.get("summary"):
-        summary = ai["summary"]   # AI-ის ახსნა ოპერატორისთვის უფრო გასაგებია, ვიდრე წესების პირველი სტრიქონი
     ai_chip = chip(*AI_KA[ai["verdict"]]) if ai and ai.get("verdict") in AI_KA else ""
+    ai_text = ai.get("summary") if ai and ai.get("verdict") != "error" else ""
     return (f'<div class="row"><div class="grow"><a class="t" href="/mhr/{e(x["document_id"])}" style="display:block;color:var(--text)">'
             f'{e(name or "თანამშრომელი უცნობია")}</a><div class="m">{e(meta)}</div>'
-            f'{f"<div class=m>{e(summary)}</div>" if summary else ""}</div>{ai_chip}{mhr_chip(x["status"])}'
+            f'{f"<div class=m><b>{e(summary)}</b></div>" if summary else ""}'
+            f'{f"<div class=m>AI: {e(ai_text)}</div>" if ai_text else ""}</div>{ai_chip}{mhr_chip(x["status"])}'
             f'<div class="btns">{btns}<a class="btn sm{"" if btns else " primary"}" href="/mhr/{e(x["document_id"])}">'
             f'{"ნახე სხვაობები" if x["status"] == "failed" and not _no_compare(v) else "დეტალები"}</a></div></div>')
 
@@ -1055,22 +1122,24 @@ def _ai_block(c: Config, m, worker_alive: bool = True) -> str:
         return ""
     ai = _ai_load(m)
     doc_id = e(m["document_id"])
+    undecided = m["status"] in ("ready", "failed")
     rerun = (f'<form class="inline" method="post" action="/mhr/{doc_id}/ai-review"><button class="btn sm">'
-             f'{icon("refresh", 14)}ხელახალი AI ანალიზი</button></form>')
+             f'{icon("refresh", 14)}ხელახალი AI ანალიზი</button></form>') if undecided else ""
     if ai is None:
-        if m["status"] not in ("ready", "failed"):
+        if not undecided or m["error"]:   # შეცდომაზე შედარება არ შესრულებულა, AI-ს რიგში არ დგება (mhr_queue._ai_review_pending)
             return ""
         if not worker_alive:   # ანალიზს ფონური პროცესი აკეთებს — თუ არ მუშაობს, „რიგშია" შეცდომაში შეიყვანს
             return (f'<div class="banner tone-warn">{icon("alert", 18)}<div><b>AI ანალიზი ვერ დაიწყება — ფონური პროცესი არ მუშაობს.</b> '
                     'გახსენი „HR გადამრჩევი“ დაწყების მენიუდან; წესებით შემოწმება ქვემოთ უკვე ჩანს.</div></div>')
         return (f'<div class="banner tone-info">{icon("clock", 18)}<div><b>AI ანალიზი (Opus) რიგშია.</b> წესებით შემოწმება '
-                'უკვე დასრულდა (ქვემოთ). რამდენიმე წუთში აქ გამოჩნდება დეტალური ახსნა და რეკომენდაცია — განაახლე გვერდი.</div></div>')
+                'უკვე დასრულდა. რამდენიმე წუთში აქ გამოჩნდება დეტალური ახსნა და რეკომენდაცია — განაახლე გვერდი.</div></div>')
     verdict = ai.get("verdict") or "error"
     lbl, tone = AI_KA.get(verdict, AI_KA["error"])
     if verdict == "error":
         return (f'<div class="card section" style="margin-bottom:20px"><div class="chips" style="margin-bottom:8px">{chip(lbl, tone)}</div>'
-                f'<p class="muted">Claude Code-მა პასუხი არ დააბრუნა ({e(ai.get("error") or "")}). შეამოწმე, რომ Claude Code '
-                f'დაყენებულია და შესულია („პარამეტრები“), მერე სცადე თავიდან.</p>{rerun}</div>')
+                f'<p class="muted">Claude Code-მა პასუხი არ დააბრუნა ({e(ai.get("error") or "")}).'
+                + (' შეამოწმე, რომ Claude Code დაყენებულია და შესულია („პარამეტრები“), მერე სცადე თავიდან.' if undecided else "")
+                + f'</p>{rerun}</div>')
     items = "".join(
         f'<div class="row" style="align-items:flex-start"><div style="min-width:160px"><b>{e(it.get("topic") or "")}</b></div>'
         f'<div class="grow">{e(it.get("explanation") or "")}</div>{chip(*_CHECK_KA_AI.get(it.get("status"), ("—", "mute")))}</div>'
@@ -1082,7 +1151,8 @@ def _ai_block(c: Config, m, worker_alive: bool = True) -> str:
     return (f'<div class="card section" style="margin-bottom:20px"><div class="chips" style="margin-bottom:8px">{chip(lbl, tone)}'
             f'{chip(_AI_CONF_KA.get(ai.get("confidence") or "low", ""), "mute")}</div>'
             f'<h2 style="margin-top:4px">AI ანალიზი · {e(ai.get("model") or "Opus")}</h2>'
-            f'<p style="font-size:15px">{e(ai.get("summary") or "")}</p><p class="muted" style="font-size:13.5px">{hint}</p>'
+            f'<p style="font-size:15px">{e(ai.get("summary") or "")}</p>'
+            + (f'<p class="muted" style="font-size:13.5px">{hint}</p>' if undecided else "")
             + (f'<div class="card list" style="margin:12px 0">{items}</div>' if items else "")
             + (f'<p><b>რას გადაამოწმებ:</b></p><ul style="margin-top:4px">{risks}</ul>' if risks else "")
             + f'<div class="btns">{rerun}</div><p class="muted" style="font-size:12.5px;margin-top:10px">AI მხოლოდ რჩევას იძლევა — '
@@ -1092,6 +1162,59 @@ def _ai_block(c: Config, m, worker_alive: bool = True) -> str:
 _CHECK_KA_AI = {"ok": ("წესრიგშია", "ok"), "warn": ("ყურადღება", "warn"), "bad": ("პრობლემა", "bad")}
 
 
+def _part_states(doc_id: str, repo_fn) -> dict[str, tuple[str | None, str | None, dict]]:
+    """დაყოფილი სკანის ნაწილები: document_id → (MHR-ის სტატუსი, დოკუმენტის სტატუსი, ვალიდაცია)."""
+    r = repo_fn()
+    try:
+        return {x["id"]: (x["mhr_status"], x["status"], json.loads(x["validation"] or "{}")) for x in r.q(
+            "SELECT d.id, d.status, m.status AS mhr_status, m.validation FROM documents d LEFT JOIN mhr_items m ON m.document_id=d.id"
+            " WHERE d.part_of=?", (doc_id,))}
+    finally:
+        r.close()
+
+
+def _page_list(pages: list[int]) -> str:
+    """[15, 16, 17] → „15–17"; მიმდევრობის გარეშე — ჩამონათვალი."""
+    if len(pages) > 1 and pages == list(range(pages[0], pages[-1] + 1)):
+        return f"{pages[0]}–{pages[-1]}"
+    return ", ".join(map(str, pages))
+
+
+def _mhr_parts_block(states: dict, m) -> str:
+    """დაყოფილი სკანი: რა ფაილები აღმოჩნდა და რა მდგომარეობაშია თითოეული."""
+    parts = json.loads(m["validation"] or "{}").get("parts") or []
+    if not parts:
+        return ""
+    rows, table = [], []
+    for p in parts:
+        mhr_st, doc_st, pv = states.get(p["document_id"], (None, None, {}))
+        href = f"/mhr/{e(p['document_id'])}" if mhr_st else f"/doc/{e(p['document_id'])}"
+        why = _main_reason(pv) or ("" if p.get("matched") else "ეს გვერდები თანამშრომლის არცერთ დაგენერირებულ ფაილს არ ემთხვევა")
+        rows.append(f'<div class="row"><div class="grow"><a class="t" href="{href}" style="display:block;color:var(--text)">{e(p["title"])}</a>'
+                    f'<div class="m">სკანის გვერდები {e(_page_list(p["pages"]))}</div>{f"<div class=m>{e(why)}</div>" if why else ""}</div>'
+                    f'{mhr_chip(mhr_st) if mhr_st else status_chip(doc_st or "")}'
+                    f'<div class="btns"><a class="btn sm" href="{href}">დეტალები</a></div></div>')
+        for pg in p["pages"]:
+            best = (p.get("page_match") or {}).get(str(pg))
+            match = (f'{best[1]}% სიტყვა ამ ფაილშია' if p.get("matched") else f'საუკეთესოა „{best[0]}“, {best[1]}% — საჭიროა მინიმუმ {OWNER_MIN_PCT}%') if best else "ტექსტი თითქმის არ არის — მეზობელ გვერდს მიჰყვა"
+            table.append((pg, f'<tr><td>{pg}</td><td>{e(p["title"])}</td><td>{e(match)}</td></tr>'))
+    how = (f'<details style="margin-top:12px"><summary>რომელი გვერდი რომელ ფაილს მიეკუთვნა და რატომ</summary><p class="muted" style="font-size:13.5px;margin:8px 0">'
+           f'გვერდი იმ ფაილს ეკუთვნის, რომლის სიტყვებსაც ყველაზე მეტად შეიცავს (მინიმუმ {OWNER_MIN_PCT}%).</p>'
+           f'<div class="card" style="overflow-x:auto"><table class="tbl"><tr><th>გვერდი</th><th>ფაილი</th><th>რატომ</th></tr>'
+           + "".join(t for _pg, t in sorted(table, key=lambda z: z[0])) + '</table></div></details>') if table else ""
+    return f'<h2>ფაილები ამ სკანში</h2><div class="card list">{"".join(rows)}</div>{how}'
+
+
+def _mhr_did_not_answer(v: dict) -> bool:
+    """MHR გათიშული იყო ან უარი თქვა (მაგ. ტოკენზე): ჯერ არაფერი შემოწმებულა, ახსნა `summary`-შია."""
+    return v.get("status") == "unavailable" or v.get("error") == "MhrError"
+
+
+def _text_compared(v: dict) -> bool:
+    """ტექსტი რამეს შედარდა: ორიგინალს ან შაბლონს. სხვაგვარად „ემთხვევა“ ტყუილი იქნებოდა."""
+    return bool(v.get("original")) or any(ch.get("field") == "contract_template" for ch in v.get("checks") or [])
+
+
 def _no_compare(v: dict) -> bool:
     """ვალიდაცია შედარებამდე გაჩერდა: MHR-ში დაგენერირებული ხელშეკრულება (ან მისი ფაილი) არ არის. ეს ცვლილება არ არის —
     გაფრთხილებაა, ამიტომ ოპერატორს იქვე სთავაზობს ხელით ატვირთვას."""
@@ -1099,20 +1222,489 @@ def _no_compare(v: dict) -> bool:
                for ch in (v.get("checks") or []))
 
 
-def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True) -> str:
+OWNER_MIN_PCT = 70   # validation.PAGE_OWNER_MIN_OVERLAP პროცენტებში (ტექსტისთვის)
+CROP_PAD_X, CROP_PAD_Y, CROP_MIN_W = 80, 35, 620   # პრობლემის მოჭრილი სურათი: მინდვრები და მინიმალური სიგანე, მეათასედებში
+PURGED_NOTE = "სკანის ფაილი ვადის გასვლის გამო წაიშალა, ამიტომ გვერდის სურათი აღარ ჩანს. ტექსტი და შედეგი ინახება."
+READER_KA = {"text_layer": "PDF-ის ტექსტი", "none": "ტექსტი არ არის"}
+def _file_pages(r: Repository, d) -> list[dict]:
+    from ..validation import document_pages
+    return document_pages(r, d)
+
+
+def _reader(pt: dict) -> str:
+    src = pt.get("text_source") or "none"
+    if src in READER_KA:
+        return READER_KA[src]
+    return "Tesseract" if src.startswith("ocr:tesseract") else "Claude"
+
+
+def _clean_reason(reason: str | None) -> str:
+    from ..validation import RECHECK_DISAGREE, RECHECK_STILL
+    text = reason or ""
+    for note in (RECHECK_STILL, RECHECK_DISAGREE):
+        text = text.replace(f" — {note}", "").replace(note, "")
+    return text.strip()
+
+
+def _diff_place(x: dict, pts: list[dict]) -> str:
+    """სად: ფაილის გვერდი, პუნქტი და — თუ სხვაა — სკანის გვერდი."""
+    if not x.get("page"):
+        return "მთელი დოკუმენტი"
+    n = int(x["page"])
+    place = f"გვერდი {n}"
+    if x.get("clause"):
+        place += f", პუნქტი {x['clause']}"
+    if 0 < n <= len(pts) and int(pts[n - 1].get("page_index", n - 1)) + 1 != n:
+        place += f" (სკანის გვერდი {int(pts[n - 1]['page_index']) + 1})"
+    return place
+
+
+def _diff_line(x: dict) -> str:
+    """ერთი ხაზი სიისთვის: სად და რა."""
+    what = _clean_reason(x.get("reason"))
+    parts_o, parts_s = x.get("orig_parts") or [], x.get("scan_parts") or []
+    if "„" not in what and x.get("kind") in ("changed", "added", "removed") and len(parts_o) == 3 and len(parts_s) == 3 and len(parts_o[1]) <= 60 and len(parts_s[1]) <= 60:
+        if parts_o[1] and parts_s[1]:
+            what += f": ქაღალდზე „{parts_s[1]}“, MHR-ში „{parts_o[1]}“"
+        elif parts_o[1]:
+            what += f": „{parts_o[1]}“"
+        elif parts_s[1]:
+            what += f": „{parts_s[1]}“"
+    page = f"გვერდი {x['page']}" + (f", პუნქტი {x['clause']}" if x.get("clause") else "") if x.get("page") else ""
+    return f"{page}: {what}" if page else what
+
+
+def _blocking_checks(v: dict) -> list[dict]:
+    return [c for c in v.get("checks") or [] if c.get("blocking") and c.get("status") != "match"]
+
+
+def _check_line(c: dict) -> str:
+    if c.get("status") == "mismatch" and c.get("mhr_value") is not None:
+        return f'{c.get("label_ka")} განსხვავდება: დოკუმენტში „{c.get("document_value")}“, MHR-ში „{c.get("mhr_value")}“'
+    return c.get("note") or f'{c.get("label_ka")}: MHR-ში ვერ მოიძებნა'
+
+
+def _reason_lines(v: dict) -> list[str]:
+    """ყველა მიზეზი, რის გამოც ფაილი ჩერდება: ჯერ მონაცემები, მერე გვერდების მიხედვით."""
+    sig = sorted((x for x in v.get("diffs") or [] if x.get("significant")), key=lambda x: x.get("page") or 0)
+    return [*(_check_line(c) for c in _blocking_checks(v)), *(_diff_line(x) for x in sig)]
+
+
+def _main_reason(v: dict) -> str:
+    lines = _reason_lines(v)
+    if lines:
+        return lines[0] + (f" (და კიდევ {len(lines) - 1})" if len(lines) > 1 else "")
+    return (v.get("summary") or [""])[0]
+
+
+def _why_diff(x: dict, pt: dict) -> str:
+    """რატომ: რა წესი გააჩერა და რატომ არ ჩაითვალა წაკითხვის შეცდომად."""
+    from ..validation import RECHECK_DISAGREE, RECHECK_STILL
+    reason = x.get("reason") or ""
+    kind = x.get("kind")
+    if RECHECK_DISAGREE in reason:
+        return ("Tesseract-მა აქ ზუსტად ორიგინალი წაიკითხა, Claude-მა სხვა, ანუ ერთ-ერთი ცდება. "
+                + ("რიცხვი და „არ“ სიტყვა მაინც აჩერებს, ამიტომ შეადარე ქაღალდს." if x.get("significant") else "ფაილს ეს არ აჩერებს, მაგრამ შეადარე ქაღალდს."))
+    if kind == "signature":
+        return ("ამ ადგილას ხელმოწერის ზომის ნიშანი ვერ მოიძებნა. პროგრამა ადგენს, არის თუ არა ადგილზე ხელმოწერა, მაგრამ ვისი ხელია, ვერ ადგენს.")
+    if kind == "handwriting":
+        return "გვერდზე ტექსტის გარდა ნიშანია, რომელიც ხელმოწერის ადგილას არ არის: შეიძლება ხელით მიწერილი იყოს."
+    if kind == "page_count":
+        return "ფაილსა და სკანში გვერდების რაოდენობა სხვადასხვაა."
+    if "ციფრები" in reason:
+        base = "ამ ადგილას MHR-ის ფაილში და ქაღალდზე სხვა რიცხვი წერია. რიცხვი შეიძლება თანხა, თარიღი, ანგარიში ან პირადი ნომერი იყოს, ამიტომ ერთი ციფრის სხვაობაც აჩერებს."
+    elif "სიტყვა „" in reason or "უარყოფა" in reason:
+        base = "ასეთი ერთი სიტყვა წინადადების აზრს პირიქით ცვლის, ამიტომ ყოველთვის აჩერებს."
+    elif "ამოღებული" in reason:
+        base = "ეს ტექსტი MHR-ის ფაილშია, ქაღალდზე კი არ ჩანს."
+    elif "ჩამატებული" in reason:
+        base = "ეს ტექსტი ქაღალდზეა, MHR-ის ფაილში კი არ არის."
+    else:
+        base = "ამ ადგილას სხვა სიტყვა წერია და სხვაობა წაკითხვის შეცდომით არ აიხსნება."
+    if RECHECK_STILL in reason:
+        return base + " გვერდი Claude-მაც ხელახლა წაიკითხა და სხვაობა დარჩა, ამიტომ დიდი ალბათობით ქაღალდზე მართლა ასე წერია."
+    if (pt.get("text_source") or "").startswith("ocr:tesseract"):
+        return base + " გვერდი მხოლოდ Tesseract-მა წაიკითხა, ამიტომ წაკითხვის შეცდომაც შეიძლება იყოს: შეადარე ქაღალდს."
+    return base
+
+
+_TODO_TEXT = ("შეადარე ქაღალდს. თუ ქაღალდზე მართლა ასე წერია, დოკუმენტი MHR-ის ფაილს არ ემთხვევა: ხელახლა დაბეჭდე და მოაწერინე. "
+              "თუ ქაღალდზე სწორად წერია, {action}.")
+_TODO_KIND = {"signature": "გახსენი ქაღალდი. თუ ხელმოწერა მართლა აკლია, მოაწერინე და ხელახლა დაასკანერე. თუ არის, {action}.",
+              "handwriting": "გახსენი გვერდი და ნახე, რა წერია. თუ ეს ბეჭედი ან ხელმოწერაა, {action}.",
+              "page_count": "შეამოწმე, ყველა გვერდი დასკანერდა თუ არა."}
+_TODO_CHECK = {"already_uploaded": "ნახე თანამშრომლის ბარათი MHR-ში. თუ ეს ახალი ვერსიაა, {action}; თუ იგივეა, უარყავი.",
+               "original_contract": "ჯერ MHR-ში დააგენერირე ფაილი და მერე „ხელახლა შედარება“, ან დოკუმენტი ქაღალდზე ნახე და ატვირთე ხელით.",
+               "personal_number": "შეამოწმე პირადი ნომერი ქაღალდზე და MHR-ში."}
+_TODO_FIELD = "შეამოწმე, რომელია სწორი: დოკუმენტი თუ MHR-ის ჩანაწერი. თუ დოკუმენტი სწორია, {action}."
+
+
+def _error_text(error: str) -> str:
+    """MHR-ის მანქანური კოდი → ადამიანის ენა; უცნობი ისევ ჩანს, ტექნიკური დეტალისთვის."""
+    from ..validation import MHR_ERROR_KA
+    if error in MHR_ERROR_KA:
+        return f"{MHR_ERROR_KA[error]} (კოდი: {error})"
+    if error.startswith(("MHR unavailable", "MhrUnavailable")):
+        return "MHR ახლა მიუწვდომელია. პროგრამა მოგვიანებით თავად სცდის, ჩარევა არ სჭირდება"
+    return error
+
+
+_PAST_APPROVAL = {"approved": "ატვირთვის რიგშია", "uploading": "იტვირთება", "uploaded": "ატვირთულია"}
+
+
+def _action_name(m) -> str:
+    """რომელი ღილაკი არსებობს ამ მდგომარეობაში (რა ვქნა-ს ტექსტისთვის); დადასტურებულზე საქმე აღარ არის."""
+    if m["status"] in _PAST_APPROVAL:
+        return ""
+    if m["status"] == "ready":
+        return "„ატვირთვა“"
+    return "„ატვირთვა მაინც“" if m["status"] == "failed" and m["employee_id"] else "„ხელით ატვირთვა“"
+
+
+def _highlight(parts: list[str], cls: str) -> str:
+    if len(parts) != 3:
+        return ""
+    middle = f'<mark class="{cls}">{e(parts[1])}</mark>' if parts[1] else '<span class="muted">(აქ არაფერი წერია)</span>'
+    return f'{e(parts[0])} {middle} {e(parts[2])}'
+
+
+def _overlay(boxes: list[list[int]], tone: str = "", view: tuple[int, int, int, int] = (0, 0, 1000, 1000)) -> str:
+    """მონიშვნა სურათზე: კოორდინატები მეათასედებია, ამიტომ სურათის ზომაზე არ არის დამოკიდებული. `view` — სურათის მონაკვეთი."""
+    vx0, vy0, vx1, vy1 = view
+    w, h = max(vx1 - vx0, 1), max(vy1 - vy0, 1)
+    out = []
+    for x0, y0, x1, y1 in boxes:
+        out.append(f'<span class="hl {tone}" style="left:{(x0 - vx0) * 100 / w:.1f}%;width:{max(x1 - x0, 6) * 100 / w:.1f}%;'
+                   f'top:{(y0 - vy0) * 100 / h:.1f}%;height:{max(y1 - y0, 6) * 100 / h:.1f}%"></span>')
+    return "".join(out)
+
+
+def _crop(doc_id: str, n: int, pt: dict, boxes: list[list[int]], tone: str = "", purged: bool = False) -> str:
+    """გვერდის მონაკვეთი პრობლემის გარშემო, მონიშნული ადგილით."""
+    if not boxes or "page_index" not in pt or purged:
+        return ""
+    y0, y1 = max(0, min(b[1] for b in boxes) - CROP_PAD_Y), min(1000, max(b[3] for b in boxes) + CROP_PAD_Y)
+    x0, x1 = max(0, min(b[0] for b in boxes) - CROP_PAD_X), min(1000, max(b[2] for b in boxes) + CROP_PAD_X)
+    if x1 - x0 < CROP_MIN_W:
+        grow = (CROP_MIN_W - (x1 - x0)) // 2
+        x0, x1 = max(0, x0 - grow), min(1000, x1 + grow)
+    return (f'<a class="pgfig" href="/mhr/{e(doc_id)}/page/{n}" title="მთელი გვერდი"><img src="/page/{e(doc_id)}/{int(pt["page_index"])}.png?dpi=170&crop={x0},{y0},{x1},{y1}" '
+            f'alt="გვერდი {n}, პრობლემის ადგილი">{_overlay(boxes, tone, (x0, y0, x1, y1))}</a>')
+
+
+def _problem_card(doc_id: str, x: dict, pts: list[dict], action: str, purged: bool = False) -> str:
+    n = int(x.get("page") or 0)
+    pt = pts[n - 1] if 0 < n <= len(pts) else {}
+    lines = []
+    if x.get("orig_parts"):
+        lines.append(f'<div><span class="lbl">MHR-ის ფაილში წერია</span><div class="val">{_highlight(x["orig_parts"], "o")}</div></div>')
+        lines.append(f'<div><span class="lbl">ქაღალდზე წერია</span><div class="val">{_highlight(x["scan_parts"], "s")}</div></div>')
+    elif x.get("original") or x.get("scanned"):
+        lines.append(f'<div><span class="lbl">MHR-ის ფაილში წერია</span><div class="val">{e(x.get("original") or "—")}</div></div>')
+        lines.append(f'<div><span class="lbl">ქაღალდზე წერია</span><div class="val">{e(x.get("scanned") or "—")}</div></div>')
+    lines.append(f'<div><span class="lbl">{"რატომ გაჩერდა" if x.get("significant") else "რატომ საეჭვოა"}</span><div class="val">{e(_why_diff(x, pt))}</div></div>')
+    if action:
+        lines.append(f'<div><span class="lbl">რა ვქნა</span><div class="val">{e(_TODO_KIND.get(x.get("kind"), _TODO_TEXT).format(action=action))}</div></div>')
+    if 0 < n <= len(pts):
+        lines.append(f'<div><a href="/mhr/{e(doc_id)}/page/{n}">მთელი გვერდი {n}</a></div>')
+    crop = _crop(doc_id, n, pt, x.get("boxes") or [], purged=purged)
+    return (f'<div class="prob"><div class="prob-h"><span class="ib tone-bad">{icon("alert", 18)}</span><div><b>{e(_clean_reason(x.get("reason")) or _DIFF_KA.get(x.get("kind"), ""))}</b>'
+            f'<div class="m">{e(_diff_place(x, pts))}</div></div></div>'
+            + (f'<div class="prob-b"><div class="lines">{"".join(lines)}</div><div>{crop}</div></div>' if crop else f'<div class="lines">{"".join(lines)}</div>') + "</div>")
+
+
+def _field_place(c: dict, meta: dict, pts: list[dict]) -> tuple[int, list[list[int]]]:
+    """სად წერია ველი ქაღალდზე: (ფაილის გვერდი, მონიშვნა). ამოღებისას გვერდი სკანის ნომრითაა, ფაილში კი შეიძლება სხვა იყოს; 0 — უცნობია."""
+    from ..textcompare import locate
+    field = (meta.get("fields") or {}).get(c.get("field")) or {}
+    for n, pt in enumerate(pts, start=1):
+        if int(pt.get("page_index", -1)) + 1 == field.get("page"):
+            return n, locate(pt.get("words") or [], ["", str(field.get("raw") or ""), ""])
+    return 0, []
+
+
+def _field_problems(v: dict, meta: dict, pts: list[dict]) -> dict[int, list[tuple[dict, list[list[int]]]]]:
+    """გვერდი → გაჩერებული ველები, რომლებიც ამ გვერდზე წერია."""
+    out: dict[int, list[tuple[dict, list[list[int]]]]] = {}
+    for ch in _blocking_checks(v):
+        n, boxes = _field_place(ch, meta, pts)
+        if n:
+            out.setdefault(n, []).append((ch, boxes))
+    return out
+
+
+def _check_card(c: dict, action: str, doc_id: str, meta: dict, pts: list[dict], purged: bool = False) -> str:
+    n, boxes = _field_place(c, meta, pts)
+    differs = c.get("status") == "mismatch" and c.get("mhr_value") is not None
+    lines = []
+    if differs:
+        lines.append(f'<div><span class="lbl">დოკუმენტში წერია</span><div class="val"><mark class="s">{e(c.get("document_value"))}</mark></div></div>')
+        lines.append(f'<div><span class="lbl">MHR-ის ჩანაწერში წერია</span><div class="val"><mark class="o">{e(c.get("mhr_value"))}</mark></div></div>')
+    why = " ".join(x for x in ("ქაღალდზე და MHR-ის ჩანაწერში სხვადასხვა მნიშვნელობა წერია." if differs else "", c.get("note")) if x)
+    if why:
+        lines.append(f'<div><span class="lbl">რატომ გაჩერდა</span><div class="val">{e(why)}</div></div>')
+    if action:
+        todo = _TODO_CHECK.get(c.get("field"), _TODO_FIELD).format(action=action)
+        lines.append(f'<div><span class="lbl">რა ვქნა</span><div class="val">{e(todo)}</div></div>')
+    if n:
+        lines.append(f'<div><a href="/mhr/{e(doc_id)}/page/{n}">მთელი გვერდი {n}</a></div>')
+    crop = _crop(doc_id, n, pts[n - 1], boxes, purged=purged) if n else ""
+    return (f'<div class="prob"><div class="prob-h"><span class="ib tone-bad">{icon("alert", 18)}</span><div><b>{e(c.get("label_ka") or c.get("field"))}</b>'
+            f'<div class="m">{e(_diff_place({"page": n}, pts)) if n else "დოკუმენტის მონაცემები და MHR-ის ბარათი"}</div></div></div>'
+            + (f'<div class="prob-b"><div class="lines">{"".join(lines)}</div><div>{crop}</div></div>' if crop else f'<div class="lines">{"".join(lines)}</div>') + "</div>")
+
+
+def _verdict(v: dict, m) -> str:
+    """ერთი წინადადება ზემოთ: რა მოხდა და რამდენი პრობლემაა."""
+    lines = _reason_lines(v)
+    past = _PAST_APPROVAL.get(m["status"])
+    if v.get("status") == "split":
+        return f'<div class="banner tone-info">{icon("file", 18)}<div>{"<br>".join(e(x) for x in v.get("summary") or [])}</div></div>'
+    if lines and past:
+        return (f'<div class="banner tone-info">{icon("file", 18)}<div><b>ფაილი {past} შენი გადაწყვეტილებით.</b> '
+                f'შემოწმებამ {len(lines)} პრობლემა ნახა, თითოეული ქვემოთაა.</div></div>')
+    if lines:
+        return (f'<div class="banner tone-warn">{icon("alert", 18)}<div><b>ფაილი გაჩერდა: {len(lines)} '
+                f'{"პრობლემა" if len(lines) == 1 else "პრობლემა"}.</b> თითოეული ქვემოთაა: სად არის, რა წერია და რატომ გაჩერდა.</div></div>')
+    if v.get("status") == "passed":
+        return (f'<div class="banner tone-ok">{icon("check", 18)}<div><b>ყველა შემოწმება გავიდა, {f"ფაილი {past}" if past else "მზადაა ატვირთვისთვის"}.</b> '
+                'ქვემოთ ჩანს, რა შემოწმდა და რა ნახა პროგრამამ თითო გვერდზე.</div></div>')
+    if v.get("summary"):
+        return f'<div class="banner tone-warn">{icon("alert", 18)}<div>{"<br>".join(e(x) for x in v["summary"])}</div></div>'
+    return ""
+
+
+def _notes_block(v: dict) -> str:
+    """შენიშვნები, რომლებიც არ აჩერებს."""
+    notes = [c["note"] for c in v.get("checks") or [] if c.get("status") == "info" and not c.get("blocking") and c.get("note")]
+    notes += [c.get("note") or f'{c.get("label_ka")}: დოკუმენტში „{c.get("document_value")}“, MHR-ში „{c.get("mhr_value")}“'
+              for c in v.get("checks") or [] if c.get("status") == "mismatch" and not c.get("blocking")]
+    notes += [s for s in v.get("summary") or [] if s.startswith("ყურადღება")]
+    if not notes:
+        return ""
+    return (f'<div class="banner tone-info">{icon("file", 18)}<div><b>შენიშვნა, არ აჩერებს:</b><br>' + "<br>".join(e(x) for x in notes) + "</div></div>")
+
+
+def _sig_checked(n: int, total: int, is_contract: bool) -> bool:
+    return is_contract or n == total
+
+
+def _page_signature(pt: dict, checked: bool) -> tuple[str, str]:
+    """(ტექსტი, ტონი): ამ გვერდის ხელმოწერის შედეგი."""
+    from ..validation import party_name
+    if not checked:
+        return "ამ ფაილზე მხოლოდ ბოლო გვერდზე მოწმდება", "mute"
+    if pt.get("marks_only"):
+        return "მხოლოდ ხელმოწერის გვერდია", "ok"
+    parties = pt.get("signature_parties") or {}
+    if parties:
+        text = " · ".join(f'{party_name(p, pt)}: {"არის" if parties[p] else "აკლია"}' for p in ("employer", "employee") if p in parties)
+        return text, "ok" if all(parties.values()) else "bad"
+    hint = pt.get("signature_hint")
+    if hint == "present":
+        return "ხელმოწერა ჩანს, მხარეები ვერ გაირჩა", "warn"
+    if hint == "not_detected":
+        return "ხელმოწერის ადგილი ამ გვერდზე არ ჩანს", "warn"
+    return "ხელმოწერა ვერ დადგინდა", "warn"
+
+
+_PN_ON_PAGE = re.compile(r"(?<!\d)\d{11}(?!\d)")
+
+
+def _reason_where(reason: str, meta: dict, pts: list[dict], parent) -> list[str]:
+    """გადასამოწმებლის მიზეზი: სად ჩანს ეს დოკუმენტში (უკვე HTML-ისთვის მომზადებული ხაზები)."""
+    def scan_page(pt: dict) -> int:
+        return int(pt.get("page_index", 0)) + 1
+    if reason == "multiple_employees":
+        lines: dict[str, list[int]] = {}
+        for pt in pts:
+            for pn in sorted(set(_PN_ON_PAGE.findall(pt.get("text") or ""))):
+                lines.setdefault(pn, []).append(scan_page(pt))
+        return [f"პირადი ნომერი {e(pn)}: გვერდი {e(_page_list(pages))}" for pn, pages in lines.items()]
+    if reason == "ocr_unreadable":
+        return [f"გვერდი {scan_page(pt)}: წაკითხვის ხარისხი {float(pt.get('ocr_quality') or 0):.2f}" for pt in pts]
+    if reason == "pages_not_in_mhr" and parent is not None:
+        rows = []
+        for part in json.loads(parent["validation"] or "{}").get("parts") or []:
+            if not part.get("matched"):
+                rows += [f"გვერდი {e(pg)}: ყველაზე მეტად ჰგავს „{e(m[0])}“-ს, {m[1]}% (საჭიროა მინიმუმ {OWNER_MIN_PCT}%)" for pg, m in (part.get("page_match") or {}).items()]
+        return rows
+    if reason == "possible_duplicate":
+        return [f'მსგავსი დოკუმენტი: <a href="/doc/{e(m["document_id"])}">გახსენი</a>' for m in ((meta.get("duplicate") or {}).get("matches") or [])[:3] if m.get("document_id")]
+    if reason == "uncertain_boundary" and pts:
+        return [f"გვერდები {e(_page_list([scan_page(pt) for pt in pts]))}"]
+    return []
+
+
+def _is_contract(c: Config, d) -> bool:
+    return bool(d is not None and d["type_id"] in (c.section("mhr").get("contract_type_ids") or []))
+
+
+def _page_overlays(pt: dict, diffs: list[dict], checked: bool) -> str:
+    out = []
+    for x in diffs:
+        if x.get("significant"):
+            out.append(_overlay(x.get("boxes") or []))
+        elif x.get("suspect"):
+            out.append(_overlay(x.get("boxes") or [], "warn"))
+    if checked:   # ნაპოვნი ხელმოწერა მწვანედ
+        zones = pt.get("signature_boxes") or {}
+        parties = pt.get("signature_parties") or {}
+        out.append(_overlay([zones[p] for p, found in parties.items() if found and p in zones], "ok"))
+    return "".join(out)
+
+
+def _page_map(c: Config, m, d, v: dict, pts: list[dict]) -> str:
+    if not pts or d is None or v.get("status") == "split" or not v:
+        return ""
+    doc_id = m["document_id"]
+    is_contract = _is_contract(c, d)
+    compared = _text_compared(v)
+    field_bad = _field_problems(v, json.loads(d["metadata"] or "{}"), pts)
+    if d["purged_at"]:
+        return f'<h2>გვერდ-გვერდ</h2><div class="banner tone-mute">{icon("file", 18)}<div>{PURGED_NOTE}</div></div>'
+    cards = []
+    for n, pt in enumerate(pts, start=1):
+        here = [x for x in v.get("diffs") or [] if x.get("page") == n]
+        fields = field_bad.get(n, [])
+        here += [{"significant": True, "boxes": boxes} for _ch, boxes in fields]
+        sig = [x for x in here if x.get("significant")]
+        text_bad = [x for x in sig if x.get("kind") in ("changed", "added", "removed")]
+        suspect = [x for x in here if x.get("suspect")]
+        noise = sum(1 for x in here if not x.get("significant") and not x.get("suspect") and x.get("kind") in ("changed", "added", "removed"))
+        checked = _sig_checked(n, len(pts), is_contract)
+        sig_text, sig_tone = _page_signature(pt, checked)
+        text_line = (f'ტექსტი: {len(text_bad)} სხვაობა' if text_bad else f'ტექსტი: {len(suspect)} საეჭვო' if suspect
+                     else "ტექსტი: არ შედარებულა" if not compared else "ტექსტი: ემთხვევა" + (f" ({noise} წვრილი)" if noise else ""))
+        tone = "bad" if sig else "warn" if suspect else ""
+        st = (chip("პრობლემა", "bad") if sig else chip("საეჭვო", "warn") if suspect
+              else chip("წესრიგშია", "ok") if compared else chip("არ შედარებულა", "mute"))
+        cards.append(f'<a class="pgcard {tone}" href="/mhr/{e(doc_id)}/page/{n}"><span class="cap"><b>გვ. {n}</b>{st}</span>'
+                     f'<span class="pgfig"><img src="/page/{e(doc_id)}/{int(pt.get("page_index", 0))}.png?dpi=60" loading="lazy" alt="გვერდი {n}">{_page_overlays(pt, here, checked)}</span>'
+                     f'<span class="m">{e(text_line)}</span>' + "".join(f'<span class="m">{e(ch.get("label_ka"))} განსხვავდება</span>' for ch, _b in fields)
+                     + f'<span class="m">{e(sig_text)}</span><span class="m">წაიკითხა: {e(_reader(pt))}</span></a>')
+    return ('<h2>გვერდ-გვერდ</h2><p class="muted" style="margin:-6px 0 12px;font-size:13.5px">წითელი ჩარჩო პრობლემაა, ყვითელი საეჭვო, მწვანე ნაპოვნი ხელმოწერა. '
+            f'გვერდზე დაჭერით დიდად გაიხსნება.</p><div class="pgmap">{"".join(cards)}</div>')
+
+
+def _checked_block(c: Config, m, d, v: dict, pts: list[dict]) -> str:
+    """რა შემოწმდა: ყოველი ნაბიჯი, შედეგით და ახსნით, მათ შორის რაც გავიდა. MHR მიუწვდომელი იყო: ჯერ არაფერი შემოწმებულა."""
+    if not v or v.get("status") == "split" or _mhr_did_not_answer(v):
+        return ""
+    steps = []
+
+    def step(tone: str, title: str, text: str) -> None:
+        ic = {"ok": "check", "bad": "x", "warn": "alert", "mute": "file"}[tone]
+        steps.append(f'<div class="st"><span class="ib tone-{tone}">{icon(ic, 18)}</span><div><b>{e(title)}</b><span class="d">{e(text)}</span></div></div>')
+
+    emp = v.get("employee") or {}
+    if emp:
+        step("ok", "თანამშრომელი MHR-ში ნაპოვნია", f'{_mhr_name(v)} · პირადი ნომერი {m["personal_number"] or "—"} · MHR ID {emp.get("employee_id")}')
+    else:
+        step("bad", "თანამშრომელი MHR-ში ვერ მოიძებნა", f'პირადი ნომერი {m["personal_number"] or "—"} — შეიძლება ნომერი არასწორად წერია ან წაიკითხა.')
+    o = v.get("original") or {}
+    if o:
+        step("ok", "რას შევადარე", f'{o.get("filename") or o.get("title")} · MHR ID {o.get("doc_id")}' + (f' · შექმნილია {str(o.get("created_at"))[:10]}' if o.get("created_at") else ""))
+    elif _no_compare(v):
+        step("bad", "შესადარებელი ფაილი ვერ მოიძებნა", "თანამშრომლის ბარათზე დაგენერირებული ფაილი არ არის, ამიტომ ტექსტი არაფერს შედარებია.")
+    diffs = v.get("diffs") or []
+    if o:
+        text_diffs = [x for x in diffs if x.get("kind") in ("changed", "added", "removed", "page_count")]
+        bad = [x for x in text_diffs if x.get("significant")]
+        suspect = [x for x in text_diffs if x.get("suspect")]
+        reread = [n for n, pt in enumerate(pts, start=1) if "recheck" in (pt.get("text_source") or "")]
+        noise = len(text_diffs) - len(bad) - len(suspect)
+        detail = (f'{len(pts)} გვერდი შევადარე სიტყვა-სიტყვით. ' + (f"წვრილი წაკითხვის სხვაობა: {noise} (ცვლილებად არ ითვლება). " if noise else "")
+                  + (f'Claude-მა ხელახლა წაიკითხა გვერდი {_page_list(reread)}.' if reread else "ხელახლა წაკითხვა არ დასჭირვებია."))
+        if bad:
+            step("bad", f"ტექსტი: {len(bad)} ნამდვილი სხვაობა", detail)
+        elif suspect:
+            step("warn", f"ტექსტი: {len(suspect)} პატარა სხვაობა ვერ გადამოწმდა", detail)
+        else:
+            step("ok", "ტექსტი ემთხვევა", detail)
+    if pts:
+        is_contract = _is_contract(c, d)
+        sig_bad = [x for x in diffs if x.get("kind") == "signature" and x.get("significant")]
+        rule = "ხელშეკრულებაზე ხელმოწერა ყველა გვერდზე მოწმდება, ორივე მხარისთვის." if is_contract else "ამ ფაილზე ხელმოწერა ბოლო გვერდზე მოწმდება, ორივე მხარისთვის."
+        if sig_bad:
+            step("bad", "ხელმოწერა აკლია", f'{rule} პრობლემა: {"; ".join(_diff_line(x) for x in sig_bad)}.')
+        else:
+            last_text, _tone = _page_signature(pts[-1], True)
+            step("ok", "ხელმოწერები ადგილზეა", f"{rule} ბოლო გვერდი: {last_text}. ვისი ხელია, პროგრამა ვერ ადგენს.")
+    dup = [ch for ch in v.get("checks") or [] if ch.get("field") == "already_uploaded"]
+    if any(ch.get("blocking") for ch in dup):
+        step("bad", "ეს ფაილი ბარათზე უკვე ატვირთულია", next(ch.get("note") or "" for ch in dup if ch.get("blocking")))
+    elif dup:
+        note = " ".join(ch.get("note") or "" for ch in dup)
+        step("ok", "ორჯერ ატვირთვა", f"ატვირთვამდე შემოწმდა: {note}" if m["status"] in _PAST_APPROVAL else note)
+    return f'<h2>რა შემოწმდა</h2><div class="card steps">{"".join(steps)}</div>' if steps else ""
+
+
+def _page_view(c: Config, m, d, pts: list[dict], n: int) -> str:
+    v = json.loads(m["validation"] or "{}")
+    doc_id = m["document_id"]
+    pt = pts[n - 1]
+    here = [x for x in v.get("diffs") or [] if x.get("page") == n]
+    checked = _sig_checked(n, len(pts), _is_contract(c, d))
+    sig_text, sig_tone = _page_signature(pt, checked)
+    nav = (f'<div class="btns" style="margin-bottom:14px"><a class="btn sm" href="/mhr/{e(doc_id)}">← ფაილის შედეგი</a>'
+           + (f'<a class="btn sm" href="/mhr/{e(doc_id)}/page/{n - 1}">გვერდი {n - 1}</a>' if n > 1 else "")
+           + (f'<a class="btn sm" href="/mhr/{e(doc_id)}/page/{n + 1}">გვერდი {n + 1}</a>' if n < len(pts) else "") + "</div>")
+    action = _action_name(m)
+    purged = bool(d["purged_at"])
+    problems = "".join(_problem_card(doc_id, x, pts, action, purged).replace('<div class="prob-b">', '<div>') for x in here if x.get("significant") or x.get("suspect"))
+    meta = json.loads(d["metadata"] or "{}")
+    fields = _field_problems(v, meta, pts).get(n, [])
+    problems += "".join(_check_card(ch, action, doc_id, meta, pts, purged).replace('<div class="prob-b">', '<div>') for ch, _b in fields)
+    noise = [x for x in here if not x.get("significant") and not x.get("suspect")]
+    noise_html = "".join(f'<div class="row" style="align-items:flex-start"><div class="grow lines"><div><span class="lbl">MHR-ის ფაილში</span><div class="val">{_highlight(x.get("orig_parts") or [], "o") or e(x.get("original"))}</div></div>'
+                         f'<div><span class="lbl">წაკითხული</span><div class="val">{_highlight(x.get("scan_parts") or [], "s") or e(x.get("scanned"))}</div></div></div></div>' for x in noise[:80])
+    side = (f'<div class="card steps"><div class="st"><div><b>ხელმოწერა</b><span class="d">{e(sig_text)}</span></div></div>'
+            f'<div class="st"><div><b>ვინ წაიკითხა</b><span class="d">{e(_reader(pt))}, ხარისხი {float(pt.get("ocr_quality") or 0):.2f}</span></div></div>'
+            f'<div class="st"><div><b>სკანის გვერდი</b><span class="d">{int(pt.get("page_index", 0)) + 1}</span></div></div></div>')
+    return (f'{nav}<h1>გვერდი {n}</h1><p class="sub">{e(clean_file_title((v.get("original") or {}).get("filename")) or _mhr_name(v) or "")}</p>'
+            + (f'<div class="pgview"><div class="banner tone-mute">{icon("file", 18)}<div>{PURGED_NOTE}</div></div><div>' if purged else
+               f'<div class="pgview"><div class="pgfig"><img src="/page/{e(doc_id)}/{int(pt.get("page_index", 0))}.png?dpi=130" alt="გვერდი {n}">{_page_overlays(pt, [*here, *({"significant": True, "boxes": b} for _ch, b in fields)], checked)}</div><div>')
+            + (f'<h2 style="margin-top:0">რა არის ამ გვერდზე</h2><div class="card list">{problems}</div>' if problems
+               else f'<div class="banner tone-ok">{icon("check", 18)}<div>ამ გვერდზე პრობლემა არ არის.</div></div>' if _text_compared(v)
+               else f'<div class="banner tone-mute">{icon("file", 18)}<div>ტექსტი არაფერს შედარებია, ამიტომ ეს გვერდი ქაღალდზე ნახე.</div></div>')
+            + f'<h2>დეტალები</h2>{side}'
+            + (f'<details style="margin-top:12px"><summary>წვრილი წაკითხვის სხვაობები ({len(noise)}) — ცვლილებად არ ითვლება</summary><div class="card list" style="margin-top:10px">{noise_html}</div></details>' if noise else "")
+            + f'<details style="margin-top:12px"><summary>რა წაიკითხა ამ გვერდზე</summary><pre style="white-space:pre-wrap;word-break:break-word;font:13.5px/1.6 inherit">{e(pt.get("text") or "")}</pre></details>'
+            + "</div></div>")
+
+
+def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict] | None = None, parts: dict | None = None) -> str:
     v = json.loads(m["validation"] or "{}")
     emp = v.get("employee") or {}
+    pts = pts or []
+    doc_id = m["document_id"]
+    meta = json.loads(d["metadata"] or "{}") if d is not None else {}
+    file_title = (meta.get("part") or {}).get("title") or clean_file_title((v.get("original") or {}).get("filename"))
+    scan_pages = [int(p["page_index"]) + 1 for p in pts if "page_index" in p]
     out = [f'<p><a href="/mhr">← MHR</a></p><div class="chips" style="margin-bottom:8px">{mhr_chip(m["status"])}</div>'
-           f'<h1>{e(_mhr_name(v) or "თანამშრომელი")}</h1><p class="sub">{e(m["personal_number"] or "")}'
+           f'<h1>{e(_mhr_name(v) or "თანამშრომელი")}{" · " + e(file_title) if file_title else ""}</h1><p class="sub">{e(m["personal_number"] or "")}'
            + (f' · MHR ID {e(emp.get("employee_id"))}' if emp.get("employee_id") else "")
-           + (f' · ატვირთვის ID {e(m["remote_id"])}' if m["remote_id"] else "") + "</p>"]
-    if m["error"]:
-        out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(m["error"])}</div></div>')
+           + (f' · ატვირთვის ID {e(m["remote_id"])}' if m["remote_id"] else "")
+           + (f' · {e(Path(d["first_path"]).name)}, სკანის გვერდები {e(_page_list(scan_pages))}' if d is not None and scan_pages and d["first_path"] else "") + "</p>"]
+    if m["error"] and m["error"] != "MhrError":
+        out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(_error_text(m["error"]))}</div></div>')
+    out.append(_verdict(v, m))
+    out.append(_notes_block(v))
+    sig_diffs = sorted((x for x in v.get("diffs") or [] if x.get("significant")), key=lambda x: x.get("page") or 0)
+    action = _action_name(m)
+    purged = bool(d is not None and d["purged_at"])
+    if sig_diffs or _blocking_checks(v):
+        out.append(f'<h2>{"რა ნახა შემოწმებამ" if m["status"] in _PAST_APPROVAL else "რატომ გაჩერდა"}</h2><div class="card list" style="margin-bottom:18px">'
+                   + "".join(_check_card(ch, action, doc_id, meta, pts, purged) for ch in _blocking_checks(v))
+                   + "".join(_problem_card(doc_id, x, pts, action, purged) for x in sig_diffs) + "</div>")
+    suspects = [x for x in v.get("diffs") or [] if x.get("suspect") and not x.get("significant")]
+    if suspects:
+        out.append('<h2>საეჭვო პატარა სხვაობები, არ აჩერებს</h2><div class="card list" style="margin-bottom:18px">'
+                   + "".join(_problem_card(doc_id, x, pts, action, purged) for x in suspects) + "</div>")
+    if parts is not None:
+        out.append(_mhr_parts_block(parts, m))
     out.append(_ai_block(c, m, worker_alive))
-    if v.get("summary"):
-        tone = "ok" if v.get("status") == "passed" else "warn"
-        out.append(f'<div class="banner tone-{tone}">{icon("check" if tone == "ok" else "alert", 18)}<div>'
-                   + "<br>".join(e(x) for x in v["summary"]) + "</div></div>")
     btn = {"ready": [("approve", "ატვირთვა MHR-ზე", "primary"), ("reject", "უარყოფა", "")],
            "failed": [("revalidate", "ხელახლა შედარება", ""), ("reject", "უარყოფა", "")],
            "upload_failed": [("retry", "ხელახლა ატვირთვა", "primary"), ("revalidate", "ხელახლა შედარება", "")],
@@ -1126,7 +1718,7 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True) -> str:
         f'<form class="inline" method="post" action="/mhr/{e(m["document_id"])}/{a}"><button class="btn {cls}">{e(lbl)}</button></form>'
         for a, lbl, cls in btn) + links + "</div>")
     no_compare = _no_compare(v)
-    if d is not None and (no_compare or not (m["status"] == "failed" and m["employee_id"])):
+    if d is not None and m["status"] != "pending" and not _mhr_did_not_answer(v) and (no_compare or not (m["status"] == "failed" and m["employee_id"])):
         blk = _manual_block(c, d, m, f"/mhr/{m['document_id']}")
         if blk:
             title = "ხელით ატვირთვა — შედარების გარეშე" if no_compare else "ხელით ატვირთვა"
@@ -1143,13 +1735,15 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True) -> str:
                     "ატვირთვა ჟურნალში ჩაიწერება, როგორც შენი გადაწყვეტილება.")
         else:
             lead = ("AI-მ სხვაობები გადახედა და თვლის, რომ ეს წაკითხვის შეცდომებია — დოკუმენტი სწორია" if ai_ok
-                    else "ქვემოთ მოცემული სხვაობები ვნახე — დოკუმენტი სწორია")
+                    else "ზემოთ მოცემული პრობლემები ქაღალდზე ვნახე — დოკუმენტი სწორია")
             hint = "მაგ. ბეჭედი ან ხელმოწერა შეცდომით ჩაითვალა ცვლილებად. ატვირთვა ჟურნალში ჩაიწერება, როგორც შენი გადაწყვეტილება."
         out.append(f'<form method="post" action="/mhr/{e(m["document_id"])}/override" class="card" style="padding:14px 16px;margin-bottom:20px">'
                    f'<label class="switch" style="margin-bottom:10px"><input type="checkbox" name="confirm" value="1" required>'
                    f'<span><b>{lead}</b><br><span class="muted" style="font-size:13.5px">{hint}'
                    f'</span></span></label><button class="btn{" primary" if ai_ok else ""}">ატვირთვა მაინც</button></form>')
-    checks = v.get("checks") or []
+    out.append(_checked_block(c, m, d, v, pts))
+    out.append(_page_map(c, m, d, v, pts))
+    checks = [ch for ch in v.get("checks") or [] if ch.get("field") != "already_uploaded"]
     if checks:
         rows = "".join(
             f'<tr><td>{e(ch.get("label_ka") or ch.get("field"))}</td><td>{e(ch.get("document_value") if ch.get("document_value") is not None else "—")}</td>'
@@ -1160,7 +1754,7 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True) -> str:
                    f'<th>დოკუმენტში</th><th>MHR-ში</th><th>შედეგი</th></tr>{rows}</table></div>')
     diffs = v.get("diffs") or []
     sig = [x for x in diffs if x.get("significant")]
-    noise = [x for x in diffs if not x.get("significant")]
+    noise = [x for x in diffs if not x.get("significant") and not x.get("suspect")]
 
     def drow(x):
         return (f'<div class="row" style="align-items:flex-start"><div style="min-width:110px"><b>{"გვ. " + str(x["page"]) if x.get("page") else "დოკუმენტი"}</b>'
@@ -1171,13 +1765,14 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True) -> str:
     template = next((ch for ch in checks if ch.get("field") == "contract_template"), None)
     if v.get("original"):
         o = v["original"]
-        out.append(f'<h2>ხელშეკრულების შედარება ორიგინალთან</h2><p class="muted" style="margin-top:-6px;font-size:13px">ორიგინალი MHR-ში: '
-                   f'{e(o.get("title") or o.get("filename") or o.get("doc_id"))}{" · " + e(o.get("created_at")) if o.get("created_at") else ""}</p>')
+        out.append(f'<h2>შედარება MHR-ის ორიგინალთან</h2><p class="muted" style="margin-top:-6px;font-size:13px">ორიგინალი MHR-ში: '
+                   f'{e(o.get("filename") or o.get("title") or o.get("doc_id"))}{" · " + e(str(o.get("created_at"))[:10]) if o.get("created_at") else ""}</p>')
     elif template:
         out.append(f'<h2>ხელშეკრულების შედარება შაბლონთან</h2><p class="muted" style="margin-top:-6px;font-size:13px">'
                    f'{e(template.get("note") or "")}</p>')
     if v.get("original") or template:
-        out.append(f'<div class="card list">{"".join(drow(x) for x in sig) or empty("check", "ok", "შინაარსობრივი ცვლილება არ მოიძებნა")}</div>')
+        if not sig:
+            out.append(f'<div class="card list">{empty("check", "ok", "შინაარსობრივი ცვლილება არ მოიძებნა")}</div>')
         if noise:
             out.append(f'<details style="margin-top:12px"><summary>OCR-ის წვრილი განსხვავებები ({len(noise)}) — ცვლილებად არ ითვლება</summary>'
                        f'<div class="card list" style="margin-top:10px">{"".join(drow(x) for x in noise[:200])}</div></details>')
@@ -1199,7 +1794,7 @@ def _doc_next(c: Config, x, item, reasons_html: str, mhr_on: bool) -> str:
     doc_id = x["id"]
     st = item["status"] if item else None
     v = json.loads(item["validation"] or "{}") if item else {}
-    why = (v.get("summary") or [""])[0]
+    why = _main_reason(v)
     manual = _manual_block(c, x, item, f"/doc/{doc_id}") if mhr_on else ""
 
     def card(tone: str, title: str, text: str, inner: str = "") -> str:
@@ -1210,6 +1805,9 @@ def _doc_next(c: Config, x, item, reasons_html: str, mhr_on: bool) -> str:
     emp_name = " ".join(x for x in (emp.get("first_name"), emp.get("last_name")) if x)
     alt = (f'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
            f'<div class="muted" style="font-size:13px;margin-bottom:6px">ან, თუ დოკუმენტი სწორია — ატვირთე ხელით</div>{manual}</div>') if manual else ""
+    if st == "split":
+        return card("info", "სკანი ფაილებად დაიყო", "თითოეული ფაილი ცალკე მოწმდება და ცალკე აიტვირთება.",
+                    f'<a class="btn sm" href="/mhr/{e(doc_id)}">ფაილების სია</a>')
     if st == "uploaded":
         return card("ok", "ატვირთულია MHR-ზე", f"თანამშრომლის ბარათზეა{' · ' + emp_name if emp_name else ''}.",
                     f'<a class="btn sm" href="/mhr/{e(doc_id)}">დეტალები</a>')
@@ -1223,8 +1821,11 @@ def _doc_next(c: Config, x, item, reasons_html: str, mhr_on: bool) -> str:
         return card("warn", "MHR-ში ხელშეკრულება ვერ მოიძებნა", why,
                     (manual or f'<div class="btns"><a class="btn" href="/mhr/{e(doc_id)}">დეტალები</a></div>'))
     if st == "failed":
-        return card("warn", "MHR-ს არ ემთხვევა", why,
-                    f'<div class="btns"><a class="btn primary" href="/mhr/{e(doc_id)}">{icon("search", 16)}ნახე სხვაობები</a></div>{alt}')
+        lines = _reason_lines(v)
+        listed = "".join(f"<li>{e(t)}</li>" for t in lines[:6]) + (f"<li>და კიდევ {len(lines) - 6}</li>" if len(lines) > 6 else "")
+        return card("warn", "რატომ გაჩერდა", "" if lines else why,
+                    (f'<ul style="margin:0 0 12px;padding-left:20px;font-size:14px">{listed}</ul>' if listed else "")
+                    + f'<div class="btns"><a class="btn primary" href="/mhr/{e(doc_id)}">{icon("search", 16)}ნახე ადგილი და დეტალები</a></div>{alt}')
     if st in ("upload_failed", "needs_check"):
         return card("bad" if st == "upload_failed" else "warn", MHR_KA[st][0], item["error"] or "",
                     f'<div class="btns"><a class="btn primary" href="/mhr/{e(doc_id)}">რა მოხდა</a></div>')

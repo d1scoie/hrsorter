@@ -97,6 +97,6 @@ def test_failed_item_can_be_rejected_from_ui(world):
     assert failed
     c = TestClient(create_app(str(cfg_path)), base_url=LOCAL)
     doc = failed[0]["document_id"]
-    assert "ტექსტი შეცვლილია" in c.get(f"/mhr/{doc}").text
+    assert "რატომ გაჩერდა" in c.get(f"/mhr/{doc}").text
     c.post(f"/mhr/{doc}/reject", headers={"origin": LOCAL})
     assert repo.mhr_get(doc)["status"] == "rejected"

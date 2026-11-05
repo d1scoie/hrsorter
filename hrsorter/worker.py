@@ -45,8 +45,8 @@ class Worker:
         self.restart = False   # ბაზის ადგილი შეიცვალა (ახალი root) — main ახალ worker-ს გაუშვებს
 
     # --- აღდგენა ---------------------------------------------------------------
-    def _recover(self, repo: Repository) -> None:
-        ids = repo.recover_stale_jobs(int(self.cfg.section("processing")["max_attempts"]))
+    def _recover(self, repo: Repository, orphaned: bool = False) -> None:
+        ids = repo.recover_stale_jobs(int(self.cfg.section("processing")["max_attempts"]), orphaned)
         if ids:
             repo.log_event("recovery", f"recovered {len(ids)} interrupted job(s)", level="warning")
         try:
@@ -191,7 +191,7 @@ class Worker:
         """`processing.concurrency` ნაკადი + InboxWatcher; stop_event-ზე მიმდინარე სამუშაოს დასრულების შემდეგ ჩერდება."""
         self.cfg = self.cfg_loader()
         repo = Repository(self.db_path)
-        self._recover(repo)
+        self._recover(repo, orphaned=True)   # InstanceLock: სხვა ფონური პროცესი ვერ მუშაობს, მისი lease-ის ვადას არ ველოდებით
         watcher = InboxWatcher(self.cfg, self.db_path, cfg_loader=self.cfg_loader)
         watcher.start()
         n = int(self.cfg.section("processing")["concurrency"])

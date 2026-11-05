@@ -14,7 +14,11 @@
        * ციფრები: ორი მხარის ციფრების მიმდევრობა განსხვავდება და (ორიგინალში ციფრები იყო, ან
          დასკანერებულში ≥3 ციფრიანი რიცხვი გაჩნდა) — თანხა, თარიღი, პ/ნ, პუნქტის ნომერი;
        * ≥3 „ნამდვილი" სიტყვის ჩამატება/ამოღება (ან სიგრძეების სხვაობა ≥3 შეცვლილ ჯგუფში);
-       * შეცვლილი სიტყვა, რომლის სიმბოლოური მსგავსება < SIMILARITY_MIN — OCR-ის შეცდომა არ არის.
+       * შეცვლილი სიტყვა, რომლის სიმბოლოური მსგავსება < SIMILARITY_MIN — OCR-ის შეცდომა არ არის;
+       * „არ", „ვერ"… გაქრა/გაჩნდა ან „სწორი" გახდა „არასწორი" — ერთი სიტყვა აზრს პირიქით ცვლის.
+     1-2 ნამდვილი სიტყვის ჩამატება/ამოღება და მსგავსი, მაგრამ სხვა სიტყვა („დასაშვებია"/„დაუშვებელია") Tesseract-ის
+     გვერდზე `suspect`-ია: გვერდი Claude-მა ხელახლა უნდა წაიკითხოს. სანდო ტექსტის გვერდზე (`trusted_pages`) იგივე უკვე
+     `significant`-ია — ნამდვილ სკანებზე Claude მთელ სიტყვას არ კარგავს და ერთ ასოს ურევს, ამიტომ ერთი ასო ისევ ხმაურია.
      სხვა ყველაფერი — OCR-ის ხმაური (significant=False), მაგრამ სიაში რჩება.
   5. დასკანერებულ მხარეზე ნაგვის ტოკენები (1 სიმბოლო; 2 სიმბოლო, რომელიც ქართული სიტყვა არ არის — „3/6", „_")
      მნიშვნელოვნებას არ ქმნის. ცნობილი OCR-კონფუზიები (3→პ, 6→ნ, შ→ძ …) მხოლოდ მსგავსების გამოთვლისას
@@ -27,14 +31,16 @@
 იგივე ციფრები — შეცვლილი თარიღი სათაურში არ „იმალება"). დასკანერებულიდან ასევე იშლება გვერდის ნომრის ხაზი,
 რომლის ნომერი ამ გვერდის ნომერს ემთხვევა („2", „- 2 -", „გვერდი 2/3").
 
-კონსერვატიულობა: ტყუილად „შეცვლილია" ბევრად უკეთესია, ვიდრე გამოტოვებული რეალური ცვლილება. შეზღუდვები:
-1-2 სიტყვის ჩამატება („არ") ხმაურად ითვლება; ხელმოწერის ზონაში OCR-ის ≥3 „ნამდვილი" სიტყვა მნიშვნელოვანი
-იქნება (ოპერატორი ნახავს). დასკანერებული ტექსტი მონაცემია — აქ არაფერი „ასრულებს" მას.
+კონსერვატიულობა: ტყუილად „შეცვლილია" ბევრად უკეთესია, ვიდრე გამოტოვებული რეალური ცვლილება. შეზღუდვები: ერთი ასოს
+სხვაობა ხმაურია (მათ შორის Claude-ის წაკითხვაშიც — „ღ"/„ლ", „ბ"/„ზ"); ხელმოწერის ზონაში OCR-ის ≥3 „ნამდვილი" სიტყვა
+მნიშვნელოვანი იქნება (ოპერატორი ნახავს). დასკანერებული ტექსტი მონაცემია — აქ არაფერი „ასრულებს" მას.
 """
 from __future__ import annotations
 
 import math
+import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -45,8 +51,16 @@ SIMILARITY_MIN = 0.6       # შეცვლილი სიტყვის ს�
 RUN_MIN_WORDS = 3          # ამდენი (ან მეტი) სიტყვის ჩამატება/ამოღება → მნიშვნელოვანი
 RUN_MIN_WORD_LEN = 3       # მონაკვეთის წესში სიტყვად ითვლება ≥3 ასოიანი ტოკენი
 NEW_NUMBER_MIN_DIGITS = 3  # დასკანერებულში ახლად გაჩენილი რიცხვი ამდენი ციფრით → მნიშვნელოვანი („3/6" — არა)
+NEGATIONS = frozenset({"არ", "არა", "ვერ", "ნუ", "არც", "ვერც", "ნურც", "აღარ", "ვეღარ", "ნუღარ"})   # ერთი ასეთი სიტყვა აზრს პირიქით ცვლის
+NEGATING_PREFIX = "არა"    # „სწორი" / „არასწორი"
+ADDED_WORD_MIN_LETTERS = 4  # Tesseract-ის გვერდზე უფრო მოკლე ჩამატებული სიტყვა ბეჭდის/ლოგოს ნაგავია („თო", „მაყ", „კას")
+INFLECTION_PREFIX_SHARE = 0.6   # ამ წილზე მეტი საერთო დასაწყისი → სიტყვები მხოლოდ დაბოლოებით განსხვავდება („მომზადების"/„მომზადება")
+KEPT_SIMILARITY = 0.8      # ბოლო გვერდზე სიტყვის ასლების დათვლისას
+KEPT_LONG_NUMBER = 6
 SNIPPET_MAX = 160
 CONTEXT_WORDS = 3
+PARTS_MAX = 400            # ვებ-გვერდზე ნაჩვენები შეცვლილი ტექსტის ზღვარი
+CLAUSE_LOOKBACK = 400      # პუნქტის ნომერი ამდენ სიტყვაში იძებნება
 RUNNING_MIN_PAGES = 3      # გამჭოლი ხაზების ძებნა მხოლოდ ამდენ (ან მეტ) გვერდიან სკანზე
 RUNNING_SHARE = 0.5        # ხაზი გვერდების ამ წილის კიდეებზე მაინც უნდა მეორდებოდეს
 RUNNING_SIMILARITY = 0.85  # ნორმალიზებული ხაზების მსგავსება (OCR-ის ხმაური)
@@ -152,10 +166,9 @@ _LETTER_AS_DIGIT = str.maketrans({"ი": "0", "ო": "0", "ზ": "8", "ვ": "3"
 def _digits_match(a: list[str], b: list[str]) -> bool:
     """ციფრები ტოლია; ან ტოლია სკანის მარტოხელა 0/3/6/8-ის გარეშე — ქართული ასოს ადგილას წაკითხული ციფრი
     („პ/ნ:4300…" → „პ/6:4300…", „ან" → „36"); ან ტოლია რიცხვში ასოდ წაკითხული ციფრის აღდგენით („40" → „4ი").
-    ნამდვილი რიცხვი (≥2 ციფრი ზედიზედ) უცვლელი რჩება."""
+    ნამდვილი რიცხვი (≥2 ციფრი ზედიზედ) უცვლელი რჩება. გრძელი ნომრის (პ/ნ, ანგარიში) ერთი ციფრიც ამ წესით სხვაობაა:
+    Tesseract-ის შეცდომას ხელახალი წაკითხვა ასწორებს, ანგარიშის ნამდვილი ციფრი კი არ უნდა დაიმალოს."""
     da, db = _digits(a), _digits(b)
-    if len(da) >= 10 and len(db) >= 10 and len(da) == len(db) and _edit_distance(da, db) <= 1:
-        return True   # 11-ნიშნა პ/ნ-ის ერთი ციფრის OCR-შეცდომა — პ/ნ ცალკე, MHR-თან მოწმდება
     return (da == db or da == _digits([_LONE_CONFUSED_DIGIT.sub("", w) for w in b])
             or (bool(da) and da == _digits([w.translate(_LETTER_AS_DIGIT) for w in b])))
 
@@ -318,6 +331,7 @@ def _table_noise(a: list[str], b: list[str], a_bag: list[str], b_page: list[str]
 
 LAST_PAGE_LINE_MIN = 7     # ბოლო გვერდის სტრიქონი ამდენი (ან მეტი) სიტყვით შაბლონში უნდა მოიძებნოს
 LAST_PAGE_UNMATCHED = 5    # სტრიქონში ამდენი (ან მეტი) სიტყვა შაბლონს არ ემთხვევა → ჩამატებული ტექსტი
+LAST_PAGE_STRAY_GAP = 4
 
 
 def _confused(w: str) -> str:
@@ -356,6 +370,11 @@ def _best_match(t: list[str], toks: list[str]) -> tuple[int, int]:
     inner = [b for b in SequenceMatcher(None, t[lo:hi], toks, autojunk=False).get_matching_blocks() if b.size]
     if not inner:
         return matched, span
+    # კიდის ერთი სიტყვა („სტაჟიორი") შორს აღმოჩნდა, მთავარი ნაწილი კი კომპაქტურია — ის ამ სტრიქონს არ ეკუთვნის
+    while len(inner) > 1 and inner[0].size == 1 and inner[1].a - inner[0].a > LAST_PAGE_STRAY_GAP:
+        inner.pop(0)
+    while len(inner) > 1 and inner[-1].size == 1 and inner[-1].a - (inner[-2].a + inner[-2].size) > LAST_PAGE_STRAY_GAP:
+        inner.pop()
     m2 = sum(b.size for b in inner)
     s2 = inner[-1].a + inner[-1].size - inner[0].a
     return (m2, s2) if m2 >= matched - 1 else (matched, span)
@@ -365,6 +384,48 @@ def _snippet(toks: list[_Tok], i0: int, i1: int) -> str:
     lo, hi = max(0, i0 - CONTEXT_WORDS), min(len(toks), i1 + CONTEXT_WORDS)
     s = " ".join("{…}" if t.word == PLACEHOLDER else t.word for t in toks[lo:hi])
     return s if len(s) <= SNIPPET_MAX else s[:SNIPPET_MAX - 1] + "…"
+
+
+def _parts(toks: list[_Tok], i0: int, i1: int) -> list[str]:
+    """[სიტყვები წინ, შეცვლილი სიტყვები, სიტყვები შემდეგ] — ვებ-გვერდზე შეცვლილი ნაწილი ზუსტად მოინიშნოს."""
+    def text(lo: int, hi: int) -> str:
+        return " ".join("{…}" if t.word == PLACEHOLDER else t.word for t in toks[max(0, lo):hi])
+    changed = text(i0, i1)
+    return [text(i0 - CONTEXT_WORDS, i0), changed if len(changed) <= PARTS_MAX else changed[:PARTS_MAX - 1] + "…", text(i1, i1 + CONTEXT_WORDS)]
+
+
+def _clause_before(a: list[_Tok], i: int, labels: set[str] | None) -> str:
+    if labels:
+        for k in range(min(i, len(a)) - 1, max(-1, i - CLAUSE_LOOKBACK), -1):
+            if a[k].word in labels:
+                return a[k].word
+    return ""
+
+
+def locate(words: list[list], scan_parts: list[str]) -> list[list[int]]:
+    """დასკანერებულის ფრაგმენტი → სად არის გვერდზე: Tesseract-ის სიტყვების ჩარჩოები, სტრიქონზე თითო (გვერდის მეათასედებში).
+    ტექსტი შეიძლება Claude-მა წაიკითხა, ამიტომ ადგილი კონტექსტის სიტყვებითაც იძებნება; ამოღებულ ტექსტზე მეზობელი სიტყვები მოინიშნება."""
+    if not words or len(scan_parts) != 3:
+        return []
+    page = [(t.word, w[1:5]) for w in words for t in _tokens(str(w[0]), 0)]
+    before, changed, after = (p.split() for p in scan_parts)
+    target = [_confused(x) for x in [*before, *changed, *after]]
+    if not page or not target:
+        return []
+    blocks = [b for b in SequenceMatcher(None, [_confused(p[0]) for p in page], target, autojunk=False).get_matching_blocks() if b.size]
+    if not blocks:
+        return []
+    big = max(blocks, key=lambda b: b.size)
+    start = big.a - big.b + len(before)
+    lo, hi = (start, start + len(changed)) if changed else (start - 1, start + 1)
+    boxes: list[list[int]] = []
+    for _word, box in page[max(0, lo):max(0, hi)]:
+        last = boxes[-1] if boxes else None
+        if last and box[1] < last[3] and box[3] > last[1]:   # იგივე სტრიქონი
+            last[0], last[1], last[2], last[3] = min(last[0], box[0]), min(last[1], box[1]), max(last[2], box[2]), max(last[3], box[3])
+        else:
+            boxes.append(list(box))
+    return boxes
 
 
 def _groups(a: list[_Tok], b: list[_Tok]) -> list[tuple[int, int, int, int]]:
@@ -414,14 +475,123 @@ def _split_by_page(a: list[_Tok], b: list[_Tok], g: tuple[int, int, int, int]) -
     return out
 
 
+def _negated(neg: str, plain: str) -> bool:
+    return (neg.startswith(NEGATING_PREFIX) and not plain.startswith(NEGATING_PREFIX) and len(plain) >= 3
+            and _sim(plain, neg[len(NEGATING_PREFIX):]) >= KEPT_SIMILARITY)
+
+
+def _negation_change(a: list[str], b: list[str]) -> str | None:
+    """ერთი სიტყვა, რომელიც აზრს პირიქით ცვლის: „არ", „ვერ"… გაქრა ან გაჩნდა, ან „სწორი" გახდა „არასწორი". მხოლოდ სიტყვებს
+    შორის ინტერვალის სხვაობა („არ შესრულების"/„არშესრულების") ცვლილება არ არის."""
+    na, nb = Counter(w for w in a if w in NEGATIONS), Counter(w for w in b if w in NEGATIONS)
+    if na != nb:
+        if _edit_distance(_confused("".join(a)), _confused("".join(b))) <= 1:
+            return None
+        lost, new = sorted((na - nb).elements()), sorted((nb - na).elements())
+        return f"ამოღებული სიტყვა „{lost[0]}“" if lost else f"ჩამატებული სიტყვა „{new[0]}“"
+    if any(_negated(x, y) or _negated(y, x) for x in a for y in b):
+        return "უარყოფა შეცვლილია"
+    return None
+
+
+_ONLY_GEORGIAN = re.compile(r"[ა-ჰ]{2,}(?:[-/][ა-ჰ]+)*")   # ციფრიან და ლათინურ ტოკენებს სხვა წესები ფარავს
+
+
+def _is_subsequence(short: str, long: str) -> bool:
+    letters = iter(long)
+    return all(c in letters for c in short)
+
+
+def _far_word(x: str, y: str) -> bool:
+    """მსგავსი, მაგრამ სხვა სიტყვა („დასაშვებია"/„დაუშვებელია", „სამასი"/„რვაასი"): ერთი ასოს შეცდომა არ არის, OCR-ს
+    ზედმეტი ან დაკარგული ასო არ ახსნის („უფლება"/„როუფლება") და სხვაობა მხოლოდ დაბოლოებაში არ არის."""
+    if not (_ONLY_GEORGIAN.fullmatch(x) and _ONLY_GEORGIAN.fullmatch(y)):
+        return False
+    cx, cy = _confused(x), _confused(y)
+    if _edit_distance(cx, cy) < 2 or _is_subsequence(cx, cy) or _is_subsequence(cy, cx):
+        return False
+    return len(os.path.commonprefix([cx, cy])) < INFLECTION_PREFIX_SHARE * max(len(cx), len(cy))
+
+
+@dataclass
+class _WordChange:
+    removed: list[str]
+    added: list[str]
+    far: bool
+
+    @property
+    def reason(self) -> str | None:
+        return ("ამოღებული ტექსტი" if self.removed else "ჩამატებული ტექსტი" if self.added
+                else "სიტყვა შეცვლილია" if self.far else None)
+
+
+def _word_change(a: list[str], b: list[str], known: list[str], trusted: bool) -> _WordChange:
+    """წესების ქვემოთ დარჩენილი პატარა სხვაობა ჯგუფში: რომელი ნამდვილი სიტყვა გაქრა ან გაჩნდა და არის თუ არა მსგავსი, მაგრამ
+    სხვა სიტყვა. ნაგვად წაკითხული სიტყვა („ზიანის" → „bosbob"), ხელმოწერის სტრიქონის წარწერა და MHR-ის მონაცემი არ ითვლება;
+    Tesseract-ის გვერდზე ასევე მოკლე ჩამატებული ტოკენი (ბეჭდის ნაგავი)."""
+    rest, removed, far = list(b), [], False
+    for x in a:
+        best = max(rest, key=lambda y: _sim(x, y), default=None)
+        if best is not None and _sim(x, best) >= SIMILARITY_MIN:
+            far = far or _far_word(x, best)
+            rest.remove(best)
+        else:
+            removed.append(x)
+    removed = [x for x in removed if _ONLY_GEORGIAN.fullmatch(x) and not any(_ocr_failed_word(x, y) for y in rest)]
+    added = [y for y in rest if _ONLY_GEORGIAN.fullmatch(y) and not _SIG_EMPLOYER.match(y) and not _SIG_EMPLOYEE.match(y)
+             and (trusted or len(y) >= ADDED_WORD_MIN_LETTERS) and not _found(y, known, KEPT_SIMILARITY)]
+    return _WordChange(removed, added, far)
+
+
+def _kept(w: str, mine: list[str], other: list[str]) -> bool:
+    """სიტყვა/რიცხვი გვერდიდან არ დაკარგულა: მეორე მხარეს მაინც იმდენჯერ წერია. ცხრილის სვეტების სხვა რიგით წაკითხვა
+    რაოდენობას არ ცვლის, შეცვლილი რიცხვი („01" → „11") კი ცვლის, თუნდაც ძველი იმავე გვერდზე სხვაგანაც ეწეროს."""
+    digits = _digits([w])
+    if len(digits) >= KEPT_LONG_NUMBER:   # გრძელი ნომერი სახელს შეიძლება მიეწებოს („მარიამპ/ნ:0100…")
+        def same(x: str) -> bool:
+            return digits in _digits([x])
+    elif digits:
+        def same(x: str) -> bool:
+            return bool(_digits([x])) and _sim(w, x) >= SIMILARITY_MIN and (_digits_match([w], [x]) or _digits_match([x], [w]))
+    else:
+        def same(x: str) -> bool:
+            return _sim(w, x) >= KEPT_SIMILARITY
+    return sum(map(same, other)) >= sum(map(same, mine))
+
+
+def _table_counts_kept(a: list[str], b: list[str], a_last: list[str], b_last: list[str], known: list[str]) -> bool:
+    """მოკლე ტოკენები არ ითვლება („ს/ნ"/„ს/კ", ნაკაწრი, „პ/ნ" → „3/6"); წარწერა „დამსაქმებელი"/„სტაჟიორი" ბეჭდურ სტრიქონშიც წერია."""
+    def long_word(w: str) -> bool:
+        return len(w) > ADDED_WORD_MIN_LETTERS and bool(_GEO_WORD.search(w))
+    return (all(_kept(w, a_last, b_last) for w in a if w != PLACEHOLDER and (_digits([w]) or long_word(w)))
+            and all(_kept(w, b_last, [*a_last, *known]) for w in b
+                    if (_digits([_LONE_CONFUSED_DIGIT.sub("", w)]) or long_word(w))
+                    and not _SIG_EMPLOYER.match(w) and not _SIG_EMPLOYEE.match(w)))
+
+
+def _a_index_at(groups: list[tuple[int, int, int, int]], j: int) -> int:
+    """სკანის j-ური სიტყვის შესაბამისი ადგილი ორიგინალში (ჯგუფებს შორის სიტყვები ტოლია)."""
+    i_end, j_end = 0, 0
+    for i1, i2, j1, j2 in groups:
+        if j < j1:
+            break
+        if j < j2:
+            return i1
+        i_end, j_end = i2, j2
+    return i_end + (j - j_end)
+
+
 def _diff_tokens(a: list[_Tok], b: list[_Tok], default_page: int, labels: set[str] | None = None,
-                 known: list[str] | None = None) -> list[TextDiff]:
+                 known: list[str] | None = None, trusted_pages: set[int] | None = None) -> list[TextDiff]:
     out: list[TextDiff] = []
     if [t.word for t in a] == [t.word for t in b]:
         return out
     a_bag = [t.word for t in a]
     last_page = b[-1].page if b else 0
-    for i1, i2, j1, j2 in (s for g in _groups(a, b) for s in _split_by_page(a, b, g)):
+    groups = _groups(a, b)
+    last_start = next((j for j, t in enumerate(b) if t.page == last_page), 0)
+    a_last, b_last = a_bag[_a_index_at(groups, last_start):], [t.word for t in b[last_start:]]
+    for i1, i2, j1, j2 in (s for g in groups for s in _split_by_page(a, b, g)):
         aw, bw = [t.word for t in a[i1:i2]], [t.word for t in b[j1:j2]]
         if labels and not any(w in labels for w in aw):
             bw = [w for w in bw if w not in labels]   # სკანში სხვაგან წაკითხული ნუმერაცია („7.8 7.9 8.1" ტექსტის შუაში)
@@ -445,12 +615,31 @@ def _diff_tokens(a: list[_Tok], b: list[_Tok], default_page: int, labels: set[st
         else:
             reason = _significant(aw, bw)
         if reason and labels is not None and (PLACEHOLDER in aw or page == last_page) \
-                and _table_noise(aw, bw, a_bag, [t.word for t in b if t.page == page], known or []):
+                and _table_noise(aw, bw, a_bag, [t.word for t in b if t.page == page], known or []) \
+                and (PLACEHOLDER in a_bag or _table_counts_kept(aw, bw, a_last, b_last, known or [])):   # შაბლონში მნიშვნელობები არ წერია
             reason = None
         if reason and not aw and known and b_real and all(_found(w, known, 0.8) for w in b_real):
             reason = None      # სუფთა ჩამატება მხოლოდ ცნობილი ტოკენებით („2009" — ბეჭდის/კომპანიის სახელის ციფრი, ს/კ) — ბეჭედია
+        suspect = False
+        if reason is None and PLACEHOLDER not in aw:
+            a_text = [w for w in aw if not (labels and w in labels)]
+            b_text = [w for w in b_real if not (labels and w in labels)]
+            reason = _negation_change(a_text, b_text)
+            if reason is None and PLACEHOLDER not in a_bag:
+                trusted = page in (trusted_pages or ())
+                change = _word_change(a_text, b_text, known or [], trusted)
+                moved = (labels is not None and page == last_page and not change.far   # ცხრილის სვეტები სხვა რიგით
+                         and all(_kept(w, a_last, b_last) for w in change.removed)
+                         and all(_kept(w, b_last, [*a_last, *(known or [])]) for w in change.added))
+                if change.reason and not moved:
+                    if trusted:
+                        reason = change.reason
+                    else:
+                        suspect = True
         out.append(TextDiff(page=page, kind=kind, original=_snippet(a, i1, i2), scanned=_snippet(b, j1, j2),
-                            significant=reason is not None, reason=reason or "OCR-ის ხმაური"))
+                            significant=reason is not None, suspect=suspect,
+                            reason=reason or ("საეჭვო პატარა სხვაობა" if suspect else "OCR-ის ხმაური"),
+                            orig_parts=_parts(a, i1, i2), scan_parts=_parts(b, j1, j2), clause=_clause_before(a, i2, labels)))
     return out
 
 
@@ -496,18 +685,43 @@ def _is_page_number(norm: str, page: int) -> bool:
     return bool(m) and int(m.group(1)) == page
 
 
+HEADER_JUNK_MAX_TOKENS = 3    # გამჭოლი სათაურის წინ ამდენამდე წვრილი ტოკენი — ლოგოს ასოებია („მადარგ ი დავით … მიერ")
+HEADER_JUNK_MAX_CHARS = 10
+HEADER_MIN_CHARS = 12         # ამაზე მოკლე ხაზი სათაურად არ ითვლება
+
+
+def _header_after_junk(norm: str, lines: list[str]) -> bool:
+    """ბლანკის თავი ყოველ გვერდზე: ლოგო სურათია, OCR კი მის ასოებს სათაურის ხაზს აწებებს — ხაზი ისევ სათაურია."""
+    toks = norm.split()
+    for k in range(1, HEADER_JUNK_MAX_TOKENS + 1):
+        rest = " ".join(toks[k:])
+        if len("".join(toks[:k])) <= HEADER_JUNK_MAX_CHARS and len(rest) >= HEADER_MIN_CHARS \
+                and any(_same_line(rest, x) for x in lines):
+            return True
+    return False
+
+
 def _strip(text: str, lines: list[str], page: int | None = None) -> str:
     """ტექსტიდან ამოიღებს `lines`-ის მსგავს ხაზებს (და page-ის მითითებისას — გვერდის კიდეზე ამ გვერდის ნომერს)."""
     rows = [(ln, _norm_line(ln)) for ln in text.split("\n")]
     filled = [i for i, (_, norm) in enumerate(rows) if norm]
     edge = set(_edges(filled)) if page is not None else set()
+    split_header = {k for i, j in zip(filled, filled[1:]) if i in edge and j in edge   # Claude სათაურს ორ ხაზად წერს („ქ. თბილისი" / „2026-10-29")
+                    and any(_same_line(f"{rows[i][1]} {rows[j][1]}", x) for x in lines)
+                    and not any(_same_line(rows[i][1], x) or _same_line(rows[j][1], x) for x in lines) for k in (i, j)}
     keep = []
     for i, (ln, norm) in enumerate(rows):
+        if i in split_header:
+            continue
         if norm and (any(_same_line(norm, x) for x in lines) or (i in edge and _is_page_number(norm, page))):
             continue
+        if i in edge and len(norm) >= HEADER_MIN_CHARS and any(f" {norm} " in f" {x} " for x in lines):
+            continue   # კიდეზე სათაურის ნაწილი, მთელი სიტყვებით: Claude სათაურის დასაწყისს ხანდახან ტოვებს („01 იანვრის … დანართი")
         m = _GLUED_HEADER.match(ln)   # „10.6 ქ. თბილისი 2026-11-01": პუნქტის ნომერი + გამჭოლი სათაური ერთ ხაზად — სათაური იშლება
         if m and any(_same_line(_norm_line(m.group(2)), x) for x in lines):
             keep.append(m.group(1))
+            continue
+        if norm and _header_after_junk(norm, lines):
             continue
         keep.append(ln)
     return "\n".join(keep)
@@ -518,20 +732,20 @@ _GLUED_HEADER = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2})+\.?)\s+(\S.*)$")
 
 def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg, original_paginated: bool = True,
                   strip_lines: list[str] | None = None, labels: set[str] | None = None,
-                  known: list[str] | None = None) -> list[TextDiff]:
+                  known: list[str] | None = None, trusted_pages: set[int] | None = None) -> list[TextDiff]:
     """ორიგინალის და დასკანერებულის ტექსტები → განსხვავებები (significant = შინაარსობრივი).
 
     `original_paginated=False` — ორიგინალს გვერდები არ აქვს (docx): მთელი დოკუმენტის შედარება page_count-ის
     გარეშე, გამჭოლი ხაზების და გვერდის ნომრების მოცილებით. `strip_lines` — ორივე მხრიდან ამოსაღები ხაზები
     (docx-ის header/footer). `labels` — შაბლონის პუნქტების ავტო-ნომრები (ნუმერაცია შინაარსად არ ითვლება); `known` —
-    MHR-ის თანამშრომლის მონაცემების სიტყვები (რეკვიზიტების ცხრილში ცვლადების მნიშვნელობები). `cfg` ინტერფეისისთვისაა
-    (ზღურბლები აქ მუდმივებია)."""
+    MHR-ის თანამშრომლის მონაცემების სიტყვები (რეკვიზიტების ცხრილში ცვლადების მნიშვნელობები). `trusted_pages` — დასკანერებულის
+    გვერდები (1-დან), რომელთა ტექსტი Tesseract-ის არ არის (Claude, ტექსტური ფენა). `cfg` ინტერფეისისთვისაა (ზღურბლები აქ მუდმივებია)."""
     strip = [x for x in (_norm_line(s) for s in strip_lines or []) if len(x) >= RUNNING_MIN_CHARS]
     if not original_paginated:
         strip += running_lines(scanned_pages)
         a = _tokens(_strip("\n".join(original_pages), strip), 0)
         b = [t for i, p in enumerate(scanned_pages) for t in _tokens(_strip(p, strip, page=i + 1), i + 1)]
-        diffs = _diff_tokens(a, b, 1, labels, known)
+        diffs = _diff_tokens(a, b, 1, labels, known, trusted_pages)
         if labels is not None and b:
             last = b[-1].page
             seen = " ".join(d.scanned for d in diffs if d.significant and d.page == last)
@@ -551,8 +765,8 @@ def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg, orig
                                      f"დასკანერებულში {len(scanned_pages)}"))
         a = [t for i, p in enumerate(original_pages) for t in _tokens(p, i + 1)]
         b = [t for i, p in enumerate(scanned_pages) for t in _tokens(p, i + 1)]
-        diffs.extend(_diff_tokens(a, b, max(1, len(scanned_pages))))
+        diffs.extend(_diff_tokens(a, b, max(1, len(scanned_pages)), trusted_pages=trusted_pages))
         return diffs
     for i, (o, s) in enumerate(zip(original_pages, scanned_pages)):
-        diffs.extend(_diff_tokens(_tokens(o, i + 1), _tokens(s, i + 1), i + 1))
+        diffs.extend(_diff_tokens(_tokens(o, i + 1), _tokens(s, i + 1), i + 1, trusted_pages=trusted_pages))
     return diffs

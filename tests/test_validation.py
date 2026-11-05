@@ -164,7 +164,7 @@ def test_passed_fields_only(repo, cfg):
         "first_name": "match", "last_name": "match", "personal_number": "match", "company": "match",
         "position": "match", "salary": "match", "contract_start": "match", "contract_end": "match"}
     assert all(c.label_ka for c in r.checks) and r.validated_at and r.employee.employee_id == "E1"
-    assert r.summary[0].startswith("ყველა შემოწმება გავიდა") and "list_documents" not in " ".join(client.calls)
+    assert r.summary[0].startswith("ყველა შემოწმება გავიდა") and "download" not in " ".join(client.calls)
     assert isinstance(r.to_dict(), dict)
 
 
@@ -270,7 +270,7 @@ def test_contract_identical_passes(repo, cfg):
     client = original_client()
     r = validate_document(repo, cfg, doc, client)
     assert r.status == "passed", r.summary
-    assert r.original and r.original.doc_id == "D1" and "list_documents:CONTRACTS" in client.calls
+    assert r.original and r.original.doc_id == "D1" and "list_documents:None" in client.calls
     assert not r.significant_diffs and r.diffs   # OCR-ის ხმაური ინახება, მაგრამ არ ბლოკავს
     assert any("ორიგინალთან შედარება" in s for s in r.summary)
     assert not list(cfg.paths.work.glob("mhr_original_*.pdf"))   # დროებითი ფაილი წაშლილია
@@ -423,7 +423,7 @@ def test_contract_docx_original_passes_unpaginated(repo, cfg):
     client = docx_client()
     r = validate_document(repo, cfg, doc, client)
     assert r.status == "passed", r.summary
-    assert r.original.doc_id == "9001" and "download:9001" in client.calls and "download:9310" not in client.calls
+    assert r.original.doc_id == "9001" and "download:9001" in client.calls   # ატვირთული ფაილი ორიგინალი არასდროს ხდება
     assert not any(d.kind == "page_count" for d in r.diffs)
     assert not list(cfg.paths.work.glob("mhr_original_*"))
 
@@ -528,6 +528,7 @@ def test_company_matched_by_tax_id_not_raw_id(repo, cfg_tax):
     r = validate_document(repo, cfg_tax, doc, FakeClient(employee=employee(company_id="1", raw=raw)))
     c = next(c for c in r.checks if c.field == "company")
     assert c.status == "match" and "205273498" in c.mhr_value
+    assert c.document_value == cfg_tax.company("alpha").name   # ადამიანის სახელი, არა პროგრამის შიდა კოდი
     raw2 = {"company": {"id": "alpha", "name": "შპს „ალფა\"", "tax_id": "405405413"}}   # id/სახელი ემთხვევა, tax_id — არა
     r2 = validate_document(repo, cfg_tax, doc, FakeClient(employee=employee(company_id="alpha", raw=raw2)))
     assert [c.field for c in r2.blocking_failures] == ["company"]
@@ -589,13 +590,13 @@ def test_signature_rule_can_be_turned_off(repo, tmp_path):
     assert validate_document(repo, cfg, doc, original_client()).status == "passed"
 
 
-def test_already_uploaded_signed_copy_is_a_warning_not_a_block(repo, cfg):
+def test_already_uploaded_signed_copy_stops_bulk_upload(repo, cfg):
     doc = add_doc(repo)
     client = original_client()
     client.docs.append(MhrDocRef("U9", "CONTRACTS", "ხელმოწერილი", "2024-04-01T08:30:00Z", "scan.pdf",
                                  raw={"kind": "uploaded", "signed_copy_of": "D1", "external_id": "doc_other"}))
     r = validate_document(repo, cfg, doc, client)
-    assert r.status == "passed", r.summary
+    assert r.status == "failed", r.summary      # „ყველას ატვირთვა" მეორედ არ უნდა ატვირთავდეს; „ატვირთვა მაინც" ღიაა
     assert any("უკვე ატვირთულია" in s and "2024-04-01" in s for s in r.summary)
     # საკუთარი ატვირთვა (იგივე external_id) — „უკვე ატვირთულად“ არ ითვლება
     client.docs[-1].raw["external_id"] = doc
@@ -689,30 +690,6 @@ def test_docx_text_renders_word_auto_numbering():
         "ჩვეულებრივი აბზაცი", "2. ანაზღაურება", "2.1. ხელფასი", "სია"]
 
 
-def test_packet_scan_matches_each_generated_document(repo, cfg):
-    """რეალური შემთხვევა: MHR ერთ კატეგორიაში ხელშეკრულებასთან ერთად ინსტრუქციასა და დანართსაც „generated"-ად ინახავს,
-    HR კი ყველას ერთად ბეჭდავს და ერთ ფაილად ასკანერებს. ადრე ორიგინალად უახლესი (დანართი) ირჩეოდა და ყოველი გვერდი
-    „ჩამატებული ტექსტი" იყო. ახლა: ყოველი გვერდი თავის დოკუმენტს შედარდება, ხელშეკრულება — ყველაზე მეტი გვერდის მფლობელი."""
-    from hrsorter.validation import match_originals, original_candidates
-    contract = list(CONTRACT_P1) + list(CONTRACT_P2)
-    annex = ["ლიფტით სარგებლობის წესები და პირობები.",
-             "სტაჟიორი ვალდებულია ლიფტით სარგებლობისას დაიცვას უსაფრთხოების წესები, არ გადატვირთოს კაბინა",
-             "და დაუყოვნებლივ შეატყობინოს გაუმართაობა ადმინისტრაციას."]
-    refs = [MhrDocRef("A1", "contract", "ხელშეკრულება", "2024-03-12T10:00:05", "ლიფტის წესები.docx",
-                      raw={"kind": "generated", "document_date": "2024-03-12"}),
-            MhrDocRef("C1", "contract", "ხელშეკრულება", "2024-03-12T10:00:00", "ხელშეკრულება.docx",
-                      raw={"kind": "generated", "document_date": "2024-03-12"})]
-    client = FakeClient(employee=employee(), docs=refs, files={"A1": make_docx(annex), "C1": make_docx(contract)})
-    cands = original_candidates(refs, None, "2024-03-12")
-    assert [r.doc_id for r in cands] == ["A1", "C1"]           # თარიღით/დროით დანართი პირველია — შინაარსმა უნდა გადაწყვიტოს
-    chosen = match_originals(client, cfg, cands, [OCR_P1, OCR_P2, "\n".join(annex)])
-    assert chosen.primary.doc_id == "C1" and chosen.owner == [None, None, "A1"]
-    assert [r.doc_id for r, _ in chosen.extras] == ["A1"]
-    # ერთი კანდიდატი — ჩამოტვირთვის გარეშე
-    one = match_originals(client, cfg, cands[1:], [OCR_P1, OCR_P2])
-    assert one.primary.doc_id == "C1" and one.data is None and one.owner == [None, None]
-
-
 def test_marks_are_the_found_signatures_not_handwriting(repo, cfg):
     """რეალური სკანი: ზოგადი ხელმოწერის შეფასება „გაურკვეველია", მხარეების შემოწმებამ კი ორივე ხელმოწერა იპოვა —
     „ნიშნები ხელმოწერის ზონის გარეთ" აღარ იწერება (ნიშნები სწორედ ხელმოწერა და ბეჭედია)."""
@@ -755,7 +732,8 @@ def test_recheck_removes_ocr_digit_error(repo, cfg, monkeypatch):
     r = validate_document(repo, cfg, doc, original_client())
     assert prov.calls == [(0, 90)]                      # output PDF-ის 0-ე გვერდი (page_start=3 → ინდექსი 3-3)
     assert r.status == "passed", r.summary
-    assert not r.significant_diffs and any(d.reason == validation.RECHECK_NOTE and d.page == 1 for d in r.diffs)
+    assert not r.significant_diffs and all(d.original or d.scanned for d in r.diffs)   # ცარიელი ჩანაწერი სხვაობად არ ითვლება
+    assert r.summary[0] == "ყველა შემოწმება გავიდა"   # მდგომარეობას ცალკე ნიშანი აჩვენებს: ატვირთვის შემდეგაც სწორია
     saved = repo.load_page_texts("job_1")[3]
     assert saved["text"] == OCR_P1 and saved["text_source"] == "ocr:online:claude_code:recheck"
     # მეორე ვალიდაცია: გვერდი უკვე ონლაინ-წაკითხულია — ხელახლა არ იგზავნება
@@ -772,6 +750,62 @@ def test_recheck_keeps_real_change_and_marks_it(repo, cfg, monkeypatch):
     assert r.status == "failed" and len(prov.calls) == 1
     s = r.significant_diffs
     assert len(s) == 1 and "1800" in s[0].scanned and validation.RECHECK_STILL in s[0].reason
+
+
+def _tesseract(text: str) -> dict:
+    """Tesseract-ის სიტყვები გვერდთან რჩება მაშინაც, როცა ტექსტს Claude-ის წაკითხვა ანაცვლებს."""
+    return {"text_source": "ocr:tesseract", "words": [[w, 0, 0, 1, 1] for w in text.split()]}
+
+
+def test_word_only_claude_misread_warns_but_does_not_stop(repo, cfg, monkeypatch):
+    """ნამდვილი გვერდი: ქაღალდზეც და Tesseract-შიც „თანხმობას“, Claude-მა კი „თანხმდება“ წაიკითხა.
+    ერთი მკითხველი ზუსტად ორიგინალს კითხულობს → ფაილი არ ჩერდება, მაგრამ გაფრთხილება ჩანს. „ხელახლა შედარებაც“ იგივეს ამბობს."""
+    prov = FakeOnline({0: OCR_P1.replace("იღებს", "აძლევს")})
+    _with_recheck(monkeypatch, prov)
+    tess = OCR_P1.replace("მენეჯერის ", "")
+    doc = add_doc(repo, pages=(tess, OCR_P2), page_flags={0: _tesseract(tess)})
+    for _again in range(2):
+        r = validate_document(repo, cfg, doc, original_client())
+        assert prov.calls == [(0, 0)] and r.status == "passed", r.summary
+        d = next(d for d in r.diffs if d.suspect)
+        assert "აძლევს" in d.scanned and validation.RECHECK_DISAGREE in d.reason and any("თვალით" in s for s in r.summary)
+
+
+def test_word_both_readers_see_changed_still_stops(repo, cfg, monkeypatch):
+    wrong = OCR_P1.replace("იღებს", "აძლევს")
+    prov = FakeOnline({0: wrong})
+    _with_recheck(monkeypatch, prov)
+    doc = add_doc(repo, pages=(wrong, OCR_P2), page_flags={0: _tesseract(wrong)})
+    for _again in range(2):
+        r = validate_document(repo, cfg, doc, original_client())
+        assert r.status == "failed" and "აძლევს" in r.significant_diffs[0].scanned and validation.RECHECK_STILL in r.significant_diffs[0].reason
+
+
+def test_changed_word_that_also_stays_elsewhere_on_the_page_still_stops(repo, cfg, monkeypatch):
+    """სიტყვა გვერდზე ორჯერ წერია, ქაღალდზე ერთი შეცვალეს: მეორე Tesseract-მა სწორად წაიკითხა, მაგრამ ეს პირველს ვერ ამართლებს."""
+    twice = OCR_P1.replace("მენეჯერის", "იღებს მენეჯერის")
+    wrong = twice.replace("იღებს", "აძლევს", 1)
+    prov = FakeOnline({0: wrong})
+    _with_recheck(monkeypatch, prov)
+    original = make_pdf([[line.replace("მენეჯერის", "იღებს მენეჯერის") for line in CONTRACT_P1], CONTRACT_P2])
+    r = validate_document(repo, cfg, add_doc(repo, pages=(wrong, OCR_P2), page_flags={0: _tesseract(wrong)}), original_client(pdf=original))
+    assert r.status == "failed" and "აძლევს" in r.significant_diffs[0].scanned
+
+
+def test_number_or_negation_only_claude_misread_still_stops(repo, cfg, monkeypatch):
+    """ციფრი და „არ“ ყოველთვის აჩერებს, ერთმა მკითხველმაც რომ ნახოს; ბარათი ამბობს, რომ მკითხველები ერთმანეთს არ ეთანხმებიან."""
+    prov = FakeOnline({0: OCR_P1.replace("შეადგენს 1500 ლარს", "შეადგენს 1800 ლარს")})
+    _with_recheck(monkeypatch, prov)
+    tess = OCR_P1.replace("მენეჯერის ", "")
+    r = validate_document(repo, cfg, add_doc(repo, pages=(tess, OCR_P2), page_flags={0: _tesseract(tess)}), original_client())
+    s = r.significant_diffs
+    assert r.status == "failed" and "1800" in s[0].scanned and validation.RECHECK_DISAGREE in s[0].reason
+    prov = FakeOnline({1: OCR_P2.replace("ვალდებულნი არიან", "ვალდებულნი არ არიან")})
+    _with_recheck(monkeypatch, prov)
+    tess = OCR_P2.replace("ორ ეგზემპლარად", "ეგზემპლარად")
+    r = validate_document(repo, cfg, add_doc(repo, doc_id="doc_neg", pages=(OCR_P1, tess), page_flags={1: _tesseract(tess)}), original_client())
+    s = r.significant_diffs
+    assert r.status == "failed" and "არ" in s[0].scanned and validation.RECHECK_DISAGREE in s[0].reason
 
 
 def test_recheck_skipped_when_disabled_or_offline_or_failing(repo, cfg, monkeypatch):
@@ -823,3 +857,86 @@ def test_original_far_from_document_date_gives_note_not_block(repo, cfg):
     client2 = FakeClient(employee=employee(), docs=[ref2], files={"D2": make_pdf([CONTRACT_P1, CONTRACT_P2])})
     r2 = validate_document(repo, cfg, add_doc(repo, doc_id="doc_2", doc_number=None, doc_date="2024-03-12"), client2)
     assert r2.status == "passed" and not any(c.field == "original_date" for c in r2.checks)
+
+
+# --- პატარა საეჭვო სხვაობა: ჯერ Claude კითხულობს, მერე წყდება ------------------------------------------------
+def test_one_missing_word_is_read_again_and_clears_when_it_was_tesseract(repo, cfg, monkeypatch):
+    prov = FakeOnline({0: OCR_P1})
+    _with_recheck(monkeypatch, prov)
+    doc = add_doc(repo, pages=(OCR_P1.replace("მენეჯერის ", ""), OCR_P2))
+    r = validate_document(repo, cfg, doc, original_client())
+    assert prov.calls == [(0, 0)]
+    assert r.status == "passed", r.summary
+    assert not any(d.suspect for d in r.diffs) and not any("ვერ გადამოწმდა" in s for s in r.summary)
+
+
+def test_one_missing_word_that_claude_confirms_stops_the_file(repo, cfg, monkeypatch):
+    wrong = OCR_P1.replace("მენეჯერის ", "")
+    prov = FakeOnline({0: wrong})
+    _with_recheck(monkeypatch, prov)
+    r = validate_document(repo, cfg, add_doc(repo, pages=(wrong, OCR_P2)), original_client())
+    assert r.status == "failed" and len(prov.calls) == 1
+    assert [d.reason for d in r.significant_diffs] == [f"ამოღებული ტექსტი — {validation.RECHECK_STILL}"]
+
+
+def test_small_change_without_claude_is_a_visible_warning_not_a_stop(repo, cfg, monkeypatch):
+    prov = FakeOnline({}, ok=False)
+    _with_recheck(monkeypatch, prov)
+    r = validate_document(repo, cfg, add_doc(repo, pages=(OCR_P1.replace("მენეჯერის ", ""), OCR_P2)), original_client())
+    assert r.status == "passed" and any(d.suspect and d.page == 1 for d in r.diffs)
+    assert any("გვერდი 1" in s and "ვერ გადამოწმდა" in s for s in r.summary), r.summary
+
+
+def test_added_negation_stops_even_without_claude(repo, cfg, monkeypatch):
+    prov = FakeOnline({}, ok=False)
+    _with_recheck(monkeypatch, prov)
+    wrong = OCR_P2.replace("ვალდებულნი არიან", "ვალდებულნი არ არიან")
+    r = validate_document(repo, cfg, add_doc(repo, pages=(OCR_P1, wrong)), original_client())
+    assert r.status == "failed" and "„არ“" in r.significant_diffs[0].reason
+
+
+def test_empty_reading_is_tried_again_not_skipped_silently(repo, cfg, monkeypatch):
+    prov = FakeOnline({})
+    _with_recheck(monkeypatch, prov)
+    readings = iter(["", OCR_P1])
+    monkeypatch.setattr(validation, "_online_page_text", lambda *a: (prov.calls.append(a), next(readings))[1])
+    r = validate_document(repo, cfg, add_doc(repo, pages=(OCR_P1.replace("მენეჯერის ", ""), OCR_P2)), original_client())
+    assert len(prov.calls) == 2 and r.status == "passed" and not any(d.suspect for d in r.diffs)
+
+
+def test_long_reading_is_not_broken_only_a_repeated_one_is():
+    words = " ".join(f"სიტყვა{i}" for i in range(60))
+    assert not validation._reading_broke(words)
+    assert validation._reading_broke(words + " უკაცრავად თავიდან " + words)
+    assert validation._reading_broke("") and validation._reading_broke("  \n ")
+    phrase = " ".join(f"ფრაზა{i}" for i in range(15))          # ნამდვილ გვერდზე ფრაზა ორჯერ შეიძლება ეწეროს
+    assert not validation._reading_broke(f"დასაწყისი {phrase} შუა ტექსტი {phrase} დასასრული")
+
+
+def test_reading_that_repeats_the_page_is_tried_again_and_never_used(repo, cfg, monkeypatch):
+    """ნამდვილი შემთხვევა: Claude-მა შუა გვერდზე დაწერა „უკაცრავად, თავიდან" და მთელი ტექსტი გაიმეორა."""
+    wrong = OCR_P1.replace("მენეჯერის ", "")
+    broken = OCR_P1 + "\nუკაცრავად, ტექსტი თავიდან\n" + (OCR_P1 + "\n") * 3
+    prov = FakeOnline({0: broken})
+    _with_recheck(monkeypatch, prov)
+    doc = add_doc(repo, pages=(wrong, OCR_P2))
+    r = validate_document(repo, cfg, doc, original_client())
+    assert len(prov.calls) == 2
+    assert "უკაცრავად" not in repo.load_page_texts("job_1")[3]["text"]
+    assert r.status == "passed" and any(d.suspect for d in r.diffs)    # პატარა სხვაობა ვერ გადამოწმდა და ჩანს
+
+    prov.calls.clear()
+    readings = iter([broken, OCR_P1])
+    monkeypatch.setattr(validation, "_online_page_text", lambda *a: (prov.calls.append(a), next(readings))[1])
+    doc2 = add_doc(repo, doc_id="doc_again", pages=(wrong, OCR_P2))
+    r2 = validate_document(repo, cfg, doc2, original_client())
+    assert len(prov.calls) == 2 and r2.status == "passed" and not any(d.suspect for d in r2.diffs)
+
+
+def test_recheck_budget_reads_significant_pages_before_suspect_ones(repo, cfg, monkeypatch):
+    prov = FakeOnline({0: OCR_P1, 1: OCR_P2})
+    _with_recheck(monkeypatch, prov)
+    cfg.data["mhr"]["recheck"]["max_pages"] = 1
+    pages = (OCR_P1.replace("მენეჯერის ", ""), OCR_P2.replace("ვალდებულნი არიან", "ვალდებულნი არ არიან"))
+    validate_document(repo, cfg, add_doc(repo, pages=pages), original_client())
+    assert prov.calls == [(1, 0)]

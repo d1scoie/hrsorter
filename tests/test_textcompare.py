@@ -421,3 +421,179 @@ def test_last_page_signature_block_reordered_is_noise():
     assert not [d for d in compare_texts(orig, scan, cfg, original_paginated=False, labels={"11.1"}) if d.significant]
     scan2 = [scan[0].replace("დირექტორი დავით გელაშვილი i ალლი", "სტაჟიორი ვალდებულია აანაზღაუროს ზიანი სრულად")]
     assert [d for d in compare_texts(orig, scan2, cfg, original_paginated=False, labels={"11.1"}) if d.significant]
+
+
+def test_strip_removes_running_header_after_logo_junk():
+    """ბლანკის თავი ყოველ გვერდზე: ლოგო სურათია და OCR მის ასოებს სათაურის ხაზს აწებებს — ხაზი ისევ სათაურია. წვრილი ტოკენის
+    გარდა სხვა არაფერს ვშლით: გრძელი ტექსტი სათაურის წინ, ან მოკლე ხაზი, რჩება."""
+    from hrsorter.textcompare import _norm_line, _strip
+    header = _norm_line("დავით გელაშვილის მიერ / /")
+    for line in ("მადარგ ი დავით გელაშვილის მიერ /", "მადარ/ი დავით გელაშვილის მიერ", "მ ა ხუყიო დავით გელაშვილის მიერ /"):
+        assert _strip(f"ტექსტი\n{line}\nბოლო", [header]) == "ტექსტი\nბოლო", line
+    kept = "დამატებული გრძელი წინადადება დავით გელაშვილის მიერ"
+    assert _strip(kept, [header]) == kept
+    assert _strip("მადარგ მიერ", [_norm_line("მიერ")]) == "მადარგ მიერ"
+
+
+# --- პატარა, მაგრამ მნიშვნელოვანი ცვლილებები ----------------------------------------------------------------
+BODY = ("1.1 დასაქმებული ვალდებულია დაიცვას შინაგანაწესი და შეასრულოს დავალებები დროულად\n"
+        "1.2 კომპანია არ აგებს პასუხს მიყენებული ზიანისთვის იმ პირის მიმართ ვისაც გაფრთხილება ჰქონდა\n"
+        "1.3 დასაშვებია ლიფტის გამოყენება მხოლოდ ტვირთის გადასატანად სამუშაო საათებში\n"
+        "1.4 ვალდებულებების არ შესრულების შემთხვევაში გამოიყენება სწორი პროცედურა\n")
+LAST = ("2.1 სტაჟიორი ადასტურებს რომ გაეცნო დამსაქმებელი კომპანიის წესებს\n"
+        "2.2 მოქმედებს 2025 წლის 01 იანვრიდან და ცვლილება ძალაშია 2025 წლის 01 თებერვლამდე\n"
+        "2.3 ანგარიში ge00tb0000000000000012 პირადი ნომერი 01001000202\n")
+
+
+def small(body=BODY, last=LAST, trusted=None, known=None):
+    return compare_texts([BODY + LAST], [body, last], make_config(), original_paginated=False, labels=set(),
+                         known=known or [], trusted_pages=trusted)
+
+
+def test_clean_copy_has_no_significant_and_no_suspect():
+    diffs = small()
+    assert sig(diffs) == [] and not [d for d in diffs if d.suspect]
+
+
+@pytest.mark.parametrize("trusted", [None, {1, 2}])
+def test_removed_or_added_negation_is_significant_on_any_page(trusted):
+    removed = sig(small(BODY.replace("კომპანია არ აგებს", "კომპანია აგებს"), trusted=trusted))
+    assert len(removed) == 1 and "„არ“" in removed[0].reason and removed[0].page == 1
+    added = sig(small(BODY.replace("ვალდებულია დაიცვას", "ვალდებულია არ დაიცვას"), trusted=trusted))
+    assert len(added) == 1 and "„არ“" in added[0].reason
+
+
+def test_negation_glued_to_next_word_is_only_spacing():
+    diffs = small(BODY.replace("არ შესრულების", "არშესრულების"))
+    assert sig(diffs) == []
+
+
+def test_negating_prefix_is_significant():
+    assert [d.reason for d in sig(small(BODY.replace("სწორი პროცედურა", "არასწორი პროცედურა")))] == ["უარყოფა შეცვლილია"]
+
+
+def test_one_or_two_words_are_suspect_on_tesseract_page_and_significant_on_trusted_page():
+    one = BODY.replace("დავალებები დროულად", "დავალებები")
+    assert sig(small(one)) == [] and [d.page for d in small(one) if d.suspect] == [1]
+    assert [d.reason for d in sig(small(one, trusted={1}))] == ["ამოღებული ტექსტი"]
+    two = BODY.replace("სამუშაო საათებში", "სამუშაო ყოველთვის უსასყიდლოდ საათებში")
+    assert sig(small(two)) == [] and [d.page for d in small(two) if d.suspect] == [1]
+    assert [d.reason for d in sig(small(two, trusted={1}))] == ["ჩამატებული ტექსტი"]
+
+
+def test_stamp_junk_labels_and_known_words_are_not_suspect():
+    junk = "თო\n" + BODY
+    footer = BODY + "დამსაქმებელი სტაჟიორი\n"
+    known = BODY.replace("დავალებები დროულად", "დავალებები ლომიძე დროულად")
+    for scan, kn in ((junk, []), (footer, []), (known, ["ლომიძე"])):
+        diffs = small(scan, known=kn)
+        assert sig(diffs) == [] and not [d for d in diffs if d.suspect], scan[:30]
+
+
+def test_similar_but_different_word_is_suspect_then_significant_on_trusted_page():
+    far = BODY.replace("დასაშვებია", "დაუშვებელია")
+    assert sig(small(far)) == [] and [d.page for d in small(far) if d.suspect] == [1]
+    assert [d.reason for d in sig(small(far, trusted={1}))] == ["სიტყვა შეცვლილია"]
+
+
+@pytest.mark.parametrize("old,new", [("გადასატანად", "გადასატანი"),     # მხოლოდ დაბოლოება
+                                     ("გაფრთხილება", "როგაფრთხილება"),  # OCR-ის ზედმეტი ასოები
+                                     ("ზიანისთვის", "ზიანისთვიხ"),      # ერთი ასო
+                                     ("დავალებები", "დავალებები")])
+def test_reading_quirks_stay_noise_even_on_trusted_page(old, new):
+    diffs = small(BODY.replace(old, new), trusted={1})
+    assert sig(diffs) == [] and not [d for d in diffs if d.suspect]
+
+
+def test_changed_number_on_last_page_is_not_hidden_when_old_number_repeats():
+    assert sig(small()) == []
+    changed = sig(small(last=LAST.replace("წლის 01 იანვრიდან", "წლის 11 იანვრიდან")))
+    assert [d.reason for d in changed] == ["ციფრები განსხვავდება"] and changed[0].page == 2
+
+
+@pytest.mark.parametrize("old,new", [("ge00tb0000000000000012", "ge00tb0000000000000013"), ("01001000202", "01001000203")])
+def test_one_digit_of_a_long_number_is_significant(old, new):
+    assert [d.reason for d in sig(small(last=LAST.replace(old, new)))] == ["ციფრები განსხვავდება"]
+
+
+def test_last_page_columns_with_number_glued_to_a_name_are_noise():
+    orig = ("10.4 სტაჟიორი მარიამბერიძე პ/ნ:01001000202 ადასტურებს რომ გაეცნო ინსტრუქციას\nხელმოწერები\nდამსაქმებელი სტაჟიორი\n"
+            "შპს არბო 2009 მარიამ ბერიძე\nს/ნ 205273498 პ/ნ 01001000202\nელ ფოსტა m@example.com\nელ ფოსტა info@madart.ge\n")
+    scan = ("10.4 სტაჟიორი მარიამბერიძეპ/ნ:01001000202 ადასტურებს რომ გაეცნო ინსტრუქციას\nხელმოწერები\nდამსაქმებელი\n"
+            "შპს არბო 2009\nს/ნ 205273498\nელ ფოსტა info@madart.ge\nსტაჟიორი\nმარიამ ბერიძე\nპ/ნ 01001000202\nელ ფოსტა m@example.com\n")
+    diffs = compare_texts([orig], [scan], make_config(), original_paginated=False, labels=set(), known=["მარიამ", "ბერიძე"], trusted_pages={1})
+    assert sig(diffs) == []
+    changed = scan.replace("პ/ნ 01001000202", "პ/ნ 01001000203")
+    assert sig(compare_texts([orig], [changed], make_config(), original_paginated=False, labels=set(), known=["მარიამ", "ბერიძე"], trusted_pages={1}))
+
+
+def test_last_page_long_line_with_one_stray_repeated_word_still_matches():
+    """სიტყვა „სტაჟიორი" ბევრგან წერია, სახელი კი ფაილში სხვანაირადაა: სტრიქონი ისევ იმ პუნქტს ემთხვევა და ჩამატება არ არის."""
+    filler = " ".join(f"სიტყვა{i}" for i in range(30))
+    orig = (f"სტაჟიორი ვალდებულია {filler} 10.4 სტაჟიორი მარინაბერიძე პ/ნ:01001000202 ადასტურებს რომ გაეცნო წინამდებარე თანამდებობრივ ინსტრუქციას და სრულად ეთანხმება მას\n"
+            "დასრულება ბოლო ხაზი")
+    scan = (f"სტაჟიორი ვალდებულია {filler}\n10.4 სტაჟიორი მარიანა ბერიძე პ/ნ:01001000202 ადასტურებს რომ გაეცნო წინამდებარე თანამდებობრივ ინსტრუქციას და სრულად ეთანხმება მას\n"
+            "დასრულება ბოლო ხაზი")
+    assert not [d for d in compare_texts([orig], [scan], make_config(), original_paginated=False, labels={"10.4"})
+                if "ბოლო გვერდი" in d.reason]
+
+
+def test_word_swapped_for_another_word_of_the_same_last_page_is_significant():
+    swapped = sig(small(last=LAST.replace("2.1 სტაჟიორი ადასტურებს", "2.1 დამსაქმებელი ადასტურებს")))
+    assert [d.page for d in swapped] == [2]
+
+
+def test_part_of_a_header_on_the_page_edge_is_removed_but_not_inside_the_page():
+    orig = "პირველი ხაზი საკმარისად გრძელი ტექსტით\nმეორე ხაზი საკმარისად გრძელი ტექსტით\nმესამე ხაზი საკმარისად გრძელი\nმეოთხე ხაზი\nმეხუთე ხაზი\nმეექვსე ხაზი\nმეშვიდე ხაზი"
+    strip = ["2025 წლის 01 იანვრის შრომის შინაგანაწესის დანართი"]
+    part = "01 იანვრის შრომის შინაგანაწესის დანართი"
+    def run(scan):
+        return sig(compare_texts([orig], [scan], make_config(), original_paginated=False, strip_lines=strip, labels=set(), trusted_pages={1}))
+    assert run(part + "\n" + orig) == []
+    lines = orig.split("\n")
+    assert run("\n".join([*lines[:4], part, *lines[4:]]))   # გვერდის შუაში ეს ჩამატებული ტექსტია
+    # სათაურის სიტყვის ნაწილი („… დავით მაისურაძის მიერ") სხვა ხაზია: დირექტორის სახელი გვერდის ბოლოს არ იშლება
+    signed = "ტექსტი საკმარისად გრძელი პირველი ხაზისთვის\nდირექტორი\nდავით მაისურაძე"
+    diffs = compare_texts([signed], [signed], make_config(), original_paginated=False, labels=set(), trusted_pages={1},
+                          strip_lines=["დამტკიცებულია დირექტორის დავით მაისურაძის მიერ"])
+    assert diffs == []
+
+
+def test_header_split_in_two_lines_is_removed_but_line_before_a_footer_stays():
+    orig = "შინაარსი პირველი გვერდის ტექსტი მთლიანად\nმარიამ ბერიძე"
+    strip = ["ქ. თბილისი 2026-10-29", "საიდენტიფიკაციო კოდი: 205273498; თბილისი"]
+    clean = "ქ. თბილისი\n2026-10-29\nშინაარსი პირველი გვერდის ტექსტი მთლიანად\nმარიამ ბერიძე\nსაიდენტიფიკაციო კოდი: 205273498; თბილისი"
+    diffs = compare_texts([orig], [clean], make_config(), original_paginated=False, strip_lines=strip, labels=set(), trusted_pages={1})
+    assert diffs == []
+
+
+# --- სად არის გვერდზე ----------------------------------------------------------------------------------------------
+WORDS = [["პირველი", 100, 100, 200, 120], ["მეორე", 210, 100, 300, 120], ["მესამე", 310, 100, 400, 120],
+         ["მეოთხე", 100, 130, 200, 150], ["მეხუთე", 210, 130, 300, 150], ["მეექვსე", 310, 130, 400, 150]]
+
+
+def test_locate_marks_the_changed_word_only():
+    from hrsorter.textcompare import locate
+    assert locate(WORDS, ["პირველი მეორე", "მესამე", "მეოთხე მეხუთე"]) == [[310, 100, 400, 120]]
+
+
+def test_locate_makes_one_box_per_line():
+    from hrsorter.textcompare import locate
+    assert locate(WORDS, ["პირველი", "მეორე მესამე მეოთხე", "მეხუთე"]) == [[210, 100, 400, 120], [100, 130, 200, 150]]
+
+
+def test_locate_removed_text_marks_the_neighbours():
+    from hrsorter.textcompare import locate
+    assert locate(WORDS, ["პირველი მეორე", "", "მესამე მეოთხე"]) == [[210, 100, 400, 120]]
+
+
+def test_locate_finds_nothing_without_words_or_match():
+    from hrsorter.textcompare import locate
+    assert locate([], ["ა", "ბ", "გ"]) == [] and locate(WORDS, ["სხვა", "ტექსტი", "აქ"]) == [] and locate(WORDS, ["", "", ""]) == []
+
+
+def test_diff_keeps_exact_words_and_clause():
+    diffs = compare_texts(["1.1 პირველი პუნქტის ტექსტი\n1.2 ხელფასი შეადგენს 1500 ლარს თვეში"], ["1.1 პირველი პუნქტის ტექსტი\n1.2 ხელფასი შეადგენს 1800 ლარს თვეში"],
+                          make_config(), original_paginated=False, labels={"1.1", "1.2"})
+    d = sig(diffs)[0]
+    assert d.clause == "1.2" and d.orig_parts == ["1.2 ხელფასი შეადგენს", "1500", "ლარს თვეში"] and d.scan_parts[1] == "1800"

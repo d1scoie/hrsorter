@@ -36,6 +36,7 @@ import zipfile
 from dataclasses import dataclass, field as dc_field
 from difflib import SequenceMatcher
 from itertools import zip_longest
+from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -44,12 +45,13 @@ from .config import Config
 from .db import Repository, now_iso
 from .employee_api import _get_path
 from .features import company_core, surname_lemma
-from .mhr_models import Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, TextDiff, ValidationResult
+from .mhr_models import Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, TextDiff, ValidationResult, clean_file_title
 from .ocr.base import OcrError
+from .output import PartSpec, adopt_match, split_document
 from .ocr.chain import build_ocr_chain
 from .pdfio import PdfDocument, validate_pdf
 from .preprocess import apply_rotation, enhance
-from .textcompare import _PUNCT, compare_texts, mark_placeholders
+from .textcompare import _PUNCT, compare_texts, locate, mark_placeholders
 from .textnorm import digits_only, normalize, one_line
 
 log = logging.getLogger(__name__)
@@ -249,54 +251,122 @@ def _content_tokens(text: str) -> set[str]:
 
 
 @dataclass
-class OriginalSet:
-    """სკანის დოკუმენტები MHR-ის ორიგინალებთან: `primary` — ხელშეკრულება (სკანს ყველაზე მეტად ჰგავს), `extras` —
-    იმავე პაკეტის დანართები (ინსტრუქცია, წესები…), რომელთა გვერდებიც სკანშია; `owner[i]` — i-ური გვერდის დოკუმენტი
-    (doc_id; None — ხელშეკრულებისა)."""
-    primary: MhrDocRef | None
-    data: bytes | None = None
-    orig: Any = None
-    extras: list[tuple[MhrDocRef, Any]] = dc_field(default_factory=list)
+class OriginalFile:
+    """ჩამოტვირთული და წაკითხული MHR-ის ფაილი."""
+    ref: MhrDocRef
+    data: bytes
+    orig: Any
+    tokens: set[str]
+
+
+@dataclass
+class PagePlan:
+    """სკანის გვერდები თანამშრომლის დაგენერირებულ ფაილებზე: `owner[i]` — გვერდის ფაილის doc_id (None — არცერთს არ ემთხვევა)."""
+    files: dict[str, OriginalFile] = dc_field(default_factory=dict)
     owner: list[str | None] = dc_field(default_factory=list)
+    best: list[tuple[str, float] | None] = dc_field(default_factory=list)   # გვერდისთვის საუკეთესო ფაილი და დამთხვევის წილი
+
+    @property
+    def owners(self) -> list[str]:
+        return list(dict.fromkeys(o for o in self.owner if o))
+
+    @property
+    def needs_split(self) -> bool:
+        """სკანში ერთზე მეტი ფაილია, ან ერთ ფაილს ზედმეტი გვერდები ახლავს."""
+        return len(self.owners) > 1 or (len(self.owners) == 1 and None in self.owner)
 
 
-def match_originals(client, cfg: Config, cands: list[MhrDocRef], scanned_texts: list[str]) -> OriginalSet:
-    """ერთი კატეგორიის რამდენიმე კანდიდატი (MHR ხელშეკრულებასთან ერთად ინსტრუქციასა და დანართებსაც „contract"-ად
-    ინახავს; HR კი ყველას ერთად ბეჭდავს და ერთ ფაილად ასკანერებს): ყოველი გვერდი მიეკუთვნება იმ დოკუმენტს, რომლის
-    სიტყვებსაც ყველაზე მეტად შეიცავს; ხელშეკრულება = ყველაზე მეტი გვერდის მფლობელი (თანაბარზე — Jaccard-ით
-    უახლოესი). ერთი კანდიდატი — ჩამოტვირთვის გარეშე."""
-    owner: list[str | None] = [None] * len(scanned_texts)
-    if len(cands) <= 1:
-        return OriginalSet(cands[0] if cands else None, owner=owner)
-    loaded: list[tuple[MhrDocRef, bytes, Any, set[str]]] = []
+def plan_pages(client, cfg: Config, cands: list[MhrDocRef], scanned_texts: list[str]) -> PagePlan:
+    """HR ხშირად ხელშეკრულებას, ინსტრუქციას, წესებსა და დანართებს ერთად ბეჭდავს და ერთ ფაილად ასკანერებს: ყოველი გვერდი მიეკუთვნება
+    იმ დაგენერირებულ ფაილს, რომლის სიტყვებსაც ყველაზე მეტად შეიცავს. ერთი ფაილის გვერდები მიმდევრობითაა (სპეც. §2), ამიტომ
+    ცუდად წაკითხული ან შეცვლილი გვერდი მეზობელთან რჩება და შედარება სხვაობას პირდაპირ აჩვენებს."""
+    plan = PagePlan(owner=[None] * len(scanned_texts), best=[None] * len(scanned_texts))
     for ref in cands[:ORIGINAL_CANDIDATES_MAX]:
+        if "sha256" in (ref.raw or {}) and not ref.raw.get("sha256"):   # API: ჩანაწერი არის, ფაილი სერვერზე — არა
+            continue
         try:
             data = client.download(ref)
         except MhrError:
             continue
         orig = original_pages(data, cfg)
         if orig is not None:
-            loaded.append((ref, data, orig, _content_tokens("\n".join(orig.pages))))
-    if not loaded:
-        return OriginalSet(cands[0], owner=owner)
-    pages = [_content_tokens(t) for t in scanned_texts]
-    score = [{x[0].doc_id: (len(pt & x[3]) / len(pt) if pt else 0.0) for x in loaded} for pt in pages]
-    scan = set().union(*pages) if pages else set()
-
-    def rank(x):
-        best_on = sum(1 for sc in score if sc and max(sc, key=sc.get) == x[0].doc_id and sc[x[0].doc_id] >= PAGE_OWNER_MIN_OVERLAP)
-        return (best_on, len(x[3] & scan) / max(1, len(x[3] | scan)))
-
-    primary = max(loaded, key=rank)
-    pid = primary[0].doc_id
-    for i, sc in enumerate(score):   # გვერდი დანართისაა, თუ მას აშკარად უკეთ ემთხვევა, ვიდრე ხელშეკრულებას
-        if not sc:
+            plan.files[ref.doc_id] = OriginalFile(ref, data, orig, _content_tokens("\n".join(orig.pages)))
+    if not plan.files:
+        return plan
+    owner, thin, weak, prev = plan.owner, set(), {}, None
+    for i, text in enumerate(scanned_texts):
+        toks = _content_tokens(text)
+        if len(toks) < PAGE_MIN_TOKENS:
+            thin.add(i)
+            owner[i] = prev
             continue
-        best = max(sc, key=sc.get)
-        if best != pid and sc[best] >= PAGE_OWNER_MIN_OVERLAP and sc[best] >= sc[pid] + PAGE_OWNER_MARGIN:
-            owner[i] = best
-    extras = [(ref, orig) for ref, _d, orig, _t in loaded if ref.doc_id != primary[0].doc_id and ref.doc_id in owner]
-    return OriginalSet(primary[0], primary[1], primary[2], extras, owner)
+        score = {k: len(toks & f.tokens) / len(toks) for k, f in plan.files.items()}
+        best = max(score, key=score.get)
+        plan.best[i] = (best, score[best])
+        if score[best] < PAGE_OWNER_MIN_OVERLAP:
+            if score[best] >= PAGE_OWNER_WEAK:
+                weak[i] = best
+            prev = None
+            continue
+        if prev in score and score[prev] >= score[best] - PAGE_OWNER_TIE:
+            best = prev
+        owner[i] = prev = best
+    for i, o in enumerate(owner):
+        if o is None:
+            left_i = next((k for k in range(i - 1, -1, -1) if owner[k]), None)
+            right_i = next((k for k in range(i + 1, len(owner)) if owner[k]), None)
+            left = owner[left_i] if left_i is not None else None
+            right = owner[right_i] if right_i is not None else None
+            if i in weak and weak[i] in (left, right):
+                owner[i] = weak[i]
+            elif right and left == right and right_i - left_i - 1 <= PAGE_OWNER_GAP:
+                owner[i] = right
+            elif right and left is None and i in thin:
+                owner[i] = right
+    return plan
+
+
+_CONTRACT_FILE = re.compile(r"ხელშეკრულება")
+
+
+def _matched_type(cfg: Config, ref: MhrDocRef, refs: list[MhrDocRef], is_largest: bool) -> str:
+    """დამთხვეული ფაილის ტიპი MHR-ის კატეგორიითა და სახელით: ძირითადი ხელშეკრულება → contract, სხვა იმავე კატეგორიაში (ინსტრუქცია,
+    წესები, დანართი) → contract_annex. სახელი არაფერს ამბობს → ყველაზე დიდი ფაილი ხელშეკრულებაა."""
+    cats = cfg.data["mhr"].get("categories") or {}
+    if ref.category and ref.category != cats.get("contract", "contract"):
+        tid = {v: k for k, v in cats.items()}.get(ref.category, ref.category)
+        return tid if cfg.doc_type(tid) else "contract_annex"
+    if any(_CONTRACT_FILE.search(r.filename or "") for r in refs):
+        return "contract" if _CONTRACT_FILE.search(ref.filename or "") else "contract_annex"
+    return "contract" if is_largest else "contract_annex"
+
+
+def _split_scan(repo: Repository, cfg: Config, row, meta: dict[str, Any], plan: PagePlan, scanned: list[dict[str, Any]],
+                employee: MhrEmployee, pn: str) -> ValidationResult:
+    """სკანი → თითო ჩანაწერი ყოველ დამთხვეულ ფაილზე (საკუთარი გვერდებით); არცერთს რომ არ ემთხვევა, ის გვერდები — გადასამოწმებელში."""
+    if not row["output_path"] or not Path(row["output_path"]).exists():
+        return ValidationResult("failed", employee=employee, summary=["სკანის PDF აღარ არსებობს — ფაილებად ვერ დაიყო"],
+                                validated_at=now_iso(), error="no_output_file")
+    refs = [f.ref for f in plan.files.values()]
+    largest = max(plan.owners, key=lambda k: len(plan.files[k].tokens))
+    specs = []
+    for key in plan.owners:
+        ref = plan.files[key].ref
+        specs.append(PartSpec(key, clean_file_title(ref.filename) or ref.title or key, _matched_type(cfg, ref, refs, key == largest),
+                              [int(scanned[i]["page_index"]) for i, o in enumerate(plan.owner) if o == key], key, ref.category))
+    rest = [int(scanned[i]["page_index"]) for i, o in enumerate(plan.owner) if o is None]
+    if rest:
+        specs.append(PartSpec("other", "MHR-ის ფაილებს არ ემთხვევა", "unknown", rest, None, None))
+    parts = split_document(repo, cfg, row, meta, specs, pn)
+    titles = {k: clean_file_title(f.ref.filename) or f.ref.title or k for k, f in plan.files.items()}
+    for part in parts:   # რატომ მოხვდა გვერდი ამ ფაილში: სიტყვების რა წილია იმ ფაილში, რომელსაც ყველაზე მეტად ჰგავს
+        part["page_match"] = {}
+        for i, pt in enumerate(scanned):
+            if int(pt["page_index"]) + 1 in part["pages"] and plan.best[i]:
+                part["page_match"][str(int(pt["page_index"]) + 1)] = [titles[plan.best[i][0]], round(100 * plan.best[i][1])]
+    return ValidationResult("split", employee=employee, parts=parts, validated_at=now_iso(),
+                            summary=[f"სკანში {len(plan.owners)} ფაილი აღმოჩნდა — თითოეული ცალკე მოწმდება"
+                                     + ("; ზოგი გვერდი MHR-ის ფაილებს არ ემთხვევა" if rest else "")])
 
 
 # --- docx (MHR-ის ორიგინალი) -------------------------------------------------------------------------
@@ -396,6 +466,9 @@ class _Numbering:
         cnt[ilvl] = cnt.get(ilvl, start - 1) + 1
         for deeper in [k for k in cnt if k > ilvl]:
             del cnt[deeper]
+        for upper in range(ilvl):   # სია ქვე-პუნქტით იწყება („3.1" „3"-ის გარეშე): Word ზედა დონეს გამოყენებულად თვლის, შემდეგი „4"-ია
+            if upper in lv:
+                cnt.setdefault(upper, lv[upper][0])
         if fmt in ("bullet", "none"):
             return ""
 
@@ -477,14 +550,14 @@ def original_pages(data: bytes, cfg: Config) -> OriginalText | None:
     return OriginalText(pdf[0], pdf[1]) if pdf else None
 
 
-def _pdf_pages(pdf_bytes: bytes, cfg: Config) -> tuple[list[str], list[int]] | None:
-    """PDF → გვერდების ტექსტი (ტექსტური ფენა; უხარისხო → OCR). (გვერდები, წაუკითხავი 1-დან);
-    None — ფაილი PDF არ არის. დროებითი ფაილი paths.work-ში, ბოლოს იშლება."""
+def _pdf_pages(pdf_bytes: bytes, cfg: Config, dpi: int | None = None, local_only: bool = False) -> tuple[list[str], list[int]] | None:
+    """PDF → გვერდების ტექსტი (ტექსტური ფენა; უხარისხო → OCR, `local_only` — მხოლოდ Tesseract). (გვერდები, წაუკითხავი გვერდების
+    ნომრები 1-დან). None — ფაილი PDF არ არის. დროებითი ფაილი paths.work-ში, ბოლოს იშლება."""
     work = cfg.paths.work
     work.mkdir(parents=True, exist_ok=True)
     tmp = work / f"mhr_original_{uuid.uuid4().hex}.pdf"
     min_q = float(cfg.thresholds.get("text_layer_min_quality", 0.6))
-    dpi = int(cfg.data["processing"].get("dpi", 300))
+    dpi = dpi or int(cfg.data["processing"].get("dpi", 300))
     pages: list[str] = []
     unreadable: list[int] = []
     chain = None
@@ -500,17 +573,19 @@ def _pdf_pages(pdf_bytes: bytes, cfg: Config) -> tuple[list[str], list[int]] | N
                     continue
                 if chain is None:
                     chain = build_ocr_chain(cfg)
-                res = None
-                if chain.available():
+                read = ""
+                if chain.local.available() if local_only else chain.available():
                     img = doc.render(i, dpi=dpi)
                     try:
-                        res = chain.recognize(enhance(img), chain.lang)
+                        if local_only:
+                            read = chain.local.recognize(enhance(img), chain.lang).text
+                        else:
+                            res = chain.recognize(enhance(img), chain.lang)
+                            read = res.result.text if res.ok and res.result is not None else ""
                     finally:
                         img.close()
-                if res is not None and res.ok and res.result is not None and res.result.text.strip():
-                    pages.append(res.result.text)
-                else:
-                    pages.append("")
+                pages.append(read if read.strip() else "")
+                if not read.strip():
                     unreadable.append(i + 1)
     finally:
         tmp.unlink(missing_ok=True)
@@ -534,9 +609,19 @@ def handwriting_diffs(scanned: list[dict[str, Any]]) -> list[TextDiff]:
 
 _PARTY_KA = {"employer": "დამსაქმებელი", "employee": "დასაქმებული"}
 NO_SIGNATURE_BLOCK_MIN_QUALITY = 0.8   # ტექსტი კარგად იკითხება, წარწერა კი არ არის → გვერდზე ხელმოწერის ხაზი არ იბეჭდება
-ORIGINAL_CANDIDATES_MAX = 6            # ამდენ კანდიდატ ორიგინალს ჩამოვტვირთავთ შინაარსით ასარჩევად
-PAGE_OWNER_MIN_OVERLAP = 0.3           # გვერდის სიტყვების ამ წილზე მეტი ერთ დოკუმენტშია → გვერდი მისია
-PAGE_OWNER_MARGIN = 0.1                # დანართს გვერდი მხოლოდ ხელშეკრულებაზე ამდენით უკეთესი დამთხვევით ეკუთვნის
+ORIGINAL_CANDIDATES_MAX = 12           # ამდენ დაგენერირებულ ფაილს ჩამოვტვირთავთ გვერდების მისაკუთვნებლად
+PAGE_OWNER_MIN_OVERLAP = 0.7           # გვერდის სიტყვების ამ წილზე მეტი ერთ ფაილშია → გვერდი მისია (ნამდვილ სკანებზე სწორი ≥0.79, სხვა ≤0.74)
+PAGE_OWNER_WEAK = 0.6                  # ამაზე მეტი და მეზობელი გვერდიც ამ ფაილისაა → მისია (ცუდად წაკითხული ან ჩამატებული ტექსტის მქონე გვერდი)
+PAGE_OWNER_GAP = 2                     # ორ იმავე ფაილის გვერდს შორის ამდენამდე გვერდი იმ ფაილისაა; მეტი — სხვა დოკუმენტია
+PAGE_OWNER_TIE = 0.05                  # ამაზე ახლო დამთხვევისას წინა გვერდის ფაილი რჩება (ერთი ფაილის გვერდები მიმდევრობითაა)
+PAGE_MIN_TOKENS = 8                    # ამაზე ნაკლები სიტყვა (ტექსტის გარეშე გვერდი) — მეზობელ ფაილს მიეწერება
+
+
+def party_name(party: str, pt: dict[str, Any]) -> str:
+    """მხარე ისე, როგორც ქაღალდზე წერია: სტაჟირების ფაილში მეორე მხარე „სტაჟიორია“."""
+    if party == "employee" and any(str(w[0]).strip("„“\"':,.").startswith("სტაჟიორ") for w in pt.get("words") or []):
+        return "სტაჟიორი"
+    return _PARTY_KA.get(party, party)
 
 
 def signature_diffs(scanned: list[dict[str, Any]], already: set[int]) -> list[TextDiff]:
@@ -548,7 +633,7 @@ def signature_diffs(scanned: list[dict[str, Any]], already: set[int]) -> list[Te
         if i in already or pt.get("is_blank") or pt.get("marks_only"):
             continue
         parties = pt.get("signature_parties") or {}
-        missing = [_PARTY_KA[p] for p in ("employer", "employee") if p in parties and not parties[p]]
+        missing = [party_name(p, pt) for p in ("employer", "employee") if p in parties and not parties[p]]
         if missing:
             out.append(TextDiff(i, "signature", "", "", True, "ხელმოწერა აკლია: " + ", ".join(missing)))
         elif not parties and pt.get("signature_hint") not in ("present", "not_applicable"):
@@ -559,16 +644,89 @@ def signature_diffs(scanned: list[dict[str, Any]], already: set[int]) -> list[Te
     return out
 
 
+def last_page_signature_diffs(scanned: list[dict[str, Any]]) -> list[TextDiff]:
+    """ხელშეკრულების გარდა სხვა ფაილები (ინსტრუქცია, წესები, დანართი): ხელმოწერა ბოლო გვერდზე მოწმდება — ნამდვილ სკანებზე ასეთ
+    ფაილებს ყველა გვერდზე ხელმოწერა არ აქვთ."""
+    if not scanned:
+        return []
+    n, pt = len(scanned), scanned[-1]
+    if pt.get("marks_only"):
+        return []
+    parties = pt.get("signature_parties") or {}
+    missing = [party_name(p, pt) for p in ("employer", "employee") if p in parties and not parties[p]]
+    if missing:
+        return [TextDiff(n, "signature", "", "", True, "ბოლო გვერდზე ხელმოწერა აკლია: " + ", ".join(missing))]
+    if not parties and pt.get("signature_hint") != "present":
+        return [TextDiff(n, "signature", "", "", True, "ბოლო გვერდზე ხელმოწერა ვერ მოიძებნა")]
+    return []
+
+
+UPLOADED_READ_DPI = 150      # ფაილების გასარჩევად საკმარისია: ნამდვილ 22-გვერდიან პაკეტზე ყველა გვერდი სწორად, ~5 წამი გვერდზე
+UPLOADED_CACHE_MAX = 32
+_uploaded_texts: dict[str, list[str]] = {}   # ატვირთული PDF-ის ტექსტი: ერთი პაკეტის ფაილები მას ერთხელ კითხულობენ (მხოლოდ მეხსიერებაში)
+
+
+def _uploaded_pages(client, cfg: Config, u: MhrDocRef) -> list[str]:
+    key = str((u.raw or {}).get("sha256") or u.doc_id)
+    if key not in _uploaded_texts:
+        pdf = _pdf_pages(client.download(u), cfg, dpi=UPLOADED_READ_DPI, local_only=True)
+        while len(_uploaded_texts) >= UPLOADED_CACHE_MAX:
+            _uploaded_texts.pop(next(iter(_uploaded_texts)))
+        _uploaded_texts[key] = pdf[0] if pdf else []
+    return _uploaded_texts[key]
+
+
+def _page_ranges(pages: list[int]) -> str:
+    return f"{pages[0]}–{pages[-1]}" if len(pages) > 1 else str(pages[0])
+
+
+def _inside_uploaded(repo: Repository, cfg: Config, client, refs: list[MhrDocRef], original: MhrDocRef, row,
+                     cands: list[MhrDocRef]) -> Check | None:
+    """ამ ფაილის ტექსტი უკვე დევს ბარათზე ატვირთულ სხვა PDF-ში: მთელი პაკეტი ერთ ფაილად აიტვირთა (signed_copy_of მხოლოდ ერთ
+    ორიგინალს უთითებს) ან ხელით, ორიგინალთან კავშირის გარეშე. სხვაგვარად „მზადაა" მას მეორედ ატვირთავდა. ამ პროგრამის დაყოფილი
+    ნაწილი ერთ ფაილს შეიცავს და არ იკითხება; „ატვირთვა მაინც" ღიაა."""
+    unread: Check | None = None
+    read = 0
+    for u in refs:
+        raw = u.raw or {}
+        external = raw.get("external_id")
+        if raw.get("kind") != "uploaded" or external == row["id"]:
+            continue
+        local = repo.get_document(external) if external else None
+        if local is not None and json.loads(local["metadata"] or "{}").get("part"):
+            continue
+        try:
+            texts = _uploaded_pages(client, cfg, u)
+        except (MhrError, OcrError, OSError, ValueError) as e:
+            log.warning("uploaded %s not read: %s", u.doc_id, type(e).__name__)
+            unread = Check("already_uploaded", "უკვე ატვირთულია", None, u.doc_id, "info", False,
+                           note="ბარათზე ატვირთული PDF ვერ წაიკითხა — ორჯერ ატვირთვა ვერ შემოწმდა, ატვირთვამდე ნახე ბარათი")
+            continue
+        if not any(t.strip() for t in texts):
+            continue
+        read += 1
+        pages = [i for i, o in enumerate(plan_pages(client, cfg, cands, texts).owner, start=1) if o == original.doc_id]
+        if pages:
+            when = (u.created_at or "")[:10]
+            return Check("already_uploaded", "უკვე ატვირთულია", None, u.doc_id, "info", True,
+                         note=f"ეს ფაილი ბარათზე უკვე დევს ატვირთულ PDF-ში{f' ({when})' if when else ''}, გვერდი {_page_ranges(pages)} "
+                              "— ხელახლა ატვირთვამდე დარწმუნდი, რომ ეს ახალი ვერსიაა")
+    return unread or Check("already_uploaded", "ორჯერ ატვირთვა", None, None, "match", False,
+                           note=f"ბარათზე {read} სხვა ატვირთული PDF წავიკითხე, ეს ფაილი არცერთში არ არის" if read
+                           else "ბარათზე ამ ფაილის ატვირთული ასლი არ არის")
+
+
 def _already_uploaded(refs: list[MhrDocRef], original: MhrDocRef | None, document_id: str) -> Check | None:
-    """MHR-ში ამ ხელშეკრულების ხელმოწერილი სკანი უკვე არის (signed_copy_of = ორიგინალი) — გაფრთხილება, არა ბლოკი."""
+    """ამ ფაილის ხელმოწერილი სკანი MHR-ში უკვე არის (signed_copy_of = ორიგინალი) → აჩერებს: „ყველას ატვირთვა" მეორედ არ უნდა
+    ატვირთავდეს; „ატვირთვა მაინც" ღიაა. მხოლოდ ხელით მონიშნული ხელმოწერილი (ფაილის გარეშე) — შენიშვნა."""
     if original is None:
         return None
     for r in refs:
         raw = r.raw or {}
         if raw.get("kind") == "uploaded" and str(raw.get("signed_copy_of")) == original.doc_id                 and raw.get("external_id") != document_id:
             when = (r.created_at or "")[:10]
-            return Check("already_uploaded", "უკვე ატვირთულია", None, r.doc_id, "info", False,
-                         note=f"ეს ხელშეკრულება ამ თანამშრომელზე MHR-ში უკვე ატვირთულია{f' ({when})' if when else ''} "
+            return Check("already_uploaded", "უკვე ატვირთულია", None, r.doc_id, "info", True,
+                         note=f"ეს ფაილი ამ თანამშრომელზე MHR-ში უკვე ატვირთულია{f' ({when})' if when else ''} "
                               "— ხელახლა ატვირთვამდე დარწმუნდი, რომ ეს ახალი ვერსიაა")
     signed = (original.raw or {}).get("signed_at")   # MHR: ატვირთვისას ან HR-ის მიერ ხელით მონიშვნისას ეწერება
     if signed:
@@ -615,8 +773,12 @@ def _summary(result: ValidationResult, compared_original: bool, compared_templat
         lines.append("დოკუმენტში ვერ მოიძებნა (შემოწმება გამოტოვებულია): " + ", ".join(missing))
     if noise:
         lines.append(f"OCR-ის ხმაური: {noise} უმნიშვნელო განსხვავება (იგნორირებულია)")
+    unverified = sorted({d.page for d in result.diffs if d.suspect and not d.significant})
+    if unverified:
+        lines.append(f"ყურადღება — გვერდი {', '.join(map(str, unverified))}: პატარა სხვაობა Claude-ით ვერ გადამოწმდა, "
+                     "ატვირთვამდე თვალით შეადარე ორიგინალს")
     if result.status == "passed":
-        lines.insert(0, "ყველა შემოწმება გავიდა — მზადაა ატვირთვისთვის")
+        lines.insert(0, "ყველა შემოწმება გავიდა")
     return lines
 
 
@@ -629,6 +791,21 @@ def _finish(result: ValidationResult, compared_original: bool = False, compared_
 
 
 # --- საჯარო API -----------------------------------------------------------------------------------------------
+MHR_ERROR_KA = {   # MHR-ის პასუხის კოდი → რა მოხდა და რა ვქნა, მარტივად
+    "unauthenticated": "MHR-მა ტოკენი არ მიიღო: ტოკენი არასწორია ან ვადაგასულია. ჩაწერე ახალი ტოკენი პარამეტრებში",
+    "forbidden": "MHR-მა უარი თქვა: ტოკენს ამის უფლება არ აქვს, ან ეს კომპიუტერი დაშვებულ მისამართებში არ არის",
+    "not_pdf": "MHR-მა ფაილი არ მიიღო: ის PDF არ არის",
+    "sha256_mismatch": "MHR-მა ფაილი არ მიიღო: გზაში დაზიანდა. სცადე ხელახლა",
+    "file_too_large": "MHR-მა ფაილი არ მიიღო: ზომა ლიმიტზე დიდია",
+    "unknown_category": "MHR-მა ფაილი არ მიიღო: ასეთი დოკუმენტის კატეგორია იქ არ არსებობს. შეამოწმე კატეგორიები პარამეტრებში",
+    "invalid_signed_copy_of": "MHR-მა ფაილი არ მიიღო: ორიგინალი ამ თანამშრომლის დაგენერირებული ფაილი აღარ არის. „ხელახლა შედარება“",
+    "external_id_conflict": "MHR-ში ამ ნომრით სხვა ფაილი უკვე დევს. ნახე თანამშრომლის ბარათი",
+    "multiple_matches": "MHR-ში ამ პირადი ნომრით რამდენიმე აქტიური ჩანაწერია. ჯერ HR-მა უნდა მოაგვაროს",
+    "rate_limited": "MHR-მა მოთხოვნების რაოდენობა შეზღუდა. პროგრამა მოგვიანებით თავად სცდის",
+    "validation_failed": "MHR-მა მოთხოვნის ველები არ მიიღო. იხილე ტექნიკური ჟურნალი",
+}
+
+
 def validate_document(repo: Repository, cfg: Config, document_id: str, client) -> ValidationResult:
     """ერთი დოკუმენტის ვალიდაცია MHR-თან. გამონაკლისი არ გამოდის MHR-ის შეცდომებზე — სტატუსში აისახება."""
     row = repo.get_document(document_id)
@@ -643,15 +820,15 @@ def validate_document(repo: Repository, cfg: Config, document_id: str, client) -
     if not pn or not _PN_RE.match(pn):
         return ValidationResult("skipped", summary=["პირადი ნომერი დოკუმენტში არ არის — MHR-თან შედარება გამოტოვებულია"],
                                 validated_at=now_iso())
-    type_id = row["type_id"] or meta.get("document_type_id")
-    if not type_id or type_id == "unknown":
-        return ValidationResult("skipped", summary=["დოკუმენტის ტიპი უცნობია — MHR-ზე არ იტვირთება"], validated_at=now_iso())
+    type_id = row["type_id"] or meta.get("document_type_id") or "unknown"
     upload_types = mhr.get("upload_type_ids") or []
     if upload_types and type_id not in upload_types:
         return ValidationResult("skipped", summary=[f"ტიპი „{type_id}“ MHR-ზე არ იტვირთება"], validated_at=now_iso())
 
     try:
-        return _validate(repo, cfg, row, meta, pn, type_id, client)
+        result = _validate(repo, cfg, row, meta, pn, type_id, client)
+        _place_diffs(result, document_pages(repo, repo.get_document(document_id) or row))
+        return result
     except MhrUnavailable as e:
         log.info("mhr validation %s: unavailable (%s)", document_id, type(e).__name__)
         return ValidationResult("unavailable", summary=["MHR მიუწვდომელია — მოგვიანებით ხელახლა შემოწმდება"],
@@ -663,20 +840,61 @@ def validate_document(repo: Repository, cfg: Config, document_id: str, client) -
             res.checks.append(Check("personal_number", LABELS_KA["personal_number"], pn, None, "mismatch", True,
                                     note="MHR-ში ამ პირადი ნომრით რამდენიმე აქტიური ჩანაწერია — ხელით გადაწყვიტე"))
             return _finish(res)
-        return ValidationResult("failed", summary=["MHR-ის შეცდომა (კონფიგურაცია/უფლება) — იხილეთ ტექნიკური ჟურნალი"],
+        return ValidationResult("failed", summary=[MHR_ERROR_KA.get(str(e), "MHR-ის შეცდომა (კონფიგურაცია/უფლება) — იხილეთ ტექნიკური ჟურნალი")],
                                 validated_at=now_iso(), error=type(e).__name__)
 
 
-def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str, type_id: str, client) -> ValidationResult:
-    mhr = cfg.data["mhr"]
-    result = ValidationResult("failed")
-    employee: MhrEmployee | None = client.get_employee(pn)
-    if employee is None:
-        result.checks.append(Check("personal_number", LABELS_KA["personal_number"], pn, None, "missing_in_mhr", True,
-                                   note="თანამშრომელი ამ პირადი ნომრით MHR-ში ვერ მოიძებნა"))
-        return _finish(result)
-    result.employee = employee
+PAGE_TWIN_MIN = 0.9          # ორი გვერდის სიტყვების ამ წილი საერთოა → ერთი ფურცელი ორჯერ გავიდა
+MIN_TWIN_WORDS = 30          # მოკლე გვერდები შეიძლება მართლა ჰგავდეს ერთმანეთს
+ORDER_ANCHOR_WORDS = 8       # გვერდის ადგილი ორიგინალში ამდენი ზედიზედ დამთხვეული სიტყვით დგინდება
 
+
+def _pages_out_of_order(pages: list[dict[str, Any]], orig_text: str) -> bool:
+    """ყოველი გვერდი თავის ადგილს ეძებს ორიგინალში: ადგილი უკან თუ წავიდა, ფურცლები სხვა რიგითაა."""
+    orig = [w.strip(_PUNCT) for w in normalize(orig_text).split()]
+    where = []
+    for p in pages:
+        words = [w.strip(_PUNCT) for w in normalize(p.get("text") or "").split()]
+        block = SequenceMatcher(None, orig, words, autojunk=False).find_longest_match(0, len(orig), 0, len(words))
+        if block.size >= ORDER_ANCHOR_WORDS:
+            where.append(block.a - block.b)
+    return any(b < a for a, b in zip(where, where[1:]))
+
+
+def _scan_hints(result: ValidationResult, pages: list[dict[str, Any]], orig_text: str) -> None:
+    """ტექსტის სხვაობის ხშირი მიზეზი სკანერია და არა დოკუმენტი: ფურცელი ორჯერ გავიდა ან რიგი აირია. ეს ახსნაა და არ აჩერებს."""
+    if not any(d.significant and d.kind in RECHECK_KINDS for d in result.diffs):
+        return
+    tokens = [_content_tokens(p.get("text") or "") for p in pages]
+    twins = [(i + 1, j + 1) for i, a in enumerate(tokens) for j, b in enumerate(tokens[i + 1:], start=i + 1)
+             if min(len(a), len(b)) >= MIN_TWIN_WORDS and len(a & b) >= PAGE_TWIN_MIN * max(len(a), len(b))]
+    if twins:
+        i, j = twins[0]
+        result.checks.append(Check("scan_hint", "სკანი", None, None, "info", False,
+                                   note=f"გვერდი {i} და გვერდი {j} თითქმის ერთნაირია: ალბათ ერთი ფურცელი სკანერში ორჯერ გავიდა"))
+        return
+    if len(pages) > 1 and _pages_out_of_order(pages, orig_text):
+        result.checks.append(Check("scan_hint", "სკანი", None, None, "info", False,
+                                   note="გვერდები ორიგინალისგან სხვა რიგითაა: ალბათ ფურცლები სკანერში არეული რიგით ჩაიდო. შეამოწმე რიგი და ხელახლა დაასკანერე"))
+
+
+def _place_diffs(result: ValidationResult, pages: list[dict[str, Any]]) -> None:
+    """სად არის ყოველი პრობლემა გვერდზე — ვებ-გვერდი იმ ადგილს მონიშნავს."""
+    for d in result.diffs:
+        if not (d.significant or d.suspect) or not 0 < d.page <= len(pages):
+            continue
+        pt = pages[d.page - 1]
+        if d.kind == "signature":
+            zones = pt.get("signature_boxes") or {}
+            d.boxes = [zones[p] for p, found in (pt.get("signature_parties") or {}).items() if not found and p in zones]
+        elif d.kind == "handwriting":
+            d.boxes = list(pt.get("marks") or [])
+        elif d.scan_parts:
+            d.boxes = locate(pt.get("words") or [], d.scan_parts)
+
+
+def _field_checks(result: ValidationResult, cfg: Config, row, meta: dict[str, Any], pn: str, employee: MhrEmployee) -> None:
+    mhr = cfg.data["mhr"]
     threshold = float(mhr.get("name_similarity", 0.85))
     checks = result.checks
     checks.append(_check("first_name", _field(meta, "first_name"), employee.first_name,
@@ -701,34 +919,91 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
             c.note = f"{c.note}; {period.note}" if c.note else period.note
     checks.extend(period_checks)
 
-    if type_id not in (mhr.get("contract_type_ids") or []):
+
+def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str, type_id: str, client) -> ValidationResult:
+    mhr = cfg.data["mhr"]
+    result = ValidationResult("failed")
+    employee: MhrEmployee | None = client.get_employee(pn)
+    if employee is None:
+        if type_id == "unknown":   # ტიპიც უცნობია, პ/ნ-იც შეიძლება არასწორია — გადასამოწმებელში რჩება, MHR-ის შეცდომად არ ითვლება
+            return ValidationResult("skipped", summary=["ამ პირადი ნომრით თანამშრომელი MHR-ში ვერ მოიძებნა, დოკუმენტის ტიპიც უცნობია"],
+                                    validated_at=now_iso())
+        result.checks.append(Check("personal_number", LABELS_KA["personal_number"], pn, None, "missing_in_mhr", True,
+                                   note="თანამშრომელი ამ პირადი ნომრით MHR-ში ვერ მოიძებნა"))
+        return _finish(result)
+    result.employee = employee
+
+    # --- რომელ დაგენერირებულ ფაილს ეკუთვნის სკანი ---
+    doc_date = row["document_date"] or meta.get("document_date")
+    scanned = document_pages(repo, row, meta)
+    refs = client.list_documents(employee.employee_id)
+    generated = [r for r in refs if _is_generated(r)]
+    category = (mhr.get("categories") or {}).get(type_id, type_id)
+    pinned = str((meta.get("part") or {}).get("original_id") or "")   # სკანის ნაწილი: ფაილი დაყოფისას უკვე დადგინდა
+    pool = [r for r in generated if (r.raw or {}).get("kind") == "generated" or r.category == category]
+    plan = PagePlan()
+    found: OriginalFile | None = None
+    ref: MhrDocRef | None = None
+    if pinned:
+        ref = next((r for r in generated if r.doc_id == pinned), None)
+    else:
+        plan = plan_pages(client, cfg, original_candidates(pool, None, doc_date), [p.get("text") or "" for p in scanned])
+        if plan.needs_split:
+            return _split_scan(repo, cfg, row, meta, plan, scanned, employee, pn)
+        if plan.owners:
+            found = plan.files[plan.owners[0]]
+            ref = found.ref
+            biggest = max(len(f.tokens) for f in plan.files.values())
+            new_type = _matched_type(cfg, ref, [f.ref for f in plan.files.values()], len(found.tokens) == biggest)
+            if new_type != type_id or row["status"] == "needs_review":
+                adopt_match(repo, row, meta, new_type)
+                type_id = new_type
+
+    is_contract = type_id in (mhr.get("contract_type_ids") or [])
+    if ref is None and not pinned and not is_contract:
+        if type_id == "unknown":
+            return ValidationResult("skipped", employee=employee, validated_at=now_iso(),
+                                    summary=["ამ თანამშრომლის დაგენერირებულ ფაილებს არ ემთხვევა და ტიპიც უცნობია — გადასამოწმებელში რჩება"])
+        _field_checks(result, cfg, row, meta, pn, employee)   # სხვა ტიპი, ორიგინალის გარეშე — მხოლოდ ველები
         return _finish(result)
 
-    # --- ხელშეკრულება: ხელმოწერები (ორიგინალის გარეშეც მოწმდება) ---
-    scanned = _scanned_pages(repo, row)
+    checks = result.checks
+    if is_contract:
+        _field_checks(result, cfg, row, meta, pn, employee)
+    else:   # ინსტრუქცია, წესები, დანართი: სახელი და მონაცემები ფაილის ტექსტშია — შედარება ამას ამოწმებს
+        checks.append(_check("personal_number", pn, employee.personal_number,
+                             lambda d, m: digits_only(str(d)) == digits_only(str(m))))
+
+    # --- ხელმოწერები (ორიგინალის გარეშეც მოწმდება) ---
     marked = handwriting_diffs(scanned)
+    if not is_contract:   # ბეჭედი/ნიშანი ზონის გარეთ („დამტკიცებულია" ბეჭედი) ასეთ ფაილებზე ჩვეულებრივია — შენიშვნა
+        for d in marked:
+            d.significant, d.reason = False, f"დანართი — {d.reason}"
     result.diffs.extend(marked)
     if mhr.get("signature_every_page", True):
-        result.diffs.extend(signature_diffs(scanned, {d.page for d in marked}))
+        result.diffs.extend(signature_diffs(scanned, {d.page for d in marked}) if is_contract else last_page_signature_diffs(scanned))
 
     # --- ორიგინალი MHR-დან (მხოლოდ kind generated — .docx) ---
-    category = (mhr.get("categories") or {}).get(type_id, type_id)
-    refs = client.list_documents(employee.employee_id, category)
-    cands = original_candidates(refs, row["doc_number"] or _field(meta, "document_number"),
-                                row["document_date"] or meta.get("document_date"))
-    chosen = match_originals(client, cfg, cands, [p.get("text") or "" for p in scanned])
-    ref, data, orig = chosen.primary, chosen.data, chosen.orig
+    if ref is None and not pinned:
+        fallback = original_candidates([r for r in generated if r.category == category],
+                                       row["doc_number"] or _field(meta, "document_number"), doc_date)
+        ref = fallback[0] if fallback else None
+        found = plan.files.get(ref.doc_id) if ref else None
     uploaded = _already_uploaded(refs, ref, row["id"])
     if uploaded:
         checks.append(uploaded)
     if ref is None:
+        if pinned:
+            checks.append(Check("original_contract", LABELS_KA["original_contract"], None, pinned, "missing_in_mhr", True,
+                                note="ეს ფაილი MHR-ის ბარათზე აღარ არის — ის შეიძლება წაიშალა ან ხელახლა დაგენერირდა"))
+            return _finish(result)
         if mhr.get("template_fallback"):   # ძველი ქცევა, მხოლოდ კონფიგით: თანამდებობის შაბლონთან შედარება
             return _compare_with_template(result, cfg, client, employee, scanned, repo, row)
         checks.append(Check("original_contract", LABELS_KA["original_contract"], None, None, "missing_in_mhr", True,
                             note=NO_ORIGINAL_NOTE))
         return _finish(result)
     result.original = ref
-    date_note = original_date_note(ref, row["document_date"] or meta.get("document_date"))
+    date_note = original_date_note(ref, doc_date)
     if date_note:
         checks.append(date_note)
     missing_file = Check("original_contract", LABELS_KA["original_contract"], None, ref.doc_id, "missing_in_mhr", True,
@@ -736,7 +1011,8 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     if "sha256" in (ref.raw or {}) and not ref.raw.get("sha256"):   # API: sha256 null = ფაილი სერვერზე ვერ მოიძებნა
         checks.append(missing_file)
         return _finish(result)
-    if data is None:
+    orig = found.orig if found else None
+    if found is None:
         try:
             data = client.download(ref)
         except MhrError:
@@ -750,25 +1026,8 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     checks.append(Check("original_contract", LABELS_KA["original_contract"], None, ref.doc_id, "match", False,
                         note=f"ორიგინალი: {ref.filename or ref.title or ref.doc_id}"))
 
-    scanned_texts = [p.get("text") or "" for p in scanned]
-    # პაკეტის დანართები (ინსტრუქცია, წესები…): თითოეული თავის გვერდებს შედარდება, ხელშეკრულება — დანარჩენს
-    for ex_ref, ex_orig in chosen.extras:
-        ex_pages = [i + 1 for i, o in enumerate(chosen.owner) if o == ex_ref.doc_id]
-        ex_texts = [t if chosen.owner[i] == ex_ref.doc_id else "" for i, t in enumerate(scanned_texts)]
-        ex_diffs = compare_texts(ex_orig.pages, ex_texts, cfg, original_paginated=ex_orig.paginated,
-                                 strip_lines=ex_orig.strip_lines, labels=clause_labels(ex_orig.pages))
-        found = sum(1 for d in ex_diffs if d.significant)
-        for d in ex_diffs:   # დანართის სხვაობა ატვირთვას არ აჩერებს (შაბლონის დაცვა ხელშეკრულებას ეხება) — ჩანს სიაში
-            if d.significant:
-                d.significant, d.reason = False, f"დანართი — {d.reason}"
-        result.diffs.extend(ex_diffs)
-        checks.append(Check("original_annex", "დანართი", None, ex_ref.doc_id, "info", False,
-                            note=f"{ex_ref.filename or ex_ref.title or ex_ref.doc_id}: გვ. {', '.join(map(str, ex_pages))}"
-                                 + (f"; {found} სხვაობა — ატვირთვას არ აჩერებს, ნახე სიაში" if found else "; ემთხვევა")))
-    scanned_texts = [t if chosen.owner[i] is None else "" for i, t in enumerate(scanned_texts)]
-    for d in result.diffs:   # დანართის გვერდზე ბეჭედი/ნიშანი ზონის გარეთ („დამტკიცებულია" ბეჭედი) — შენიშვნა
-        if d.kind == "handwriting" and d.significant and 0 < d.page <= len(chosen.owner) and chosen.owner[d.page - 1]:
-            d.significant, d.reason = False, f"დანართი — {d.reason}"
+    scanned_texts = [_clean_recheck_text(p.get("text") or "") if (p.get("text_source") or "").startswith("ocr:online")
+                     else p.get("text") or "" for p in scanned]   # „[ხელნაწერი: …]", „[?]" — მოდელის ნიშნები, არა ტექსტი
     for p in orig.unreadable:   # წაუკითხავი ორიგინალის გვერდი ცალკე diff-ია; ტექსტური შედარება მასზე აზრს მოკლებულია
         if p - 1 < len(scanned_texts):
             scanned_texts[p - 1] = ""
@@ -776,19 +1035,25 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     known = known_tokens(employee)   # ბეჭდის ციფრები („2009", ს/კ) სუფთა ჩამატებად არ ჩაითვალოს
 
     def compare(texts: list[str]) -> list[TextDiff]:
-        return compare_texts(orig.pages, texts, cfg, original_paginated=orig.paginated,
-                             strip_lines=orig.strip_lines, labels=clause_labels(orig.pages), known=known)
+        return compare_texts(orig.pages, texts, cfg, original_paginated=orig.paginated, strip_lines=orig.strip_lines,
+                             labels=clause_labels(orig.pages), known=known, trusted_pages=trusted_pages(scanned))
     primary = compare(scanned_texts)
     result.diffs.extend(primary)
     _recheck_diffs(result, cfg, repo, row, scanned, scanned_texts, primary, compare)
     if not result.significant_diffs:
-        # ხელშეკრულება ორიგინალს ემთხვევა ⇒ MHR-ის ამჟამინდელი ხელფასი/თანამდებობა/ვადა მოგვიანებით შეიცვალა,
+        # ფაილი ორიგინალს ემთხვევა ⇒ MHR-ის ამჟამინდელი ხელფასი/თანამდებობა/ვადა მოგვიანებით შეიცვალა,
         # დოკუმენტი კი არა (სპეც. §12: დღევანდელი მონაცემი ძველ დოკუმენტს არ ანაცვლებს) — შენიშვნა, არა ბლოკი
         for c in checks:
             if c.field in _CURRENT_STATE_FIELDS and c.status == "mismatch":
                 c.blocking = False
                 c.note = "ხელშეკრულება ორიგინალს ემთხვევა — MHR-ში ამჟამინდელი მონაცემი განსხვავდება" + \
                     (f"; {c.note}" if c.note else "")
+    _scan_hints(result, scanned, "\n".join(orig.pages))
+    if not result.significant_diffs and not any(c.blocking for c in checks):   # მხოლოდ „მზადა" ფაილზე: წაკითხვას დრო უნდა
+        cands = original_candidates(pool, None, doc_date)
+        inside = _inside_uploaded(repo, cfg, client, refs, ref, row, cands if ref in cands else [ref, *cands])
+        if inside:
+            checks.append(inside)
     return _finish(result, compared_original=True)
 
 
@@ -829,7 +1094,7 @@ def _compare_with_template(result: ValidationResult, cfg: Config, client, employ
 
     def compare(texts: list[str]) -> list[TextDiff]:
         return compare_texts(tpl, texts, cfg, original_paginated=orig.paginated, strip_lines=orig.strip_lines,
-                             labels=clause_labels(orig.pages), known=known_tokens(employee))
+                             labels=clause_labels(orig.pages), known=known_tokens(employee), trusted_pages=trusted_pages(scanned))
     scanned_texts = [p.get("text") or "" for p in scanned]
     primary = compare(scanned_texts)
     result.diffs.extend(primary)
@@ -840,15 +1105,35 @@ def _compare_with_template(result: ValidationResult, cfg: Config, client, employ
 
 # --- საეჭვო გვერდის ხელახალი წაკითხვა ონლაინ OCR-ით ------------------------------------------------------------
 RECHECK_KINDS = ("changed", "added", "removed")
-RECHECK_NOTE = "გვერდი Claude-მა ხელახლა წაიკითხა — სხვაობა Tesseract-ის წაკითხვის შეცდომა იყო"
 RECHECK_STILL = "ხელახალი წაკითხვითაც"
+RECHECK_DISAGREE = "Tesseract-მა ორიგინალი წაიკითხა, Claude-მა სხვა"
+RECHECK_DOUBT_REASONS = ("სიტყვა შეცვლილია", "ამოღებული ტექსტი")   # ციფრი და „არ“ აქ არ არის: ისინი ყოველთვის აჩერებს
+RECHECK_REPEAT_WORDS = 40     # ამდენი სიტყვა ზედიზედ მეორდება → Claude-მა გვერდი გაიმეორა („უკაცრავად, … თავიდან"); ნამდვილ ხელშეკრულებაში 12-სიტყვიანი ფრაზა ორჯერ წერია
 
 
 _RECHECK_MARKER = re.compile(r"\[[^\]\n]{0,200}\]")   # „[ბეჭედი: …]", „[ხელნაწერი: …]" — მოდელის ნიშნები, არა ტექსტი
 
 
+def trusted_pages(scanned: list[dict[str, Any]]) -> set[int]:
+    """გვერდები (1-დან), რომელთა ტექსტი Tesseract-ის არ არის (Claude, ტექსტური ფენა): მათზე პატარა სხვაობაც ნამდვილია."""
+    return {i for i, p in enumerate(scanned, start=1)
+            if (p.get("text") or "").strip() and not (p.get("text_source") or "").startswith("ocr:tesseract")}
+
+
 def _clean_recheck_text(text: str) -> str:
     return _RECHECK_MARKER.sub(" ", text or "")
+
+
+def _reading_broke(text: str) -> bool:
+    """Claude-ის პასუხი გვერდის ტექსტი არ არის: ცარიელია, ან გვერდი გაიმეორა."""
+    words = text.split()
+    seen: set[tuple[str, ...]] = set()
+    for i in range(len(words) - RECHECK_REPEAT_WORDS + 1):
+        run = tuple(words[i:i + RECHECK_REPEAT_WORDS])
+        if run in seen:
+            return True
+        seen.add(run)
+    return not words
 
 
 def _online_page_text(cfg: Config, provider, output_path: str, page_index: int, rotation: int) -> str:
@@ -862,55 +1147,93 @@ def _online_page_text(cfg: Config, provider, output_path: str, page_index: int, 
     return _clean_recheck_text(recognize(enhance(img), cfg.data["ocr"].get("tesseract_lang") or "kat+eng").text)
 
 
+def _only_claude_differs(d: TextDiff, first: list[TextDiff]) -> bool:
+    """ორიგინალის ეს სიტყვები პირველ (Tesseract) წაკითხვაში სხვაობად არ ჩანდა: იქ ორიგინალს დაემთხვა, სხვა მხოლოდ Claude-მა წაიკითხა.
+    ნამდვილი გვერდი: ქაღალდზე „თანხმობას“, Claude-მა კი „თანხმდება“. Tesseract ორიგინალს არ იცნობს, ამიტომ ზუსტ დამთხვევას შემთხვევით ვერ მოიგონებს."""
+    def words(parts: list[str], whole: str) -> set[str]:
+        return set((parts[1] if len(parts) == 3 else whole).split())
+    lost, new = words(d.orig_parts, d.original), words(d.scan_parts, d.scanned)
+    if lost:
+        return not any(lost & words(p.orig_parts, p.original) for p in first)
+    return bool(new) and not any(new & words(p.scan_parts, p.scanned) for p in first)
+
+
 def _recheck_diffs(result: ValidationResult, cfg: Config, repo: Repository, row, scanned: list[dict[str, Any]],
                    scanned_texts: list[str], primary: list[TextDiff], compare) -> None:
     """წესებმა ტექსტური სხვაობა იპოვა Tesseract-ით წაკითხულ გვერდზე (დაკარგული ციფრი „2 კვირით" → „კვირით", „მე-5" →
     „მე-3") → ეს გვერდი ონლაინ OCR-ით (Claude) ხელახლა იკითხება და შედარება მეორდება: სხვაობა გაქრა — წაკითხვის შეცდომა
     იყო (სიაში ხმაურად რჩება); დარჩა — ნამდვილი სხვაობაა. ახალი ტექსტი page_texts-ში ინახება, რომ AI ანალიზი და
-    ხელახალი შედარება უკეთეს ტექსტს ხედავდეს. ≤ `mhr.recheck.max_pages` გვერდი ერთ დოკუმენტზე (ხარჯის კონტროლი)."""
+    ხელახალი შედარება უკეთეს ტექსტს ხედავდეს. ≤ `mhr.recheck.max_pages` გვერდი ერთ დოკუმენტზე (ხარჯის კონტროლი): ჯერ
+    მნიშვნელოვანი სხვაობის გვერდები, მერე საეჭვო პატარა სხვაობისა (`suspect`), რომელიც წაკითხვის შემდეგ ან ქრება, ან ნამდვილია."""
     rc = cfg.section("mhr").get("recheck") or {}
     if not rc.get("enabled", True):
         return
-    bad = {d.page for d in primary if d.significant and d.kind in RECHECK_KINDS and 0 < d.page <= len(scanned)}
-    pages = sorted(p for p in bad if (scanned[p - 1].get("text_source") or "").startswith("ocr:tesseract")
-                   and scanned_texts[p - 1])
-    pages = pages[:int(rc.get("max_pages", 4))]
-    if not pages:
-        return
-    provider = getattr(build_ocr_chain(cfg), "online", None)
-    if provider is None or not provider.available():
-        return
+    budget = int(rc.get("max_pages", 4))
+    provider = None
+    tried: set[int] = set()
     rechecked: list[int] = []
-    for p in pages:
-        pt = scanned[p - 1]
-        try:
-            text = _online_page_text(cfg, provider, row["output_path"], int(pt["page_index"]) - int(row["page_start"]),
-                                     int(pt.get("rotation_applied") or 0))
-        except (OcrError, OSError, ValueError, KeyError, TypeError) as e:
-            log.warning("recheck page %s of %s failed: %s", p, row["id"], type(e).__name__)
-            continue
-        if not (text or "").strip():
-            continue
-        new_pt = dict(pt, text=text, text_source=f"ocr:{getattr(provider, 'name', 'online')}:recheck",
-                      ocr_quality=round(float(textquality.score(text)), 4), provider=getattr(provider, "name", "online"))
-        scanned[p - 1] = new_pt
-        scanned_texts[p - 1] = text
-        repo.save_page_text(row["job_id"], int(pt["page_index"]), new_pt)
-        rechecked.append(p)
-    if not rechecked:
+    current = primary
+    while True:   # ერთი გვერდის გასწორებამ შეიძლება შედარება გადაალაგოს და ახალი გვერდი გამოაჩინოს — ბიუჯეტის ფარგლებში ისიც იკითხება
+        flagged = [d for d in current if (d.significant or d.suspect) and d.kind in RECHECK_KINDS and 0 < d.page <= len(scanned)]
+        must = {d.page for d in flagged if d.significant}
+        pages = [p for p in [*sorted(must), *sorted({d.page for d in flagged} - must)]
+                 if p not in tried and (scanned[p - 1].get("text_source") or "").startswith("ocr:tesseract")
+                 and scanned_texts[p - 1]][:max(0, budget - len(tried))]
+        if not pages:
+            break
+        if provider is None:
+            provider = getattr(build_ocr_chain(cfg), "online", None)
+            if provider is None or not provider.available():
+                break
+        changed = False
+        for p in pages:
+            tried.add(p)
+            pt = scanned[p - 1]
+            try:
+                for _attempt in range(2):
+                    text = _online_page_text(cfg, provider, row["output_path"], _pdf_index(row, int(pt["page_index"])),
+                                             int(pt.get("rotation_applied") or 0))
+                    if not _reading_broke(text or ""):
+                        break
+                    log.warning("recheck page %s of %s: unusable reading, %s", p, row["id"], "retry" if _attempt == 0 else "kept Tesseract text")
+                else:
+                    continue
+            except (OcrError, OSError, ValueError, KeyError, TypeError) as e:
+                log.warning("recheck page %s of %s failed: %s", p, row["id"], type(e).__name__)
+                continue
+            new_pt = dict(pt, text=text, text_source=f"ocr:{getattr(provider, 'name', 'online')}:recheck",
+                          ocr_quality=round(float(textquality.score(text)), 4), provider=getattr(provider, "name", "online"))
+            scanned[p - 1] = new_pt
+            scanned_texts[p - 1] = text
+            repo.save_page_text(row["job_id"], int(pt["page_index"]), new_pt)
+            rechecked.append(p)
+            changed = True
+        if not changed:
+            break
+        current = compare(scanned_texts)
+    if rechecked:
+        log.info("recheck %s: pages %s re-read online", row["id"], rechecked)
+        old = {id(d) for d in primary}
+        result.diffs = [d for d in result.diffs if id(d) not in old]
+        result.diffs.extend(current)
+    _weigh_readers(current, scanned, scanned_texts, compare)
+
+
+def _weigh_readers(diffs: list[TextDiff], scanned: list[dict[str, Any]], scanned_texts: list[str], compare) -> None:
+    """Claude-ით ხელახლა წაკითხულ გვერდზე დარჩენილი სხვაობა: რა ნახა პირველმა მკითხველმა? Tesseract-ის სიტყვები გვერდთან რჩება,
+    ამიტომ „ხელახლა შედარებაც“, როცა ტექსტი უკვე Claude-ისაა, იმავე პასუხს იძლევა."""
+    claude = {n for n, pt in enumerate(scanned, start=1) if (pt.get("text_source") or "").endswith(":recheck")}
+    doubted = [d for d in diffs if d.significant and d.page in claude and d.kind in RECHECK_KINDS]
+    if not doubted:
         return
-    log.info("recheck %s: pages %s re-read online", row["id"], rechecked)
-    fresh = compare(scanned_texts)
-    old = {id(d) for d in primary}
-    result.diffs = [d for d in result.diffs if id(d) not in old]
-    still = {d.page for d in fresh if d.significant and d.kind in RECHECK_KINDS}
-    for d in fresh:
-        if d.significant and d.page in rechecked and d.kind in RECHECK_KINDS:
-            d.reason = f"{d.reason} — {RECHECK_STILL}" if d.reason else RECHECK_STILL
-    result.diffs.extend(fresh)
-    for p in rechecked:
-        if p not in still:
-            result.diffs.append(TextDiff(p, "changed", "", "", False, RECHECK_NOTE))
+    first = compare([" ".join(str(w[0]) for w in pt["words"]) if n in claude and pt.get("words") else scanned_texts[n - 1]
+                     for n, pt in enumerate(scanned, start=1)])
+    for d in doubted:
+        alone = _only_claude_differs(d, first)
+        if alone and d.reason in RECHECK_DOUBT_REASONS:
+            d.significant, d.suspect = False, True
+        note = RECHECK_DISAGREE if alone else RECHECK_STILL
+        d.reason = f"{d.reason} — {note}" if d.reason else note
 
 
 def known_tokens(employee: MhrEmployee) -> list[str]:
@@ -991,7 +1314,7 @@ def _company_check(cfg: Config, meta: dict[str, Any], doc_company: Any, co, mco:
     shown = f"{name} (ს/კ {tax})" if name and tax else (name or (f"ს/კ {tax}" if tax else mid))
     source = meta.get("company_source")
     if source == "default" or (not source and doc_company == cfg.default_company.id):
-        return Check("company", label, doc_company, shown, "skipped", False,
+        return Check("company", label, co.name if co else doc_company, shown, "skipped", False,
                      note="კომპანია დოკუმენტიდან არ წაკითხულა (პროფილის ნაგულისხმევი)")
     names = {company_core(n) for n in (co.name, *co.aliases)} if co else set()
 
@@ -1004,17 +1327,28 @@ def _company_check(cfg: Config, meta: dict[str, Any], doc_company: Any, co, mco:
             return False
         return one_line(str(d)) == one_line(str(mid)) or company_core(str(mid)) in names
 
-    return _check("company", doc_company, shown, match)
+    check = _check("company", doc_company, shown, match)
+    check.document_value = co.name if co else doc_company
+    return check
 
 
-def _scanned_pages(repo: Repository, row) -> list[dict[str, Any]]:
-    """დოკუმენტის გვერდების PageText-ები (job_id, page_start..page_end; ინდექსები 0-დან). დადასტურებულად ცარიელი
-    გვერდები (is_blank) შედარებაში არ მონაწილეობს — ცვლილებას ვერ შეიცავს."""
+def document_pages(repo: Repository, row, meta: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """დოკუმენტის გვერდების PageText-ები (ინდექსები 0-დან): სკანის ნაწილს თავისი გვერდების სია აქვს, სხვას — page_start..page_end.
+    დადასტურებულად ცარიელი გვერდები (is_blank) შედარებაში არ მონაწილეობს — ცვლილებას ვერ შეიცავს."""
+    if meta is None:
+        meta = json.loads(row["metadata"]) if row["metadata"] else {}
     texts = repo.load_page_texts(row["job_id"])
+    indexes = (meta.get("part") or {}).get("pages") or range(int(row["page_start"]), int(row["page_end"]) + 1)
     out = []
-    for i in range(int(row["page_start"]), int(row["page_end"]) + 1):
+    for i in indexes:
         pt = texts.get(i) or {}
         if pt.get("is_blank"):
             continue
         out.append(pt)
     return out
+
+
+def _pdf_index(row, page_index: int) -> int:
+    """საწყისი ფაილის გვერდი → დოკუმენტის PDF-ის გვერდი (ნაწილის PDF მხოლოდ თავის გვერდებს შეიცავს)."""
+    pages = ((json.loads(row["metadata"]) if row["metadata"] else {}).get("part") or {}).get("pages")
+    return pages.index(page_index) if pages else page_index - int(row["page_start"])

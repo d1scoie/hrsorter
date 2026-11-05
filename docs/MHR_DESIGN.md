@@ -52,6 +52,7 @@ pending ──validate──► ready ──approve(UI)──► approved ──
 ```
 - ყოველი ცვლილება `repo.mhr_transition(doc, from=(...), to, **fields)`-ით — მოსალოდნელი წინა სტატუსიდან (ატომური).
 - `require_approval=false` ⇒ validate-ის შემდეგ პირდაპირ `approved` (ready-ს ნაცვლად).
+- `pending ──validate──► split`: სკანში რამდენიმე MHR-ის ფაილია — საბოლოო სტატუსი; ნაწილები საკუთარ ჩანაწერებად განაგრძობენ.
 - **ორმაგი ატვირთვა დაუშვებელია**: `uploading`-ში გაჭედილი (ავარია) ან გაურკვეველი შედეგის ატვირთვა
   (`MhrUploadUncertain`) → `needs_check`, შემდეგ `find_by_external_id(document_id)`: ნაპოვნია → `uploaded`
   (remote_id); ცალსახად არ არის (404) → `approved` (ხელახლა ატვირთვა უსაფრთხოა — სერვერი external_id-ით
@@ -89,10 +90,24 @@ def retry_upload(repo, document_id: str) -> bool          # upload_failed → ap
 def validate_document(repo, cfg, document_id: str, client: MhrClient) -> ValidationResult
 # textcompare.py  (აგენტი B)
 def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg,
-                  original_paginated: bool = True, strip_lines: list[str] | None = None) -> list[TextDiff]
+                  original_paginated: bool = True, strip_lines: list[str] | None = None, labels: set[str] | None = None,
+                  known: list[str] | None = None, trusted_pages: set[int] | None = None) -> list[TextDiff]
 ```
 `sweep` იყენებს `validate_fn or validation.validate_document` (lazy import), შედეგს წერს `mhr_items.validation`-ში
 (`ValidationResult.to_dict()`), `employee_id`-ს — თანამშრომლის ID-ს.
+
+**ერთ სკანში რამდენიმე ფაილი** (`plan_pages`, `_split_scan`, `output.split_document`, 2026-11-04): თანამშრომლის ყველა
+კატეგორიის `kind: generated` ფაილი (`original_candidates`-ის თარიღის წესით, ≤12) ჩამოიტვირთება და ყოველი არაცარიელი გვერდი იმ ფაილს
+მიეკუთვნება, რომლის ტოკენების ≥`PAGE_OWNER_MIN_OVERLAP` (0.7) შეიცავს; ≥`PAGE_OWNER_WEAK` (0.6) მეზობელთან რჩება, ≤`PAGE_OWNER_GAP`
+(2) გვერდიანი წყვეტა ერთი ფაილის შიგნით ივსება, ტექსტის გარეშე გვერდი მეზობელს მიჰყვება. ≥2 ფაილი ან ზედმეტი გვერდები → დაყოფა:
+`documents` ჩანაწერი თითო ფაილზე (`part_of`, `metadata.part` {of, pages, original_id, category, title}, საკუთარი PDF, დეტერმინისტული id),
+`mhr_items` — `pending`; მთლიანი სკანი რჩება აქტიურად (`status=split`, MHR `split`, ValidationResult.parts) — დუბლიკატის შემოწმება
+მასზე მუშაობს და `/manual`-ში არ ჩანს. არცერთს არ ემთხვევა → ნაწილი `needs_review` (`pages_not_in_mhr`), რიგის გარეშე. ერთი ფაილი
+ყველა გვერდით → დაყოფის გარეშე, `adopt_match` ტიპს ფაილიდან აყენებს (`_matched_type`: სახელში „ხელშეკრულება“ → contract, სხვა → contract_annex)
+და ხსნის `MATCH_RESOLVED_REASONS`-ს; ამიტომ `pipeline._goes_to_mhr` ასეთ გადასამოწმებელსაც რიგში აყენებს, თუ პ/ნ იკითხება. ნაწილი ცალკე
+ფასდება: contract — ველები + ხელმოწერა ყველა გვერდზე; სხვა — პ/ნ + `last_page_signature_diffs`, ხელნაწერი/ნიშანი შენიშვნაა. ატვირთვა: თითო
+PDF, `signed_copy_of` = თავისი ორიგინალი, კატეგორია და სათაური ორიგინალიდან. ხელმოწერილი ასლი უკვე არის → `already_uploaded` ბლოკავს.
+`housekeeping`: მთლიანი სკანის PDF იშლება მხოლოდ ყველა ნაწილის შემდეგ.
 
 **ორიგინალის არჩევა** (`original_candidates`, 2026-11-04): მხოლოდ `kind: generated`; დოკ. ნომერი სათაურში > სკანის
 თარიღის ±`ORIGINAL_DATE_TOLERANCE_DAYS` (7) და უახლოესი > **უახლესი დაგენერირებული** (±7-ის გარეთაც — `original_date_note`
@@ -106,10 +121,38 @@ UI-ში ეს კედელი არ არის: `_no_compare(validation
 **საეჭვო გვერდის ხელახალი წაკითხვა** (`validation._recheck_diffs`): ორიგინალთან/შაბლონთან შედარებამ ტექსტური
 სხვაობა (`changed|added|removed`, significant) იპოვა Tesseract-ით წაკითხულ გვერდზე → ეს გვერდი (≤ `mhr.recheck.max_pages`)
 ონლაინ OCR-ით (`build_ocr_chain(cfg).online`, Claude) ხელახლა იკითხება, ტექსტი `page_texts`-ში ინახება
-(`text_source="ocr:<provider>:recheck"`) და შედარება იმავე `compare`-ით მეორდება. გაქრა → `TextDiff(significant=False,
-reason=RECHECK_NOTE)`; დარჩა → reason-ს ემატება `RECHECK_STILL`. მოქმედებს მხოლოდ ონლაინ პროვაიდერის ხელმისაწვდომობისას;
+(`text_source="ocr:<provider>:recheck"`) და შედარება იმავე `compare`-ით მეორდება. გაქრა → სიაში აღარ ჩანს; დარჩა → `_weigh_readers`
+ადარებს, რა ნახა Tesseract-მა (მისი სიტყვები გვერდთან რჩება, `pt["words"]`, ამიტომ „ხელახლა შედარებაზეც“ მუშაობს). ორივე განსხვავდება
+ორიგინალისგან → `RECHECK_STILL`. Tesseract-მა ორიგინალი წაიკითხა → `RECHECK_DISAGREE`, ხოლო თუ სიტყვაა (`RECHECK_DOUBT_REASONS`) და არა ციფრი ან „არ“,
+significant → suspect. მიზეზი: ნამდვილ გვერდებზე Claude-მა „თანხმობას“ წაიკითხა „თანხმდება“-დ და ბარათი ამბობდა „წაკითხვის შეცდომა არ არის“. მოქმედებს მხოლოდ ონლაინ პროვაიდერის ხელმისაწვდომობისას;
 `mhr.recheck.enabled=false` თიშავს. მიზეზი: რეალურ სკანზე Tesseract-მა სუფთა გვერდზე ციფრი დაკარგა („2 კვირით" →
 „კვირით") და „მე-5" → „მე-3" წაიკითხა — ცრუ გაჩერებები.
+
+**პატარა ცვლილებები (2026-11-05, შეცვლილი ნამდვილი სკანების ტესტიდან):** `_negation_change` — „არ"… და „არა-" ყოველთვის
+significant. `_word_change` — 1-2 ნამდვილი სიტყვის ჩამატება/ამოღება და `_far_word`: Tesseract-ის გვერდზე `TextDiff.suspect=True`
+(`_recheck_diffs` კითხულობს, significant-ის შემდეგ, ბიუჯეტის ფარგლებში), `trusted_pages`-ზე (`validation.trusted_pages`: ტექსტი
+Tesseract-ის არ არის) უკვე significant. დარჩენილი suspect → `_summary`-ში „ვერ გადამოწმდა", არა ბლოკი. მიზეზი: 44 სუფთა ნამდვილ გვერდზე
+Claude მთელ სიტყვას არ კარგავს, ერთ ასოს კი ურევს, ამიტომ ერთი ასო ხმაურად დარჩა. ბოლო გვერდი: `_table_noise`-ს ემატება
+`_table_counts_kept` (`_kept`: სვეტების გადანაცვლება რაოდენობას არ ცვლის; ძველი რიცხვის სხვაგან არსებობა აღარ მალავს ცვლილებას).
+`_digits_match`-ს ≥10-ნიშნა ნომრის ერთი ციფრის ტოლერანტობა მოეხსნა. `_strip`: Claude-ის ორ ხაზად დაწერილი სათაური და კიდეზე სათაურის
+ნაწილი იშლება. `_reading_broke`: Claude-ის ტექსტი ცარიელია ან 40 სიტყვა ზედიზედ მეორდება → ხელახლა, მერე უარი.
+
+**შეცდომების მდგომარეობები (2026-11-05, ნამდვილი ფონური გაშვებიდან):** `status="unavailable"` ან `error="MhrError"` (მაგ. ტოკენი) ნიშნავს,
+რომ არაფერი შემოწმებულა (`ui._mhr_did_not_answer`): გვერდი „ვერ მოიძებნა“/„ადგილზეა“ ნაბიჯებს და შედარების ასაცილებელ ღილაკს არ აჩვენებს. ტოკენის შენახვა
+(`/settings/secret`, MHR-ის გასაღები) `mhr_queue.revalidate_refused`-ით ასეთ ფაილებს თავიდან აყენებს რიგში. ველის პრობლემა (ხელფასი, თარიღი)
+`fields[...].page`/`raw`-ით ჩანს თავის გვერდზე (`ui._field_place`; გვერდი სკანის ნომრითაა, ფაილის გვერდად გადადის).
+
+**ხელმოწერის ბლოკი** (`pageanalysis.signature_block`, `block_parties`, `page_parties`): ქვედა სტრიქონის წარწერები არ არის → გვერდის
+შუის ორი სვეტი. Tesseract წარწერების სტრიქონს ხანდახან ტოვებს, ამიტომ დასაყრდენები მეტია: მარცხნივ „დამსაქმებელი", „დირექტორი", „შპს",
+„ს/ნ"; მარჯვნივ „სტაჟიორი"/„დასაქმებული", „პ/ნ", 11-ნიშნა ნომერი, წინ ≥0.4in ცარიელი ადგილით. ნიშანი = ხელმოწერის ზომის ლაქა სვეტში, ბლოკიდან გვერდის 90%-მდე.
+
+**სად, რა, რატომ ვებ-გვერდზე** (`ui/app.py`, 2026-11-05): `PageText.words/marks/signature_boxes` — OCR სიტყვები, ნიშნები და ხელმოწერის ადგილები გვერდის მეათასედებში, `/page/{id}/{i}.png?dpi=&crop=x0,y0,x1,y1` სურათს იმავე მიმართულებით აბრუნებს (rotation + deskew), ამიტომ მონიშვნა ზუსტად ჯდება. `TextDiff.orig_parts/scan_parts/clause/boxes`: ზუსტი სიტყვები, პუნქტი და ადგილი (`textcompare.locate`, `validation._place_diffs`). გვერდები: `_problem_card`, `_check_card`, `_checked_block`, `_page_map`, `/mhr/{id}/page/{n}` (`_page_view`), `_mhr_parts_block` + `page_match`. სიის მიზეზი `_main_reason` (ადრე summary-ის პირველი ხაზი, ხშირად შენიშვნა). `_scan_hints`: ფურცელი ორჯერ გავიდა / რიგი აირია — შენიშვნა. `MATCH_RESOLVED_REASONS`-ს დაემატა `uncertain_boundary`: საზღვარს MHR-ის ფაილებთან შედარება ხსნის. `MHR_ERROR_KA`: MHR-ის კოდები ადამიანის ენაზე.
+
+**ტესტირება ნამდვილ MHR-ის კოდზე სერვერის გარეშე:** `origin/main`-ის კოდი ცალკე საქაღალდეში, ცარიელი MariaDB Docker-ში, `httpx.MockTransport` ყოველ მოთხოვნას ერთჯერად `php replay.php`-ით ატარებს Laravel-ის kernel-ში (მარშრუტი, ტოკენი, კონტროლერი, ბაზა). ასე შემოწმდა ატვირთვა, `signed_copy_of`/`signed_at`, დაკარგული პასუხი, გათიშვა და ხელით ატვირთვა.
+
+**ფაილი უკვე ატვირთულ PDF-შია** (`validation._inside_uploaded`): მხოლოდ „მზადა" ფაილზე. `kind: uploaded` (გარდა საკუთარი და ამ პროგრამის
+ნაწილისა, `metadata.part`) → `_pdf_pages(dpi=150, local_only=True)`, sha256-ით მეხსიერებაში → `plan_pages` → ამ ორიგინალის გვერდები არის →
+`already_uploaded` ბლოკირებადი. `signed_copy_of` მხოლოდ ერთ ორიგინალს უთითებს, ამიტომ მთელი პაკეტის ატვირთვა მის მიხედვით არ ჩანდა.
 
 **რეალური სკანებიდან (2026-11-03) დამატებული ხმაურის წესები:** ბეჭდის/ხელმოწერის ლაქაში Tesseract-ის ≥0.6 სანდოობის
 ნაგავი („2099/3)", „/7", „LI") `drop_stamp_words`-ში იშლება — რჩება ნამდვილი ქართული სიტყვა, თარიღი/პ.ნ. და სანდო სუფთა

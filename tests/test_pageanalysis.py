@@ -263,3 +263,114 @@ def test_drop_stamp_words_drops_confident_garbage_inside_stamp():
     # ბეჭედი რეკვიზიტების ცხრილს ფარავს: სანდო სუფთა რიცხვი, ს/ნ და ელ-ფოსტა რჩება; ბეჭდის მკრთალი „2009" (0.41) — არა
     assert drop_stamp_words(text, words, stamp).split() == ["მუხლი", "დამსაქმებელი.", "ანაზღაურება", "2026-10-29",
                                                             "2009", "ს/ნ", "205273498", "info@madart.ge"]
+
+
+# --- ორსვეტიანი ხელმოწერის ბლოკი გვერდის შუაში (ინსტრუქცია, წესები, დანართი) -----------------------------------
+BLOCK_WORDS = [("„დამსაქმებელი“", (82, 440, 190, 460), 0.9), ("„სტაჟიორი“", (432, 440, 510, 455), 0.9),
+               ("პ/ნ:", (432, 486, 452, 498), 0.9), ("დირექტორი:", (82, 610, 170, 625), 0.9)]
+
+
+def _blob(x0, y0, x1, y1, cells=60):
+    from hrsorter.pageanalysis import Blob
+    return Blob(x0, y0, x1, y1, cells=cells, ink_px=cells * 20)
+
+
+def test_signature_block_checks_each_column_separately():
+    from hrsorter.pageanalysis import block_parties, signature_block
+    block = signature_block(BLOCK_WORDS, 827, 100)
+    assert block is not None
+    stamp, sig = _blob(130, 700, 260, 830), _blob(440, 880, 600, 930)
+    assert block_parties(block, [stamp, sig], 1170, 100) == {"employer": True, "employee": True}
+    assert block_parties(block, [sig], 1170, 100) == {"employer": False, "employee": True}
+    assert block_parties(block, [stamp], 1170, 100) == {"employer": True, "employee": False}
+    assert block_parties(block, [], 1170, 100) == {"employer": False, "employee": False}
+
+
+def test_signature_block_with_director_label_and_name_on_the_same_line():
+    """დანართი: მარცხნივ „დირექტორი: დავით …", მარჯვნივ „სტაჟიორი:" ოდნავ მაღლა."""
+    from hrsorter.pageanalysis import signature_block
+    words = [("შპს", (85, 544, 110, 560), 0.9), ("დირექტორი:", (85, 564, 172, 579), 0.9), ("დავით", (178, 564, 230, 579), 0.9),
+             ("სტაჟიორი:", (408, 544, 480, 559), 0.9)]
+    assert signature_block(words, 827, 100) is not None
+
+
+def test_signature_block_when_ocr_skipped_the_label_line():
+    """Tesseract წარწერების სტრიქონს ხანდახან საერთოდ ტოვებს — სვეტები „პ/ნ" და „დირექტორი" სიტყვებითაც ჩანს."""
+    from hrsorter.pageanalysis import block_parties, signature_block
+    words = [("შპს", (113, 462, 134, 473), 0.9), ("მარიამ", (459, 462, 507, 473), 0.9), ("პ/ნ:", (459, 483, 481, 494), 0.9),
+             ("01001000202", (486, 483, 566, 494), 0.9), ("ს/ნ", (113, 494, 132, 505), 0.9), ("დირექტორი:", (113, 642, 202, 656), 0.9)]
+    block = signature_block(words, 827, 100)
+    assert block is not None
+    assert block_parties(block, [_blob(440, 880, 600, 930)], 1170, 100) == {"employer": False, "employee": True}
+    assert block_parties(block, [_blob(130, 700, 260, 830)], 1170, 100) == {"employer": True, "employee": False}
+
+
+def test_mark_outside_the_block_zone_does_not_count():
+    from hrsorter.pageanalysis import block_parties, signature_block
+    block = signature_block(BLOCK_WORDS, 827, 100)
+    footer, thin, above = _blob(440, 1090, 700, 1130), _blob(440, 880, 600, 890), _blob(440, 300, 600, 380)
+    assert block_parties(block, [footer, thin, above], 1170, 100) == {"employer": False, "employee": False}
+
+
+def test_labels_mentioned_inside_a_sentence_are_not_a_block():
+    from hrsorter.pageanalysis import signature_block
+    prose = [("დამსაქმებელი", (82, 300, 190, 320), 0.9), ("და", (196, 300, 214, 320), 0.9), ("ყოველთვის", (220, 300, 420, 320), 0.9),
+             ("სტაჟიორი", (428, 300, 510, 320), 0.9)]
+    assert signature_block(prose, 827, 100) is None
+    assert signature_block(BLOCK_WORDS[1:3], 827, 100) is None     # მხოლოდ ერთი მხარე
+
+
+def test_page_parties_prefers_the_bottom_signature_line_and_falls_back_to_the_block():
+    import numpy as np
+    from hrsorter.pageanalysis import page_parties
+    arr = np.zeros((1170, 827), dtype=bool)
+    for y in range(700, 830, 4):                      # ბეჭედი მარცხენა სვეტში: მოკლე შტრიხები (გრძელი ხაზი ხელმოწერის ხაზად იშლება)
+        for x in range(130, 260, 24):
+            arr[y:y + 2, x:x + 20] = True
+    assert page_parties(arr, BLOCK_WORDS, 8, 100) == {"employer": True, "employee": False}
+    assert page_parties(arr, [], 8, 100) == {}
+    bottom = [("დამსაქმებელი", (110, 1075, 230, 1092), 0.95), ("დასაქმებული", (560, 1075, 670, 1092), 0.95)]
+    assert page_parties(arr, [*BLOCK_WORDS, *bottom], 8, 100) == {"employer": False, "employee": False}
+
+
+def test_page_parties_reports_where_the_signature_is_and_where_it_should_be():
+    import numpy as np
+    from hrsorter.pageanalysis import _permille, page_parties
+    arr = np.zeros((1170, 827), dtype=bool)
+    for y in range(700, 830, 4):
+        for x in range(130, 260, 24):
+            arr[y:y + 2, x:x + 20] = True
+    zones = {}
+    assert page_parties(arr, BLOCK_WORDS, 8, 100, zones) == {"employer": True, "employee": False}
+    x0, y0, x1, y1 = zones["employer"]
+    assert 120 <= x0 and x1 <= 285 and 690 <= y0 and y1 <= 845        # ნაპოვნი ბეჭედი (უჯრედის სიზუსტით)
+    x0, y0, x1, y1 = zones["employee"]
+    assert x0 > 300 and y0 >= 690 and y1 > y0 and x1 == 827           # მარჯვენა სვეტი, ბეჭდის გასწვრივ
+    assert _permille((0, 585, 827, 1170), 827, 1170) == [0, 500, 1000, 1000]
+
+
+def test_sideways_page_does_not_break_the_analysis(tmp_path, monkeypatch):
+    """ნამდვილი შეცდომა: გვერდით შებრუნებულ ფურცელზე ფერის ნიღაბი არ ბრუნდებოდა, ზომები არ ემთხვეოდა და დამუშავება ჩერდებოდა."""
+    from types import SimpleNamespace
+
+    from pypdf import PdfWriter
+
+    from hrsorter import pageanalysis as pa
+    from hrsorter.config import make_config
+    from hrsorter.pdfio import PdfDocument
+    path = tmp_path / "sideways.pdf"
+    w = PdfWriter()
+    w.add_blank_page(842, 595)          # A4 გვერდით
+    with open(path, "wb") as f:
+        w.write(f)
+    # ცარიელი გვერდი OCR-მდე ვერ მივა, ამიტომ მელანი და OCR იმიტირებულია
+    monkeypatch.setattr(pa, "ink_ratio", lambda img, thr: 0.05)
+    monkeypatch.setattr(pa, "detect_rotation", lambda img, osd_fn=None: 90)
+    monkeypatch.setattr(pa, "deskew", lambda img: (img, 1.0))
+    result = SimpleNamespace(text="ტექსტი ტექსტი ტექსტი ტექსტი ტექსტი ტექსტი ტექსტი ტექსტი", words=[{"text": "ტექსტი", "bbox": (100, 100, 300, 140), "conf": 0.9}])
+    provider = SimpleNamespace(name="tesseract", model_version="1", has_osd=lambda: False)
+    chain = SimpleNamespace(local=provider, lang="kat", available=lambda: True, osd=None,
+                            recognize=lambda img, lang: SimpleNamespace(ok=True, result=result, provider=provider, quality=0.9, warnings=[]))
+    with PdfDocument(path) as doc:
+        pt = pa.analyze_page(doc, 0, make_config({"paths": {"root": str(tmp_path)}}), chain)
+    assert pt.rotation_applied == 90 and pt.deskew_angle == 1.0 and pt.words[0][0] == "ტექსტი"

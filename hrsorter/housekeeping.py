@@ -88,16 +88,23 @@ def purge_uploaded(repo: Repository, now: float, cutoff: float) -> tuple[int, in
     docs = repo.q("SELECT d.id, d.output_path, d.sidecar_path FROM documents d JOIN mhr_items m ON m.document_id=d.id"
                   " WHERE d.active=1 AND d.purged_at IS NULL AND m.status='uploaded' AND m.uploaded_at < ?", (cutoff_iso,))
     n_docs = 0
-    for d in docs:
-        try:
-            for p in (d["output_path"], d["sidecar_path"]):
-                if p:
-                    _force_unlink(Path(p))
-        except OSError as e:
-            log.warning("purge document failed: %s", type(e).__name__)
-            continue
-        repo.conn.execute("UPDATE documents SET purged_at=? WHERE id=?", (_iso(now), d["id"]))
-        n_docs += 1
+
+    def purge(rows) -> None:
+        nonlocal n_docs
+        for d in rows:
+            try:
+                for p in (d["output_path"], d["sidecar_path"]):
+                    if p:
+                        _force_unlink(Path(p))
+            except OSError as e:
+                log.warning("purge document failed: %s", type(e).__name__)
+                continue
+            repo.conn.execute("UPDATE documents SET purged_at=? WHERE id=?", (_iso(now), d["id"]))
+            n_docs += 1
+    purge(docs)
+    # დაყოფილი სკანის მთლიანი PDF — როცა ყველა ნაწილი უკვე წაიშალა (გადასამოწმებელი ნაწილი რჩება და მთლიანსაც იცავს)
+    purge(repo.q("SELECT d.id, d.output_path, d.sidecar_path FROM documents d WHERE d.active=1 AND d.status='split' AND d.purged_at IS NULL"
+                 " AND NOT EXISTS (SELECT 1 FROM documents c WHERE c.part_of=d.id AND c.active=1 AND c.purged_at IS NULL)"))
     # წყარო — მხოლოდ თუ ყველა აქტიური დოკუმენტი უკვე წაშლილია და ახალი დამუშავება არ მიმდინარეობს
     sources = repo.q("SELECT s.id, s.archive_path FROM sources s WHERE s.purged_at IS NULL"
                      " AND EXISTS (SELECT 1 FROM documents d WHERE d.source_id=s.id AND d.active=1)"

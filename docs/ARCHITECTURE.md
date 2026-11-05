@@ -23,7 +23,7 @@ UI-ს დახურვა worker-ს არ აჩერებს (ცალ�
 
 1. `Config.from_snapshot(job.config_snapshot)` — სამუშაო ინახავს საკუთარ კონფიგურაციის ვერსიას.
 2. არქივის ასლის ჰეშის გადამოწმება.
-3. გვერდობრივად (`chunk_pages` ბლოკებით): `pageanalysis.analyze_page(doc, i, cfg, ocr_chain) -> PageText`
+3. გვერდობრივად: `pageanalysis.analyze_page(doc, i, cfg, ocr_chain) -> PageText`
    → `repo.save_page_text` (resume: შენახული გვერდი აღარ მუშავდება).
 4. `features.page_features(PageText, classifier, cfg) -> PageFeatures` ყოველ გვერდზე.
 5. `boundary.detect_segments(features, mode, cfg) -> SegmentationResult` — ყველა გვერდი ზუსტად ერთ სეგმენტში.

@@ -13,7 +13,8 @@ import errno
 import json
 import os
 import shutil
-from dataclasses import replace
+import uuid
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +23,10 @@ from .config import Config
 from .db import now_iso
 from .duplicates import text_fingerprint
 from .errors import JobError
+from .extractor import extract
 from .models import DocumentOutcome, DocumentStatus, ErrorCode, PageText
 from .pdfio import sha256_file, validate_pdf, write_subset
-from .sidecar import best_personal_number, build_sidecar, validate_sidecar
+from .sidecar import _field as _sidecar_field, best_personal_number, build_sidecar, validate_sidecar
 
 _DISK_FULL_WINERRORS = {39, 112}  # ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL
 
@@ -167,6 +169,74 @@ def publish(repo, outcome: DocumentOutcome, cfg: Config) -> DocumentOutcome:
     return result
 
 
+@dataclass
+class PartSpec:
+    """სკანის ნაწილი: ერთი MHR-ის ფაილის გვერდები (`pages` — საწყისი ფაილის ინდექსები). original_id=None — არცერთს არ ემთხვევა."""
+    key: str
+    title: str
+    type_id: str
+    pages: list[int]
+    original_id: str | None
+    category: str | None
+
+
+def part_document_id(parent_id: str, key: str) -> str:
+    """დეტერმინისტული — ავარიის შემდეგ ხელახალი დაყოფა იმავე ჩანაწერებს განაახლებს; external_id-ით ატვირთვაც იდემპოტენტური რჩება."""
+    return f"doc_{uuid.uuid5(uuid.NAMESPACE_URL, f'hrsorter:{parent_id}:{key}').hex}"
+
+
+def split_document(repo, cfg: Config, row, meta: dict[str, Any], specs: list[PartSpec], personal_number: str) -> list[dict[str, Any]]:
+    """მთლიანი სკანი რჩება აქტიურად, სტატუსით `split`; ყოველი ნაწილი ცალკე ჩანაწერია საკუთარი PDF-ით (მთლიანი სკანის გვერდით), რომ
+    შედარება, ატვირთვა, AI ანალიზი და ხელით ატვირთვა ჩვეულებრივ იმუშაოს. არცერთს რომ არ ემთხვევა — გადასამოწმებელში, MHR-ის რიგის გარეშე."""
+    parent_pdf = Path(row["output_path"])
+    texts = repo.load_page_texts(row["job_id"])
+    parts: list[dict[str, Any]] = []
+    for spec in specs:
+        doc_id = part_document_id(row["id"], spec.key)
+        dest = parent_pdf.with_name(f"{parent_pdf.stem}__{spec.key}.pdf")
+        tmp = dest.with_name(dest.name + ".tmp")
+        write_subset(parent_pdf, [p - int(row["page_start"]) for p in spec.pages], tmp)
+        os.replace(tmp, dest)
+        matched = spec.original_id is not None
+        ext = extract([PageText.from_dict(texts[p]) for p in spec.pages], cfg.doc_type(spec.type_id), cfg)
+        reasons = [] if matched else ["pages_not_in_mhr"]
+        status = DocumentStatus.NEEDS_REVIEW.value
+        if matched:
+            status = row["status"] if row["status"] == DocumentStatus.AUTO_SAVED.value else DocumentStatus.PROPOSED.value
+        child_meta = dict(meta)
+        child_meta.update(document_id=doc_id, document_type_id=spec.type_id, output_path=str(dest), page_count=len(spec.pages),
+                          fields={k: _sidecar_field(v) for k, v in ext.fields.items()}, signature_status=ext.signature_status,
+                          review_reasons=reasons, processing_status=status,
+                          part={"of": row["id"], "pages": spec.pages, "original_id": spec.original_id,
+                                "category": spec.category, "title": spec.title})
+        repo.upsert_document({
+            "id": doc_id, "job_id": row["job_id"], "source_id": row["source_id"], "page_start": min(spec.pages),
+            "page_end": max(spec.pages), "status": status, "active": 1, "type_id": spec.type_id, "company_id": row["company_id"],
+            "employee_id": row["employee_id"], "personal_number": personal_number, "year": row["year"],
+            "document_date": row["document_date"], "review_reasons": reasons, "output_path": str(dest),
+            "output_sha256": sha256_file(dest), "planned_path": str(dest), "part_of": row["id"], "metadata": child_meta})
+        if matched:
+            repo.mhr_enqueue(doc_id, personal_number)
+        parts.append({"document_id": doc_id, "title": spec.title, "pages": [p + 1 for p in spec.pages], "matched": matched})
+    _update_document(repo, row["id"], {"status": DocumentStatus.SPLIT.value, "review_reasons": []})
+    return parts
+
+
+MATCH_RESOLVED_REASONS = {"unknown_type", "low_type_confidence", "company_unrecognized", "uncertain_boundary"}
+
+
+def adopt_match(repo, row, meta: dict[str, Any], type_id: str) -> None:
+    """სკანი MHR-ის დაგენერირებულ ფაილს დაემთხვა: ტიპი ამ ფაილით დგინდება, „ტიპი/კომპანია უცნობია" მიზეზები იხსნება."""
+    reasons = [r for r in json.loads(row["review_reasons"] or "[]") if r not in MATCH_RESOLVED_REASONS]
+    status = row["status"]
+    if status == DocumentStatus.NEEDS_REVIEW.value and not reasons:
+        status = DocumentStatus.PROPOSED.value
+    meta.update(document_type_id=type_id, review_reasons=reasons, processing_status=status)
+    _update_document(repo, row["id"], {"type_id": type_id, "status": status, "review_reasons": reasons, "metadata": meta})
+    if row["sidecar_path"] and Path(row["sidecar_path"]).exists():
+        _write_json_atomic(Path(row["sidecar_path"]), meta)
+
+
 def retire_previous(repo, source_id: str, keep_job_id: str, cfg: Config) -> int:
     """ხელახალი დამუშავება: იმავე წყაროს სხვა job-ების აქტიური შედეგები → `_Superseded/<doc_id>/`
     (active=0, status=superseded, superseded_by=keep_job_id). არაფერი იშლება. აბრუნებს რაოდენობას."""
@@ -201,7 +271,7 @@ def retire_previous(repo, source_id: str, keep_job_id: str, cfg: Config) -> int:
                                            "sidecar_path": moved["sidecar_path"], "metadata": meta})
         # MHR-ის რიგში ძველი შედეგი აღარ უნდა ჩანდეს („მზადაა"/„ვერ გაიარა" სიაში ერთი სკანი ორჯერ) — ატვირთვა
         # მიმდინარეობს/დასრულდა → უცვლელი
-        if repo.mhr_transition(row["id"], ("pending", "ready", "failed", "unavailable", "needs_check", "upload_failed"),
+        if repo.mhr_transition(row["id"], ("pending", "ready", "failed", "unavailable", "needs_check", "upload_failed", "split"),
                                "rejected", error="document superseded"):
             repo.log_event("mhr", f"{row['id']}: rejected (document superseded by {keep_job_id})")
         count += 1
