@@ -665,6 +665,39 @@ def test_failed_page_puts_decision_first_and_groups_repeated_problems(client):
     repo.close()
 
 
+def test_home_shows_today_where_things_are_and_recent_scans_by_name(client, tmp_path):
+    """მთავარი: „დღეს“ (რა დასკანერდა/აიტვირთა), „სად რა არის“ (გზა + გაჩერებული) და ბოლო სკანები თანამშრომლის სახელით,
+    ერთი გასაგები მდგომარეობით და ბმულით იქ, სადაც დაჭერაა საჭირო."""
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    cfg = load_config(cfg_path)
+    repo = Repository(cfg.paths.db)
+    names = {"g": ("გიორგი", "კაპანაძე"), "n": ("ნინო", "ბერიძე")}
+    for k, (fn, ln) in names.items():
+        sid = repo.insert_source(sha256=k * 64, size=1, page_count=14, archive_path=f"{k}.pdf", first_path=f"in/SKM_{k}.pdf", profile_id="batch")
+        jid = repo.create_job(source_id=sid, profile_id="batch", mode="batch_pdf", config_version=cfg.version, config_snapshot=cfg.snapshot())
+        repo.conn.execute("UPDATE jobs SET status='done' WHERE id=?", (jid,))
+        doc = "doc_" + k * 32
+        _pdf_doc(repo, tmp_path, doc, sid, job_id=jid, type_id="contract",
+                 metadata=json.dumps({"fields": {"first_name": {"value": fn}, "last_name": {"value": ln}}}, ensure_ascii=False))
+        repo.mhr_enqueue(doc, "01001000001")
+    repo.mhr_transition("doc_" + "g" * 32, ("pending",), "failed", validation={"status": "failed", "diffs": [], "checks": []})
+    from hrsorter.db import now_iso
+    repo.mhr_transition("doc_" + "n" * 32, ("pending",), "uploaded", remote_id="9", uploaded_at=now_iso())
+    home = c.get("/").text
+
+    assert "<h2>დღეს</h2>" in home and "7 დღეში: 2 ფაილი, 28 გვერდი" in home
+    flow = home[home.index('class="card flow"'):]
+    assert "MHR-ში ვერ გაიარა" in flow and 'href="/mhr?tab=failed"' in flow and "აიტვირთა" in flow
+    recent = home[home.index("<h2>ბოლო სკანები</h2>"):]
+    assert "გიორგი კაპანაძე" in recent and "ნინო ბერიძე" in recent                 # სახელი და არა SKM_…
+    assert f'href="/mhr/doc_{"g" * 32}"' in recent                                  # პრობლემურ ფაილზე — პირდაპირ MHR გვერდზე
+    assert "აიტვირთა MHR-ზე" in recent and "<div class=\"day\">დღეს</div>" in recent
+    repo.close()
+
+
 def test_document_page_without_pdf_says_so_in_plain_words(client, tmp_path):
     c, cfg_path = client
     repo = Repository(load_config(cfg_path).paths.db)
