@@ -153,6 +153,7 @@ transition:border-color .15s,transform .15s}a.tile:hover{border-color:var(--acce
 .row:first-child{border-top:0}.row .grow{flex:1;min-width:0}.row .t{font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row .m{color:var(--text-2);font-size:13px}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:560;white-space:nowrap}
+a.chip{cursor:pointer;transition:filter .15s}a.chip:hover{text-decoration:underline;filter:brightness(.94)}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:0 16px;border-radius:10px;border:1px solid var(--border);
 background:var(--surface);color:var(--text);font:inherit;font-weight:560;cursor:pointer;transition:background .15s,border-color .15s}
@@ -621,7 +622,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             r.close()
         seg = "".join(f'<a href="/mhr?tab={k}"{" aria-current=true" if k == tab else ""}>{e(lbl)} ({sum(counts.get(x, 0) for x in st)})</a>'
                       for k, (lbl, st) in _MHR_TABS.items())
-        rows = "".join(_mhr_row(c, x) for x in items)
+        rows = "".join(_mhr_row(c, x, back=f"/mhr?tab={tab}") for x in items)
         bulk = (f'<form method="post" action="/mhr-approve-all" style="margin-left:auto"><button class="btn primary">{icon("cloud", 16)}'
                 f'ყველას ატვირთვა ({counts.get("ready", 0)})</button></form>' if tab == "ready" and counts.get("ready") else "")
         off = ("" if c.section("mhr")["enabled"] else
@@ -684,18 +685,21 @@ def create_app(config_path: str | None = None) -> FastAPI:
         return RedirectResponse(f"/mhr/{doc_id}", status_code=303)
 
     @app.post("/mhr/{doc_id}/{action}")
-    def mhr_action(doc_id: str, action: str):
+    async def mhr_action(doc_id: str, action: str, request: Request):
+        """ფორმის „back“ ველი ამბობს, სად დავბრუნდეთ (მაგ. სიის იმავე ჩანართზე); სხვა შემთხვევაში — დეტალურ გვერდზე."""
         from .. import mhr_queue
         fn = {"approve": mhr_queue.approve, "reject": mhr_queue.reject, "revalidate": mhr_queue.revalidate,
               "retry": mhr_queue.retry_upload, "ai-review": mhr_queue.rerun_ai_review}.get(action)
         if fn is None:
             raise HTTPException(404)
+        back = (await form(request)).get("back") or ""
+        back = back if back.startswith("/") and not back.startswith("//") else f"/mhr/{doc_id}"
         r = repo()
         try:
             fn(r, doc_id) if action in ("revalidate", "retry", "ai-review") else fn(r, doc_id, "operator")
         finally:
             r.close()
-        return RedirectResponse(f"/mhr/{doc_id}", status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.post("/mhr-approve-all")
     def mhr_approve_all():
@@ -1084,7 +1088,10 @@ def _mhr_name(v: dict) -> str:
     return " ".join(x for x in (emp.get("first_name"), emp.get("last_name")) if x)
 
 
-def _mhr_row(c: Config, x) -> str:
+def _mhr_row(c: Config, x, back: str = "") -> str:
+    """სიის ერთი სტრიქონი. AI-ის დასკვნის ჩიპი დეტალური გვერდის AI ბლოკზე გადადის; „ხელახალი AI ანალიზი“ აქედანვე იწყება
+    და `back`-ზე (სიის იმავე ჩანართზე) აბრუნებს."""
+    from .. import ai_review
     v = json.loads(x["validation"] or "{}")
     t = c.doc_type(x["type_id"] or "")
     name = _mhr_name(v)
@@ -1097,13 +1104,21 @@ def _mhr_row(c: Config, x) -> str:
         btns = (f'<form class="inline" method="post" action="/mhr/{e(x["document_id"])}/approve"><button class="btn sm primary">'
                 f'{icon("cloud", 14)}ატვირთვა</button></form>')
     ai = _ai_load(x)
-    ai_chip = chip(*AI_KA[ai["verdict"]]) if ai and ai.get("verdict") in AI_KA else ""
+    doc_id = e(x["document_id"])
+    ai_chip = ""
+    if ai and ai.get("verdict") in AI_KA:
+        lbl, tone = AI_KA[ai["verdict"]]
+        ai_chip = f'<a class="chip tone-{tone}" href="/mhr/{doc_id}#ai" title="AI ანალიზის ნახვა">{e(lbl)}</a>'
+        if x["status"] in ("ready", "failed") and ai_review.enabled(c):
+            btns += (f'<form class="inline" method="post" action="/mhr/{doc_id}/ai-review">'
+                     f'<input type="hidden" name="back" value="{e(back)}"><button class="btn sm" title="AI დასკვნას თავიდან გააკეთებს">'
+                     f'{icon("refresh", 14)}ხელახალი AI ანალიზი</button></form>')
     ai_text = ai.get("summary") if ai and ai.get("verdict") != "error" else ""
-    return (f'<div class="row"><div class="grow"><a class="t" href="/mhr/{e(x["document_id"])}" style="display:block;color:var(--text)">'
+    return (f'<div class="row"><div class="grow"><a class="t" href="/mhr/{doc_id}" style="display:block;color:var(--text)">'
             f'{e(name or "თანამშრომელი უცნობია")}</a><div class="m">{e(meta)}</div>'
             f'{f"<div class=m><b>{e(summary)}</b></div>" if summary else ""}'
             f'{f"<div class=m>AI: {e(ai_text)}</div>" if ai_text else ""}</div>{ai_chip}{mhr_chip(x["status"])}'
-            f'<div class="btns">{btns}<a class="btn sm{"" if btns else " primary"}" href="/mhr/{e(x["document_id"])}">'
+            f'<div class="btns">{btns}<a class="btn sm{"" if x["status"] == "ready" else " primary"}" href="/mhr/{doc_id}">'
             f'{"ნახე სხვაობები" if x["status"] == "failed" and not _no_compare(v) else "დეტალები"}</a></div></div>')
 
 
@@ -1129,14 +1144,14 @@ def _ai_block(c: Config, m, worker_alive: bool = True) -> str:
         if not undecided or m["error"]:   # შეცდომაზე შედარება არ შესრულებულა, AI-ს რიგში არ დგება (mhr_queue._ai_review_pending)
             return ""
         if not worker_alive:   # ანალიზს ფონური პროცესი აკეთებს — თუ არ მუშაობს, „რიგშია" შეცდომაში შეიყვანს
-            return (f'<div class="banner tone-warn">{icon("alert", 18)}<div><b>AI ანალიზი ვერ დაიწყება — ფონური პროცესი არ მუშაობს.</b> '
+            return (f'<div class="banner tone-warn" id="ai">{icon("alert", 18)}<div><b>AI ანალიზი ვერ დაიწყება — ფონური პროცესი არ მუშაობს.</b> '
                     'გახსენი „HR გადამრჩევი“ დაწყების მენიუდან; წესებით შემოწმება ქვემოთ უკვე ჩანს.</div></div>')
-        return (f'<div class="banner tone-info">{icon("clock", 18)}<div><b>AI ანალიზი (Opus) რიგშია.</b> წესებით შემოწმება '
+        return (f'<div class="banner tone-info" id="ai">{icon("clock", 18)}<div><b>AI ანალიზი (Opus) რიგშია.</b> წესებით შემოწმება '
                 'უკვე დასრულდა. რამდენიმე წუთში აქ გამოჩნდება დეტალური ახსნა და რეკომენდაცია — განაახლე გვერდი.</div></div>')
     verdict = ai.get("verdict") or "error"
     lbl, tone = AI_KA.get(verdict, AI_KA["error"])
     if verdict == "error":
-        return (f'<div class="card section" style="margin-bottom:20px"><div class="chips" style="margin-bottom:8px">{chip(lbl, tone)}</div>'
+        return (f'<div class="card section" id="ai" style="margin-bottom:20px"><div class="chips" style="margin-bottom:8px">{chip(lbl, tone)}</div>'
                 f'<p class="muted">Claude Code-მა პასუხი არ დააბრუნა ({e(ai.get("error") or "")}).'
                 + (' შეამოწმე, რომ Claude Code დაყენებულია და შესულია („პარამეტრები“), მერე სცადე თავიდან.' if undecided else "")
                 + f'</p>{rerun}</div>')
@@ -1148,7 +1163,7 @@ def _ai_block(c: Config, m, worker_alive: bool = True) -> str:
     hint = {"upload": "AI-ის აზრით დოკუმენტი სწორია. თუ ეთანხმები — დააჭირე ატვირთვას.",
             "check": "AI-მ რაღაც ეჭვი დაინახა — ქვემოთ წერია, რა და სად. ნახე PDF-ში და მერე გადაწყვიტე.",
             "reject": "AI-ის აზრით ეს დოკუმენტი ან სხვა თანამშრომლისაა, ან სულ სხვა დოკუმენტია. ატვირთვამდე აუცილებლად გადაამოწმე."}[verdict]
-    return (f'<div class="card section" style="margin-bottom:20px"><div class="chips" style="margin-bottom:8px">{chip(lbl, tone)}'
+    return (f'<div class="card section" id="ai" style="margin-bottom:20px"><div class="chips" style="margin-bottom:8px">{chip(lbl, tone)}'
             f'{chip(_AI_CONF_KA.get(ai.get("confidence") or "low", ""), "mute")}</div>'
             f'<h2 style="margin-top:4px">AI ანალიზი · {e(ai.get("model") or "Opus")}</h2>'
             f'<p style="font-size:15px">{e(ai.get("summary") or "")}</p>'
