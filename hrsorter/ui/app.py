@@ -11,7 +11,7 @@ import html
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -229,6 +229,19 @@ details.pgroup{padding:0;margin:0 0 12px;border-top:1px solid var(--border)}
 .pgroup[open]>summary .chev{transform:rotate(-135deg)}.pgroup>.list{border-top:1px solid var(--border)}
 .gintro{padding:2px 18px 14px 64px}.prob-h .place{font-size:14px;font-weight:600;color:var(--text-2)}
 @media (max-width:640px){.gintro{padding-left:18px}.ai-line{flex-direction:column;gap:6px}.decide{padding:16px}}
+.tile .w{color:var(--text-2);font-size:12.5px;margin-top:6px;padding-top:6px;border-top:1px solid var(--border)}
+.flow{padding:16px 18px}.steps-row{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap}
+.step{flex:1 1 120px;display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:12px;color:var(--text);min-width:110px}
+.step:hover{background:var(--surface-2);text-decoration:none}.step .n{font-size:24px;font-weight:650;line-height:1.1;font-variant-numeric:tabular-nums}
+.step .l{color:var(--text-2);font-size:13px}.step.zero .n{color:var(--text-2);font-weight:500}
+.arrow{align-self:center;color:var(--text-2);font-size:18px;flex:none}
+.jam{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.jam .step{flex:0 1 auto;flex-direction:row;align-items:center;gap:8px;padding:6px 12px}.jam .step .n{font-size:17px}
+.jam-l{font-size:12.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-2);margin-right:6px}
+.ok-line{display:inline-flex;gap:6px;align-items:center;color:var(--ok);font-size:14px}
+.day{font-size:13px;font-weight:600;color:var(--text-2);margin:14px 2px 6px}.when{color:var(--text-2);font-size:13px;font-variant-numeric:tabular-nums;flex:none}
+@media (max-width:640px){.arrow{display:none}.step{flex:1 1 40%}.when{display:none}
+.recent .row{flex-wrap:wrap;row-gap:6px}.recent .row .grow{flex:1 1 calc(100% - 60px)}.recent .row .chip{margin-left:48px}}
 .nopdf{display:grid;place-items:center;height:auto;min-height:320px}
 .clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -390,7 +403,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
         review = d.get("needs_review", 0)
         errors = j.get("failed", 0) + s["inbox_errors"]
         busy = j.get("queued", 0) + j.get("running", 0) + s["inbox_waiting"]
-        sorted_n = d.get("auto_saved", 0) + d.get("proposed", 0)
         trial = c.section("processing")["trial_mode"]
 
         m = s["mhr"] if s["mhr_enabled"] else {}
@@ -435,7 +447,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
         if tasks:
             out = [f'<h1>რა გავაკეთო ახლა</h1><p class="sub">{len(tasks)} რამ ელოდება — თანმიმდევრობით.</p>'
-                   + '<div class="tasks">' + "".join(task_html(n, *t) for n, t in enumerate(tasks, 1)) + "</div>"]
+                   + '<div class="tasks" id="todo">' + "".join(task_html(n, *t) for n, t in enumerate(tasks, 1)) + "</div>"]
         else:
             out = ['<h1>რა გავაკეთო ახლა</h1><p class="sub">არაფერი — ყველაფერი რიგზეა.</p>'
                    f'<div class="tasks"><div class="task ok"><span class="no tone-ok">{icon("check", 22)}</span><div class="b">'
@@ -452,33 +464,29 @@ def create_app(config_path: str | None = None) -> FastAPI:
             strip.append(f"<span title='შედეგები Proposed საქაღალდეშია — საბოლოოდ არაფერი ინაცვლებს, სანამ არ ჩართავ'>{icon('shield', 14)}საცდელი რეჟიმი</span>")
         strip.append(f"<span>{icon('cloud', 14)}MHR {'ჩართულია' if s['mhr_enabled'] else 'გამორთულია'}</span>")
         out.append('<div class="strip">' + "".join(strip) + "</div>")
-        out.append("<h2>მიმოხილვა</h2>")
-        sorted_lbl = "შემოთავაზებული" if trial else "დალაგდა"
-        out.append('<div class="tiles">' + "".join(
-            f'<a class="tile" href="{href}"><span class="ib tone-{t}">{icon(i, 18)}</span><div class="n">{n}</div><div class="l">{e(lbl)}</div></a>'
-            for href, i, t, n, lbl in [
-                ("/documents?status=" + ("proposed" if trial else "auto_saved"), "check", "ok", sorted_n, sorted_lbl),
-                ("/review", "inbox", "warn", review, "გადასამოწმებელი"),
-                ("/stats", "clock", "info", busy, "რიგში"),
-                ("/stats#stuck", "alert", "bad", errors, "შეცდომა")]) + "</div>")
 
         r = repo()
         try:
-            files = r.q("SELECT s.id sid, s.first_path, s.page_count, j.id, j.status, j.updated_at FROM sources s JOIN jobs j ON j.source_id=s.id"
-                        " WHERE j.created_at=(SELECT MAX(created_at) FROM jobs WHERE source_id=s.id) ORDER BY j.updated_at DESC LIMIT 8")
-            counts = {}
-            for x in r.q("SELECT job_id, status, COUNT(*) n FROM documents WHERE active=1 GROUP BY job_id, status"):
-                counts.setdefault(x["job_id"], {})[x["status"]] = x["n"]
+            today = _home_today(r)
+            files = _recent_files(r, c, limit=12)
         finally:
             r.close()
-        rows = "".join(
-            f'<a class="row" href="/documents?source={e(f["sid"])}" style="color:inherit;text-decoration:none">'
-            f'<span class="ib tone-mute">{icon("file", 18)}</span>'
-            f'<div class="grow"><div class="t">{e(Path(f["first_path"]).name)}</div>'
-            f'<div class="m">{f["page_count"] or 0} გვერდი · {_summary(counts.get(f["id"], {}))} · {ago(f["updated_at"])}</div></div>'
-            f'{_outcome_chip(f["status"], counts.get(f["id"], {}))}</a>' for f in files)
-        out.append('<h2>ბოლოს შემოსული ფაილები</h2><div class="card list">'
-                   + (rows or empty("scan", "info", "ჯერ არაფერი შემოსულა", "დაასკანერე დოკუმენტი Inbox საქაღალდეში.")) + "</div>")
+        waiting_you = review + errors + m.get("failed", 0) + mhr_stuck
+        out.append('<h2>დღეს</h2><div class="tiles today">' + "".join(
+            f'<a class="tile" href="{href}"><span class="ib tone-{t}">{icon(i, 18)}</span><div class="n">{n}</div><div class="l">{e(lbl)}</div>'
+            f'<div class="w">{e(week)}</div></a>'
+            for href, i, t, n, lbl, week in [
+                ("/stats", "scan", "info", today["files"], f'ფაილი დასკანერდა · {today["pages"]} გვერდი',
+                 f'7 დღეში: {today["files_week"]} ფაილი, {today["pages_week"]} გვერდი'),
+                ("/documents", "file", "mute", today["docs"], "დოკუმენტი გამოიყო", f'7 დღეში: {today["docs_week"]}'),
+                *([("/mhr?tab=done", "cloud", "ok", today["uploaded"], "აიტვირთა MHR-ზე", f'7 დღეში: {today["uploaded_week"]}')]
+                  if s["mhr_enabled"] else []),
+                ("#todo" if waiting_you else "/", "alert", "warn" if waiting_you else "ok", waiting_you, "შენ გელოდება",
+                 "გადასამოწმებელი, ვერ გაიარა, შეცდომა" if waiting_you else "არაფერი")]) + "</div>")
+        out.append('<h2>სად რა არის</h2>' + _home_flow(s, trial))
+        out.append('<h2>ბოლო სკანები</h2>' + (_recent_html(files) or
+                   f'<div class="card list">{empty("scan", "info", "ჯერ არაფერი შემოსულა", "დაასკანერე დოკუმენტი Inbox საქაღალდეში.")}</div>')
+                   + '<p style="margin:10px 2px 0"><a href="/stats">ყველა ფაილი →</a></p>')
         out = [x for x in out if x]
         return page("მთავარი", "".join(out), "/", side_info(s), watch=True)
 
@@ -1027,6 +1035,153 @@ def _summary(counts: dict[str, int]) -> str:
         return "მუშავდება"
     parts = [f"{v} {STATUS_KA.get(k, k).lower()}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
     return f"{sum(counts.values())} დოკუმენტი ({', '.join(parts)})"
+
+
+def _local_midnight_utc(days_ago: int = 0) -> str:
+    """ადგილობრივი შუაღამე (დღეს / N დღის წინ) UTC ISO-ში — ბაზაში დრო UTC-შია, „დღეს“ კი ოპერატორის დღეა."""
+    local = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    return (local - timedelta(days=days_ago)).astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _home_today(r: Repository) -> dict[str, int]:
+    """დღევანდელი რიცხვები და იგივე ბოლო 7 დღეში (`*_week`) — დღე ცარიელი რომ იყოს, კვირა მაინც ჩანს."""
+    out: dict[str, int] = {}
+    for suffix, since in (("", _local_midnight_utc()), ("_week", _local_midnight_utc(6))):
+        src = r.one("SELECT COUNT(*) n, COALESCE(SUM(page_count), 0) p FROM sources WHERE created_at>=?", (since,))
+        docs = r.one("SELECT COUNT(*) n FROM documents WHERE active=1 AND part_of IS NULL AND created_at>=?", (since,))
+        up = r.one("SELECT COUNT(*) n FROM mhr_items WHERE status='uploaded' AND uploaded_at>=?", (since,))
+        out |= {f"files{suffix}": src["n"], f"pages{suffix}": src["p"], f"docs{suffix}": docs["n"], f"uploaded{suffix}": up["n"]}
+    return out
+
+
+def _home_flow(s: dict, trial: bool) -> str:
+    """ფაილის გზა ერთ ხაზზე (რამდენი სად დგას ახლა) და ქვემოთ — რაც გაჩერდა და შენ გელოდება."""
+    d, j, m = s["documents"], s["jobs"], s["mhr"] if s["mhr_enabled"] else {}
+    busy = j.get("queued", 0) + j.get("running", 0) + s["inbox_waiting"]
+    if s["mhr_enabled"]:
+        path = [("/stats", "scan", "მუშავდება", busy, "info"),
+                ("/mhr?tab=queue", "clock", "MHR-ში მოწმდება", m.get("pending", 0) + m.get("unavailable", 0), "info"),
+                ("/mhr?tab=ready", "check", "მზადაა ასატვირთად", m.get("ready", 0), "info"),
+                ("/mhr?tab=queue", "cloud", "იტვირთება", m.get("approved", 0) + m.get("uploading", 0), "info"),
+                ("/mhr?tab=done", "cloud", "აიტვირთა", m.get("uploaded", 0), "ok")]
+    else:
+        path = [("/stats", "scan", "მუშავდება", busy, "info"),
+                ("/documents?status=" + ("proposed" if trial else "auto_saved"), "check",
+                 "შემოთავაზებული" if trial else "დალაგდა", d.get("proposed" if trial else "auto_saved", 0), "ok")]
+    stuck = [("/review", "inbox", "გადასამოწმებელი", d.get("needs_review", 0)),
+             *([("/mhr?tab=failed", "alert", "MHR-ში ვერ გაიარა", m.get("failed", 0)),
+                ("/mhr?tab=other", "alert", "ატვირთვა გასარკვევია", m.get("upload_failed", 0) + m.get("needs_check", 0))]
+               if s["mhr_enabled"] else []),
+             ("/stats#stuck", "x", "ვერ დამუშავდა", j.get("failed", 0) + s["inbox_errors"])]
+
+    def step(href, ic, lbl, n, tone):
+        return (f'<a class="step{" zero" if not n else ""}" href="{href}"><span class="ib tone-{tone if n else "mute"}">{icon(ic, 16)}</span>'
+                f'<span class="n">{n}</span><span class="l">{e(lbl)}</span></a>')
+    arrow = '<span class="arrow" aria-hidden="true">→</span>'
+    flow = arrow.join(step(*x) for x in path)
+    jam = [x for x in stuck if x[3]]
+    jam_html = ("".join(step(href, ic, lbl, n, "warn" if ic != "x" else "bad") for href, ic, lbl, n in jam) if jam else
+                f'<span class="ok-line">{icon("check", 16)}არაფერი გაჭედილა</span>')
+    return (f'<div class="card flow"><div class="steps-row">{flow}</div>'
+            f'<div class="jam"><span class="jam-l">გაჩერებული</span>{jam_html}</div></div>')
+
+
+_FILE_STATE = {   # (წარწერა, ტონი) — ფაილზე ყველაზე „მძიმე“ მდგომარეობა იმარჯვებს (თანმიმდევრობა = პრიორიტეტი)
+    "job_failed": ("ვერ დამუშავდა", "bad"), "mhr_failed": ("MHR-ში ვერ გაიარა", "warn"),
+    "mhr_stuck": ("ატვირთვა გასარკვევია", "warn"), "needs_review": ("გადასამოწმებელი", "warn"),
+    "working": ("მუშავდება", "info"), "mhr_ready": ("მზადაა ასატვირთად", "info"),
+    "mhr_checking": ("MHR-ში მოწმდება", "info"), "mhr_uploading": ("იტვირთება", "info"),
+    "uploaded": ("აიტვირთა MHR-ზე", "ok"), "sorted": ("დალაგდა", "ok"), "proposed": ("შემოთავაზებული", "ok"),
+    "empty": ("ცარიელი", "mute")}
+
+
+def _recent_files(r: Repository, c: Config, limit: int = 12) -> list[dict]:
+    """ბოლო სკანები ოპერატორის ენაზე: ვისია, რა დოკუმენტია და ერთი გასაგები მდგომარეობა (+ სად დააჭიროს)."""
+    files = r.q("SELECT s.id sid, s.first_path, s.page_count, s.created_at, j.id jid, j.status, j.progress_done, j.progress_total"
+                " FROM sources s JOIN jobs j ON j.source_id=s.id"
+                " WHERE j.created_at=(SELECT MAX(created_at) FROM jobs WHERE source_id=s.id) ORDER BY s.created_at DESC LIMIT ?", (limit,))
+    out = []
+    for f in files:
+        docs = r.q("SELECT d.id, d.status, d.type_id, d.metadata, d.part_of, m.status mhr FROM documents d"
+                   " LEFT JOIN mhr_items m ON m.document_id=d.id WHERE d.job_id=? AND d.active=1", (f["jid"],))
+        names, types = [], []
+        for x in docs:
+            if x["part_of"]:
+                continue
+            fl = json.loads(x["metadata"] or "{}").get("fields") or {}
+            nm = " ".join(v for v in ((fl.get("first_name") or {}).get("value"), (fl.get("last_name") or {}).get("value")) if v)
+            if nm and nm not in names:
+                names.append(nm)
+            t = c.doc_type(x["type_id"] or "")
+            if t and t.name_ka not in types:
+                types.append(t.name_ka)
+        st = {x["status"] for x in docs}
+        mhr = {x["mhr"] for x in docs if x["mhr"]}
+        pick = lambda pred: next((x["id"] for x in docs if pred(x)), None)   # noqa: E731
+        if f["status"] == "failed":
+            key, href = "job_failed", "/stats#stuck"
+        elif f["status"] in ("queued", "running"):
+            key, href = "working", "/stats"
+        elif "failed" in mhr:
+            key, href = "mhr_failed", f'/mhr/{pick(lambda x: x["mhr"] == "failed")}'
+        elif mhr & {"upload_failed", "needs_check"}:
+            key, href = "mhr_stuck", f'/mhr/{pick(lambda x: x["mhr"] in ("upload_failed", "needs_check"))}'
+        elif "needs_review" in st:
+            key, href = "needs_review", f'/doc/{pick(lambda x: x["status"] == "needs_review")}'
+        elif "ready" in mhr:
+            key, href = "mhr_ready", f'/mhr/{pick(lambda x: x["mhr"] == "ready")}'
+        elif mhr & {"pending", "unavailable"}:
+            key, href = "mhr_checking", "/mhr?tab=queue"
+        elif mhr & {"approved", "uploading"}:
+            key, href = "mhr_uploading", "/mhr?tab=queue"
+        elif mhr and mhr <= {"uploaded", "split", "skipped", "rejected"} and "uploaded" in mhr:
+            key, href = "uploaded", f'/documents?source={f["sid"]}'
+        elif docs:
+            key, href = ("proposed" if "proposed" in st else "sorted"), f'/documents?source={f["sid"]}'
+        else:
+            key, href = "empty", f'/documents?source={f["sid"]}'
+        progress = f' · {f["progress_done"]}/{f["progress_total"]} გვერდი' if key == "working" and f["progress_total"] else ""
+        out.append({"title": ", ".join(names[:2]) + (f" და კიდევ {len(names) - 2}" if len(names) > 2 else "") or Path(f["first_path"]).name,
+                    "meta": " · ".join(x for x in (", ".join(types[:2]), Path(f["first_path"]).name if names else "",
+                                                     f'{f["page_count"] or 0} გვერდი') if x) + progress,
+                    "created_at": f["created_at"], "state": key, "href": href})
+    return out
+
+
+def _recent_html(files: list[dict]) -> str:
+    """ბოლო სკანები დღეების მიხედვით: „დღეს“, „გუშინ“, თარიღი."""
+    if not files:
+        return ""
+    today, yesterday = _local_midnight_utc(), _local_midnight_utc(1)
+    groups: dict[str, list[dict]] = {}
+    for f in files:
+        ca = f["created_at"] or ""
+        if ca >= today:
+            day = "დღეს"
+        elif ca >= yesterday:
+            day = "გუშინ"
+        else:
+            try:
+                day = datetime.fromisoformat(ca).astimezone().strftime("%d.%m.%Y")
+            except ValueError:
+                day = "ადრე"
+        groups.setdefault(day, []).append(f)
+    out = []
+    for day, xs in groups.items():
+        rows = "".join(
+            f'<a class="row" href="{e(f["href"])}" style="color:inherit;text-decoration:none">'
+            f'<span class="ib tone-{_FILE_STATE[f["state"]][1]}">{icon("file", 18)}</span>'
+            f'<div class="grow"><div class="t">{e(f["title"])}</div><div class="m">{e(f["meta"])}</div></div>'
+            f'<span class="when">{_local_time(f["created_at"])}</span>{chip(*_FILE_STATE[f["state"]])}</a>' for f in xs)
+        out.append(f'<div class="day">{e(day)}</div><div class="card list recent" style="margin-bottom:12px">{rows}</div>')
+    return "".join(out)
+
+
+def _local_time(iso: str | None) -> str:
+    try:
+        return datetime.fromisoformat(iso).astimezone().strftime("%H:%M")
+    except (TypeError, ValueError):
+        return ""
 
 
 def _outcome_chip(job_status: str, counts: dict[str, int]) -> str:
