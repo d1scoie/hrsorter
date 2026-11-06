@@ -657,10 +657,19 @@ def test_mhr_pages_show_ai_review(client):
     assert "(Opus) რიგშია" not in page
     lst = c.get("/mhr?tab=failed").text
     assert "AI: ატვირთვა შეიძლება" in lst and "დოკუმენტი სწორია." in lst
+    # სიაში AI-ის ჩიპი ბმულია დეტალური გვერდის AI ბლოკზე, გვერდით კი „ხელახალი AI ანალიზი“ — სიიდანვე, იმავე ჩანართზე დაბრუნებით
+    assert f'<a class="chip tone-ok" href="/mhr/{doc}#ai"' in lst and 'id="ai"' in page
+    assert f'action="/mhr/{doc}/ai-review"' in lst and 'name="back" value="/mhr?tab=failed"' in lst
 
-    # ხელახალი ანალიზი — სუფთავდება
-    c.post(f"/mhr/{doc}/ai-review", headers={"origin": LOCAL})
+    # ხელახალი ანალიზი — სუფთავდება; სიიდან სიაში ბრუნდება, დეტალური გვერდიდან — დეტალურზე; გარე მისამართი არ მიიღება
+    r = c.post(f"/mhr/{doc}/ai-review", data={"back": "/mhr?tab=failed"}, headers={"origin": LOCAL}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/mhr?tab=failed"
     assert repo.mhr_get(doc)["ai_review"] is None
+    assert "ხელახალი AI ანალიზი" not in c.get("/mhr?tab=failed").text        # დასკვნა აღარ არის — ღილაკიც არა
+    r = c.post(f"/mhr/{doc}/ai-review", headers={"origin": LOCAL}, follow_redirects=False)
+    assert r.headers["location"] == f"/mhr/{doc}"
+    r = c.post(f"/mhr/{doc}/ai-review", data={"back": "//evil.example/x"}, headers={"origin": LOCAL}, follow_redirects=False)
+    assert r.headers["location"] == f"/mhr/{doc}"
 
     repo.mhr_set_ai_review(doc, {"verdict": "error", "error": "claude not found"})
     assert "AI ანალიზი ვერ შესრულდა" in c.get(f"/mhr/{doc}").text
