@@ -624,6 +624,57 @@ def test_page_after_approval_stops_asking_to_upload(client):
     for s in ("ფაილი გაჩერდა", "რა ვქნა", "ატვირთვა მაინც", "<h2>რატომ გაჩერდა", "ხელახალი AI ანალიზი", "დააჭირე ატვირთვას"):
         assert s in waiting, s
     assert "მზადაა ატვირთვისთვის" in item("doc_" + "6" * 32, "ready", clean)
+    assert "რა გავაკეთო" not in done and "რა გავაკეთო" in waiting     # ატვირთულზე გადასაწყვეტი აღარაფერია
+    repo.close()
+
+
+def test_failed_page_puts_decision_first_and_groups_repeated_problems(client):
+    """რეალური ფაილი: 31 პრობლემა, მათგან 27 ბეჭედი/ხელმოწერა ყველა გვერდზე. გადაწყვეტილება ზემოთაა (ადრე ~15 ეკრანის
+    ქვემოთ იყო), ერთნაირი პრობლემები ერთ ჯგუფადაა, ციფრი კი პირველია — როგორც გვერდზე, ისე სიაში."""
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True}
+    data["ocr"] = {"online": {"enabled": True, "provider": "claude_code"}}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    hand = [{"page": p, "kind": "handwriting", "significant": True, "reason": "ხელნაწერის ეჭვი", "original": "", "scanned": ""}
+            for p in range(1, 15)]
+    salary = {"page": 6, "kind": "changed", "significant": True, "reason": "ციფრები განსხვავდება",
+              "original": "ყოველთვიურად 1300 ლარს", "scanned": "ყოველთვიურად 1500 ლარს"}
+    v = {"status": "failed", "employee": {"employee_id": "E1", "first_name": "ნინო", "last_name": "ბერიძე"},
+         "checks": [], "diffs": [*hand, salary], "summary": ["გვერდი 1: ხელნაწერის ეჭვი"]}
+    doc = "doc_" + "7" * 32
+    repo.mhr_enqueue(doc, "01001000001")
+    repo.mhr_transition(doc, ("pending",), "failed", validation=v, employee_id="E1")
+    repo.mhr_set_ai_review(doc, {"verdict": "check", "confidence": "medium", "summary": "ხელფასი თვალით შეამოწმე.",
+                                 "items": [], "risks": [], "model": "opus"})
+    page = c.get(f"/mhr/{doc}").text
+    decide, why = page.index('class="card decide"'), page.index("<h2>რატომ გაჩერდა")
+    assert decide < why and page.index("ატვირთვა მაინც") < why and page.index("ხელახლა შედარება") < why
+    assert 'href="#ai"' in page[decide:why] and "ხელფასი თვალით შეამოწმე." in page[decide:why]
+
+    groups = page.split('<details class="card pgroup"')[1:]
+    assert len(groups) == 2 and "ციფრები განსხვავდება" in groups[0] and "ხელნაწერის ეჭვი" in groups[1]
+    assert groups[0].startswith(" open") and not groups[1].startswith(" open")        # ციფრი ღიაა, 14 ბეჭედი — დაკეცილი
+    assert "14 ადგილი · 14 გვერდზე" in groups[1]
+    assert groups[1].count("რა ვქნა") == 1 and groups[1].count('class="prob"') == 14   # საერთო ახსნა ერთხელ, ბარათი თითო ადგილზე
+
+    row = c.get("/mhr?tab=failed").text
+    assert "გვერდი 6: ციფრები განსხვავდება" in row and "გვერდი 1: ხელნაწერის ეჭვი (და კიდევ" not in row
+    assert row.count("ნინო ბერიძე") == 1                                              # სახელი მხოლოდ სათაურშია
+    repo.close()
+
+
+def test_document_page_without_pdf_says_so_in_plain_words(client, tmp_path):
+    c, cfg_path = client
+    repo = Repository(load_config(cfg_path).paths.db)
+    sid = repo.insert_source(sha256="f" * 64, size=1, page_count=1, archive_path="x.pdf", first_path="in/x.pdf", profile_id="batch")
+    doc = "doc_" + "f" * 32
+    _pdf_doc(repo, tmp_path, doc, sid)
+    assert '<iframe class="pdf"' in c.get(f"/doc/{doc}").text
+    Path(repo.get_document(doc)["output_path"]).unlink()                               # ვადის გასვლის გამო წაიშალა
+    page = c.get(f"/doc/{doc}").text
+    assert "PDF ამ კომპიუტერზე აღარ არის" in page and '<iframe class="pdf"' not in page and "PDF ცალკე" not in page
     repo.close()
 
 
@@ -645,7 +696,7 @@ def test_mhr_pages_show_ai_review(client):
     import time
     repo.set_control("worker_heartbeat", str(time.time()))
     page = c.get(f"/mhr/{doc}").text
-    assert "AI ანალიზი (Opus) რიგშია" in page and "ზემოთ მოცემული პრობლემები ქაღალდზე ვნახე" in page
+    assert "AI ანალიზი (Opus) რიგშია" in page and "ქვემოთ ჩამოთვლილი პრობლემები ქაღალდზე ვნახე" in page
 
     repo.mhr_set_ai_review(doc, {"verdict": "upload", "confidence": "high", "summary": "ხელფასი სწორად იკითხება, დოკუმენტი სწორია.",
                                  "items": [{"topic": "ხელფასი", "status": "ok", "explanation": "2200 სხვაგან ჩანს"}],
