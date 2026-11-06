@@ -312,3 +312,29 @@ def test_instance_lock_blocks_second_worker(tmp_path):
         InstanceLock(tmp_path)
     lock.release()
     InstanceLock(tmp_path).release()
+
+
+def test_worker_running_follows_the_lock(tmp_path):
+    from hrsorter.worker import InstanceLock, worker_running
+    assert worker_running(tmp_path) is False
+    lock = InstanceLock(tmp_path)
+    assert worker_running(tmp_path) is True
+    lock.release()
+    assert worker_running(tmp_path) is False
+    InstanceLock(tmp_path).release()          # შემოწმებამ lock არ დაიტოვა
+
+
+def test_starting_worker_waits_out_a_short_lock_probe(tmp_path):
+    """`worker_running()` lock-ს წამის მეასედით იღებს; ზუსტად მაშინ ჩართული worker ამის გამო არ უნდა გავიდეს."""
+    from hrsorter.worker import InstanceLock
+    probe = InstanceLock(tmp_path)
+    threading.Timer(0.3, probe.release).start()
+    started = time.monotonic()
+    InstanceLock(tmp_path, wait=3.0).release()
+    assert time.monotonic() - started < 2.5
+    held = InstanceLock(tmp_path)
+    try:
+        with pytest.raises(RuntimeError):     # ნამდვილი მეორე worker ისევ ჩერდება, ოღონდ ლოდინის შემდეგ
+            InstanceLock(tmp_path, wait=0.5)
+    finally:
+        held.release()

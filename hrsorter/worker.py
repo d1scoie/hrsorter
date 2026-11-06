@@ -270,27 +270,55 @@ def _setup_logging(cfg: Config) -> None:
 
 
 class InstanceLock:
-    """ერთ root-ზე მხოლოდ ერთი დამმუშავებელი (worker ან run-once) — ერთმანეთის publish-ს არ აფუჭებენ."""
+    """ერთ root-ზე მხოლოდ ერთი დამმუშავებელი (worker ან run-once) — ერთმანეთის publish-ს არ აფუჭებენ.
 
-    def __init__(self, state_dir, name: str = "worker.lock"):
+    `wait` — რამდენ წამს ვცადოთ, სანამ დავნებდებით: `worker_running()` lock-ს წამის მეასედით იღებს შესამოწმებლად,
+    და ზუსტად იმ მომენტში ჩართული worker ამის გამო არ უნდა გავიდეს."""
+
+    def __init__(self, state_dir, name: str = "worker.lock", wait: float = 0.0):
         state_dir.mkdir(parents=True, exist_ok=True)
         self.path = state_dir / name
-        self._f = open(self.path, "a+b")
-        try:
-            if sys.platform == "win32":
-                import msvcrt
-                self._f.seek(0)
-                msvcrt.locking(self._f.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self._f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            self._f.close()
-            raise RuntimeError(f"another hrsorter worker is already running ({self.path})") from None
+        deadline = time.monotonic() + wait
+        while True:
+            self._f = open(self.path, "a+b")
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    self._f.seek(0)
+                    msvcrt.locking(self._f.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self._f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except OSError:
+                self._f.close()
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"another hrsorter worker is already running ({self.path})") from None
+                time.sleep(0.2)
 
     def release(self) -> None:
-        if not self._f.closed:
-            self._f.close()
+        if self._f.closed:
+            return
+        if sys.platform == "win32":
+            # დახურვისას Windows lock-ს „როდისმე“ ხსნის; ცალსახად მოხსნა — მომდევნო worker-ს არ ალოდინებს
+            import msvcrt
+            try:
+                self._f.seek(0)
+                msvcrt.locking(self._f.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        self._f.close()
+
+
+def worker_running(state_dir, name: str = "worker.lock") -> bool:
+    """worker მართლა მუშაობს? lock-ს ამოწმებს და არა heartbeat-ს: მოკლული პროცესის lock-ს OS მაშინვე ხსნის,
+    heartbeat კი ბაზაში რჩება. განახლებისას ინსტალერი worker-ს კლავს და წამებში უშვებს `open`-ს — heartbeat-ით
+    ის „ცოცხლად“ ჩანდა და ახალი worker აღარ ირთვებოდა."""
+    try:
+        InstanceLock(state_dir, name).release()
+    except RuntimeError:
+        return True
+    return False
 
 
 def main(config_path: str | None = None) -> int:
@@ -316,7 +344,7 @@ def main(config_path: str | None = None) -> int:
         signal.signal(signal.SIGBREAK, on_signal)
 
     from .pipeline import process_job   # ინტეგრატორის მოდული — lazy import
-    lock = InstanceLock(paths.state)
+    lock = InstanceLock(paths.state, wait=3.0)
     worker = Worker(lambda: load_config(config_path), process_job)
     try:
         worker.run_forever(stop)
