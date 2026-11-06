@@ -19,7 +19,7 @@ Python, Tesseract და ქართული ენა ინსტალე�
 
 **ინსტალერის აწყობა** (დეველოპერისთვის): `.venv\Scripts\python.exe packaging\build.py` →
 `build_out\HRSorter-Setup-<ვერსია>.exe`. საჭიროა PyInstaller (venv-ში), pefile, Tesseract (UB Mannheim) და
-`C:\ProgramData\hrsorter\tessdata`-ში `kat/eng/osd`, Inno Setup 6.
+`C:\ProgramData\hrsorter\tessdata`-ში `kat/eng/osd`, Inno Setup 6. დეტალურად — ქვემოთ, „ახალი ვერსიის გამოშვება“.
 
 ## ავტომატური განახლება
 დაინსტალირებული პროგრამა ჩატვირთვიდან 10 წუთში და შემდეგ ყოველ 4 საათში ამოწმებს GitHub-ის რეპოზიტორიას
@@ -29,11 +29,29 @@ Python, Tesseract და ქართული ენა ინსტალე�
 ჟურნალი: `C:\Program Files\HRSorter\_update\update.log` (და `setup.log`). ხელით შემოწმება: `hrsorter.exe update check`.
 
 **ახალი ვერსიის გამოშვება:**
-1. `hrsorter\__init__.py`-ში გაზარდე `PIPELINE_VERSION` (მაგ. `0.2.0`). განახლება ხდება მხოლოდ მაშინ, როცა ვერსია უფრო მაღალია.
-2. `.venv\Scripts\python.exe packaging\build.py`
-3. `gh release create v0.2.0 build_out\HRSorter-Setup-0.2.0.exe -R d1scoie/hrsorter-releases --title 0.2.0 --notes "..."`
+1. `hrsorter\__init__.py`-ში გაზარდე `PIPELINE_VERSION` (მაგ. `0.2.0`) და ვერსია `docs\LIMITATIONS_GE.md`-ის სათაურში.
+   განახლება ხდება მხოლოდ მაშინ, როცა ვერსია უფრო მაღალია. `packaging\version_info.txt`-ს `build.py` თავად ასწორებს.
+2. აწყობის გარემო — **Python 3.13 და `requirements.lock`-ის ზუსტი ვერსიები**. 0.1.10 და 0.1.11 ასე აიწყო; სხვა Python-ით
+   ან lock-ის გარეშე აწყობილი ინსტალერი ყველა კომპიუტერზე სხვა ბიბლიოთეკებს დააყენებს, ვიდრე ტესტებში იყო.
+   ```powershell
+   py -3.13 -m venv .venv
+   .venv\Scripts\python.exe -m pip install -r requirements.lock
+   .venv\Scripts\python.exe -m pip install -e ".[dev,build]" -c requirements.lock
+   .venv\Scripts\python.exe -m pytest -q -m "not slow"
+   ```
+   Inno Setup ადმინის გარეშეც დგება: `winget install --id JRSoftware.InnoSetup -e --scope user`.
+3. Tesseract: თუ ცალკე დაყენებული არ არის, `build.py` მას უკვე დაინსტალირებული HR Sorter-იდან აიღებს — ეს ზუსტად
+   ის ფაილებია, რაც წინა ვერსიას მოჰყვა:
+   ```powershell
+   $env:HRSORTER_TESSERACT_DIR = "C:\Program Files\HRSorter\tesseract"
+   $env:HRSORTER_TESSDATA_DIR  = "C:\Program Files\HRSorter\tesseract\tessdata"
+   .venv\Scripts\python.exe packaging\build.py
+   ```
+4. გამოქვეყნებამდე შეამოწმე აწყობილი პროგრამა: `build_out\dist\HRSorter\hrsorter.exe update check` უნდა
+   დაწეროს „უახლესი ვერსიაა (<ახალი ვერსია>)“ — ეს ამოწმებს ვერსიას და HTTPS-ს (OpenSSL) ერთად.
+5. `gh release create v0.2.0 build_out\HRSorter-Setup-0.2.0.exe -R d1scoie/hrsorter-releases --title "HR Sorter 0.2.0" --notes-file notes.md`
    ჯერ სატესტოდ რომ გამოუშვა, დაამატე `--prerelease`. ასეთ ვერსიას პროგრამა არ აყენებს, სანამ GitHub-ზე
-   „Set as latest release“ არ მონიშნავ.
+   „Set as latest release“ არ მონიშნავ. **გამოქვეყნება ნიშნავს, რომ ყველა კომპიუტერი მას 4 საათში დააყენებს.**
 
 GitHub-ის ანგარიშზე წვდომის მქონე ადამიანი ყველა კომპიუტერზე დააყენებს იმას, რასაც ატვირთავს. ამიტომ ანგარიშზე
 ორფაქტორიანი შესვლა (2FA) აუცილებელია.

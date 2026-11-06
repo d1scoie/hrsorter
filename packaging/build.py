@@ -2,6 +2,8 @@
 
 ნაბიჯები: PyInstaller (dist\\HRSorter) → Tesseract-ის საჭირო ფაილები + kat/eng/osd → Inno Setup →
 build_out\\HRSorter-Setup-<ვერსია>.exe. საჭიროა: PyInstaller (venv-ში), Tesseract (UB Mannheim) და Inno Setup 6.
+გარემო: Python 3.13 + requirements.lock (docs\\INSTALL_GE.md → „ახალი ვერსიის გამოშვება“). Tesseract-ის წყარო
+იცვლება HRSORTER_TESSERACT_DIR / HRSORTER_TESSDATA_DIR ცვლადებით (მაგ. დაინსტალირებული HR Sorter-ის `tesseract`).
 """
 from __future__ import annotations
 
@@ -48,8 +50,14 @@ def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True, cwd=PROJ)
 
 
+BUILD_PYTHON = (3, 13)   # 0.1.10-დან ინსტალერი ამ Python-ით იწყობა; სხვაზე გადასვლა ცალკე, განზრახ გადაწყვეტილებაა
+
+
 def main() -> int:
     from hrsorter import PIPELINE_VERSION
+    if sys.version_info[:2] != BUILD_PYTHON:
+        print(f"warning: building with Python {sys.version.split()[0]}, releases use {'.'.join(map(str, BUILD_PYTHON))} "
+              "(docs\\INSTALL_GE.md)", flush=True)
     # exe-ის თვისებებში (Properties → Details) ვერსია — იგივე, რაც ინსტალერსა და განახლებაში
     vi = PROJ / "packaging" / "version_info.txt"
     nums = ", ".join(PIPELINE_VERSION.split(".") + ["0"])
