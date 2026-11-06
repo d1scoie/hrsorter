@@ -27,6 +27,44 @@ def test_setup_first_install_then_upgrade_keeps_user_settings(tmp_path):
     assert after["ocr"]["tessdata_dir"] == "D:/new/tesseract/tessdata"
 
 
+def _open_with_fake_spawn(tmp_path, monkeypatch):
+    """`open --no-browser` ნამდვილი პროცესების გარეშე: რა გაუშვა, ისღა ჩანს."""
+    import urllib.request
+
+    import hrsorter.cli as cli
+    cfg_path = tmp_path / "pd" / "config.json"
+    main(["--config", str(cfg_path), "setup", "--root", str(tmp_path / "HRScan"), "--tesseract-dir", str(tmp_path / "t")])
+    spawned = []
+    monkeypatch.setattr(cli, "_spawn", lambda *a: spawned.append(a[-1]))
+
+    class _Up:   # UI უკვე პასუხობს — ლოდინის ციკლი მაშინვე მთავრდება
+        def close(self):
+            pass
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Up())
+    return cfg_path, lambda: (spawned.clear(), main(["--config", str(cfg_path), "open", "--no-browser"]), list(spawned))[2]
+
+
+def test_open_starts_worker_after_update_even_with_fresh_heartbeat(tmp_path, monkeypatch):
+    """განახლება: ინსტალერი worker-ს კლავს და წამებში უშვებს `open`-ს. heartbeat ჯერ ახალია, lock კი თავისუფალი —
+    worker უნდა ჩაირთოს (ადრე heartbeat-ს ენდობოდა და ახალი სკანები განახლების შემდეგ აღარ მუშავდებოდა)."""
+    import time
+
+    from hrsorter.db import Repository
+    from hrsorter.worker import InstanceLock
+    cfg_path, run_open = _open_with_fake_spawn(tmp_path, monkeypatch)
+    cfg = load_config(cfg_path)
+    repo = Repository(cfg.paths.db)
+    repo.set_control("worker_heartbeat", str(time.time()))      # 2 წამის წინ მოკლული worker-ის კვალი
+    repo.close()
+    assert "worker" in run_open()
+
+    lock = InstanceLock(cfg.paths.state)                        # worker მართლა მუშაობს — მეორეს არ ვუშვებთ
+    try:
+        assert "worker" not in run_open()
+    finally:
+        lock.release()
+
+
 def test_secret_set_from_clipboard_strips_and_rejects_empty(monkeypatch, capsys):
     import hrsorter.cli as cli
     from hrsorter import secrets

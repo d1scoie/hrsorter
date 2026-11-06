@@ -99,16 +99,13 @@ def cmd_open(args) -> int:
     import time
     import urllib.request
     import webbrowser
+    from .worker import worker_running
     cfg = load_config(args.config)
     _spawn("tray")   # მეორე ასლი თავად გამოდის (lock)
     port = int(cfg.section("ui")["port"])
     url = f"http://127.0.0.1:{port}"
-    r = Repository(cfg.paths.db)
-    try:
-        hb = r.get_control("worker_heartbeat")
-    finally:
-        r.close()
-    if not hb or time.time() - float(hb) > 30:
+    # lock და არა heartbeat: განახლების შემდეგ heartbeat წამების წინანდელია, worker კი ინსტალერმა უკვე მოკლა
+    if not worker_running(cfg.paths.state):
         _spawn("worker")   # მეორე ინსტანსს InstanceLock არ უშვებს
     for i in range(40):
         try:
