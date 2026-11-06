@@ -1105,20 +1105,22 @@ def _mhr_row(c: Config, x, back: str = "") -> str:
                 f'{icon("cloud", 14)}ატვირთვა</button></form>')
     ai = _ai_load(x)
     doc_id = e(x["document_id"])
-    ai_chip = ""
+    ai_chip = rerun = ""
     if ai and ai.get("verdict") in AI_KA:
         lbl, tone = AI_KA[ai["verdict"]]
         ai_chip = f'<a class="chip tone-{tone}" href="/mhr/{doc_id}#ai" title="AI ანალიზის ნახვა">{e(lbl)}</a>'
         if x["status"] in ("ready", "failed") and ai_review.enabled(c):
-            btns += (f'<form class="inline" method="post" action="/mhr/{doc_id}/ai-review">'
-                     f'<input type="hidden" name="back" value="{e(back)}"><button class="btn sm" title="AI დასკვნას თავიდან გააკეთებს">'
-                     f'{icon("refresh", 14)}ხელახალი AI ანალიზი</button></form>')
+            # AI-ის შეჯამების ქვეშ, ტექსტის სვეტში — მარჯვენა ღილაკების სვეტი არ ფართოვდება და ვიწრო ეკრანზე ტექსტი არ იჭყლიტება
+            rerun = (f'<form class="inline" method="post" action="/mhr/{doc_id}/ai-review">'
+                     f'<input type="hidden" name="back" value="{e(back)}"><button class="btn sm ghost" '
+                     f'style="min-height:28px;padding:0 6px;margin:2px 0 0 -6px;font-size:13px;color:var(--accent)" '
+                     f'title="AI დასკვნას თავიდან გააკეთებს">{icon("refresh", 14)}ხელახალი AI ანალიზი</button></form>')
     ai_text = ai.get("summary") if ai and ai.get("verdict") != "error" else ""
     return (f'<div class="row"><div class="grow"><a class="t" href="/mhr/{doc_id}" style="display:block;color:var(--text)">'
             f'{e(name or "თანამშრომელი უცნობია")}</a><div class="m">{e(meta)}</div>'
             f'{f"<div class=m><b>{e(summary)}</b></div>" if summary else ""}'
-            f'{f"<div class=m>AI: {e(ai_text)}</div>" if ai_text else ""}</div>{ai_chip}{mhr_chip(x["status"])}'
-            f'<div class="btns">{btns}<a class="btn sm{"" if x["status"] == "ready" else " primary"}" href="/mhr/{doc_id}">'
+            f'{f"<div class=m>AI: {e(ai_text)}</div>" if ai_text else ""}{rerun}</div>{ai_chip}{mhr_chip(x["status"])}'
+            f'<div class="btns">{btns}<a class="btn sm{"" if btns else " primary"}" href="/mhr/{doc_id}">'
             f'{"ნახე სხვაობები" if x["status"] == "failed" and not _no_compare(v) else "დეტალები"}</a></div></div>')
 
 
