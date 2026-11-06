@@ -78,6 +78,26 @@ def test_hash_mismatch_rejects_file(tmp_path):
     assert list((tmp_path / "_update").iterdir()) == []
 
 
+def test_append_log_writes_and_tolerates_no_write_access(tmp_path):
+    assert updater.append_log("ხელმისაწვდომია 0.2.0", app_dir=tmp_path)
+    assert (tmp_path / "_update" / "update.log").read_text(encoding="utf-8").rstrip().endswith("ხელმისაწვდომია 0.2.0")
+    # ჩვეულებრივი მომხმარებელი Program Files-ში ვერ წერს: ჟურნალი გამოიტოვება, `update check` არ ვარდება
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("x", encoding="utf-8")
+    assert updater.append_log("ignored", app_dir=blocked) is False
+
+
+def test_cli_update_check_survives_unwritable_log(tmp_path, monkeypatch, capsys):
+    from hrsorter import cli, config
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(config, "FROZEN", True)
+    monkeypatch.setattr(updater, "APP_DIR", blocked)
+    monkeypatch.setattr(updater, "run", lambda db, check_only: "ხელმისაწვდომია 0.2.0 (ახლა 0.1.0)")
+    assert cli.main(["update", "check"]) == 0
+    assert "ხელმისაწვდომია 0.2.0" in capsys.readouterr().out
+
+
 def test_task_xml_principals_and_commands(tmp_path):
     ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
     app = tmp_path / "Program Files" / "HR&Sorter"

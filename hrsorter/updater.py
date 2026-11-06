@@ -121,6 +121,20 @@ def run(db_path: Path | None, *, check_only: bool = False, client: httpx.Client 
     return f"{current} → {rel.version}: ინსტალაცია დაიწყო"
 
 
+def append_log(msg: str, app_dir: Path | None = None) -> bool:
+    """`{app}\\_update\\update.log`-ში ერთი სტრიქონი. ჟურნალი SYSTEM-ის დავალებისთვისაა; Program Files-ში ჩვეულებრივ
+    მომხმარებელს ჩაწერის უფლება არ აქვს (`hrsorter.exe update check` კონსოლიდან), ამიტომ შეცდომაზე უბრალოდ False."""
+    import time
+    log = (app_dir or APP_DIR) / UPDATE_DIR_NAME / "update.log"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except OSError:
+        return False
+    return True
+
+
 def trigger_update() -> str:
     """ხატულიდან (ჩვეულებრივი მომხმარებელი): SYSTEM-ის დავალების `HRSorter\\Update` დაუყოვნებლივ გაშვება.
     თუ დავალების გაშვების უფლება არ აქვს — `hrsorter.exe update` ადმინისტრატორის ნებართვით (UAC)."""

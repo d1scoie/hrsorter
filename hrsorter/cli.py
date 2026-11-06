@@ -125,7 +125,6 @@ def cmd_open(args) -> int:
 
 def cmd_update(args) -> int:
     """GitHub-ზე ახალი ვერსიის შემოწმება/დაყენება (Task Scheduler-იდან SYSTEM-ის სახელით) ან დავალებების შექმნა."""
-    import time
     from . import updater
     from .config import FROZEN
     if args.action == "install-tasks":
@@ -142,10 +141,7 @@ def cmd_update(args) -> int:
         msg, code = f"შეცდომა: {type(e).__name__}: {e}", 1
     print(msg)
     if FROZEN:
-        log = updater.APP_DIR / updater.UPDATE_DIR_NAME / "update.log"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        with open(log, "a", encoding="utf-8") as f:
-            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+        updater.append_log(msg)
     return code
 
 
