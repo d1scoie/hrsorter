@@ -215,6 +215,22 @@ mark.s{background:var(--bad-soft);color:var(--bad);font-weight:620;padding:0 3px
 .steps{display:flex;flex-direction:column}.steps .st{display:flex;gap:12px;padding:12px 16px;border-top:1px solid var(--border);align-items:flex-start}.steps .st:first-child{border-top:0}
 .steps .st b{display:block;font-weight:600}.steps .st span.d{color:var(--text-2);font-size:13.5px;overflow-wrap:anywhere}
 @media (max-width:900px){.prob-b,.pgview{grid-template-columns:minmax(0,1fr)}}
+.decide{padding:18px 20px;margin:0 0 24px;border-left:4px solid var(--accent)}.decide h2{margin:0 0 12px;color:var(--text);font-size:17px}
+.ai-line{display:flex;gap:10px;align-items:flex-start;margin-bottom:14px}.ai-line p{margin:0;color:var(--text-2);font-size:14px}
+.ai-line .chip{flex:none;margin-top:1px}
+.override{display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 0;margin:0 0 14px;
+border-top:1px solid var(--border);border-bottom:1px solid var(--border)}.override .switch{flex:1;min-width:260px}
+details.pgroup{padding:0;margin:0 0 12px;border-top:1px solid var(--border)}
+.pgroup>summary{display:flex;gap:12px;align-items:center;padding:14px 18px;list-style:none;color:var(--text);font-weight:400}
+.pgroup>summary::-webkit-details-marker{display:none}.pgroup>summary:hover{background:var(--surface-2);border-radius:14px}
+.pgroup>summary .grow{flex:1;min-width:0}.pgroup>summary b{display:block;font-size:15.5px;font-weight:620}
+.pgroup>summary .m{color:var(--text-2);font-size:13px}
+.chev{width:10px;height:10px;border-right:2px solid var(--text-2);border-bottom:2px solid var(--text-2);transform:rotate(45deg);transition:transform .15s;flex:none;margin-right:4px}
+.pgroup[open]>summary .chev{transform:rotate(-135deg)}.pgroup>.list{border-top:1px solid var(--border)}
+.gintro{padding:2px 18px 14px 64px}.prob-h .place{font-size:14px;font-weight:600;color:var(--text-2)}
+@media (max-width:640px){.gintro{padding-left:18px}.ai-line{flex-direction:column;gap:6px}.decide{padding:16px}}
+.nopdf{display:grid;place-items:center;height:auto;min-height:320px}
+.clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 """
 
@@ -586,6 +602,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
         flags = "".join(chip(FLAGS.get(fl, fl), "mute") for fl in meta.get("flags", [])
                         if not (mhr_on and fl == "employee_unverified"))
         nxt = _doc_next(c, x, mhr_item, rs, mhr_on)
+        has_pdf = bool(x["output_path"]) and Path(x["output_path"]).exists()
+        viewer = (f'<iframe class="pdf" src="/file/output/{e(doc_id)}" title="დოკუმენტის გადახედვა"></iframe>' if has_pdf else
+                  f'<div class="card pdf nopdf">{empty("file", "mute", "PDF ამ კომპიუტერზე აღარ არის", "ფაილი გადატანილია ან ვადის გასვლის გამო წაიშალა. ორიგინალი სკანი შეიძლება ისევ იყოს „წყაროში“.")}</div>')
         skip = {"—", "უცნობია", "", None}
         facts = "".join(f'<div{" class=wide" if k in ("MHR", "AI ანალიზი") else ""}><dt>{e(k)}</dt><dd>{e(v)}</dd></div>'
                         for k, v in kv if k != "წყარო" and v not in skip and not (k == "წელი" and x["document_date"]))
@@ -593,7 +612,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 f'<div class="dochead"><div><div class="chips">{status_chip(x["status"])}{mhr_chip(mhr_item["status"]) if mhr_item else ""}</div>'
                 f'<h1>{e((meta.get("part") or {}).get("title") or (t.name_ka if t else "დოკუმენტი"))}{" · " + e(name) if name else ""}</h1>'
                 f'<p class="sub">{e(Path(x["first_path"]).name)} · გვ. {x["page_start"] + 1}–{x["page_end"] + 1} · {e(x["document_date"] or "თარიღი უცნობია")}</p></div>'
-                f'<div class="btns"><a class="btn" href="/file/output/{e(doc_id)}" target="_blank">{icon("open", 16)}PDF ცალკე</a>'
+                f'<div class="btns">'
+                + (f'<a class="btn" href="/file/output/{e(doc_id)}" target="_blank">{icon("open", 16)}PDF ცალკე</a>' if has_pdf else "")
+                + f''
                 f'<a class="btn" href="/file/source/{e(doc_id)}#page={x["page_start"] + 1}" target="_blank">{icon("file", 16)}წყარო</a>'
                 f'<a class="btn" href="/doc/{e(doc_id)}/text">{icon("search", 16)}ამოკითხული ტექსტი</a></div></div>')
         body = (head + f'<div class="split"><div>{nxt}<dl class="card facts" style="margin:0 0 14px">{facts}</dl>'
@@ -604,7 +625,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 + f'<form class="inline" method="post" action="/jobs/{e(x["job_id"])}/reprocess"><button class="btn sm">{icon("refresh", 16)}თავიდან დამუშავება</button></form></div>'
                 f'<p class="muted mono">{e(x["output_path"])}</p>'
                 f'<pre class="mono" style="white-space:pre-wrap;word-break:break-word">{e(json.dumps(meta, ensure_ascii=False, indent=2))}</pre></details></div>'
-                f'<iframe class="pdf" src="/file/output/{e(doc_id)}" title="დოკუმენტის გადახედვა"></iframe></div>')
+                f'{viewer}</div>')
         return page("დოკუმენტი", body, "/review" if x["status"] == "needs_review" else "/documents", side_info(status_data()))
 
     @app.get("/mhr", response_class=HTMLResponse)
@@ -1097,7 +1118,7 @@ def _mhr_row(c: Config, x, back: str = "") -> str:
     name = _mhr_name(v)
     summary = _main_reason(v) or (_error_text(x["error"]) if x["error"] else "")
     title = clean_file_title((v.get("original") or {}).get("filename")) or (t.name_ka if t else None)
-    meta = " · ".join(y for y in (name, x["personal_number"], title,
+    meta = " · ".join(y for y in (x["personal_number"], title,   # სახელი უკვე სათაურშია
                                   f'{Path(x["first_path"]).name} · გვ. {x["page_start"] + 1}–{x["page_end"] + 1}' if x["first_path"] else None) if y)
     btns = ""
     if x["status"] == "ready":
@@ -1116,10 +1137,12 @@ def _mhr_row(c: Config, x, back: str = "") -> str:
                      f'style="min-height:28px;padding:0 6px;margin:2px 0 0 -6px;font-size:13px;color:var(--accent)" '
                      f'title="AI დასკვნას თავიდან გააკეთებს">{icon("refresh", 14)}ხელახალი AI ანალიზი</button></form>')
     ai_text = ai.get("summary") if ai and ai.get("verdict") != "error" else ""
+    # AI-ის შეჯამება ორ სტრიქონამდე; სრული ტექსტი — მაუსის მიტანისას და დეტალურ გვერდზე
+    ai_div = f'<div class="m clamp2" title="{e(ai_text)}">AI: {e(ai_text)}</div>' if ai_text else ""
     return (f'<div class="row"><div class="grow"><a class="t" href="/mhr/{doc_id}" style="display:block;color:var(--text)">'
             f'{e(name or "თანამშრომელი უცნობია")}</a><div class="m">{e(meta)}</div>'
             f'{f"<div class=m><b>{e(summary)}</b></div>" if summary else ""}'
-            f'{f"<div class=m>AI: {e(ai_text)}</div>" if ai_text else ""}{rerun}</div>{ai_chip}{mhr_chip(x["status"])}'
+            f'{ai_div}{rerun}</div>{ai_chip}{mhr_chip(x["status"])}'
             f'<div class="btns">{btns}<a class="btn sm{"" if btns else " primary"}" href="/mhr/{doc_id}">'
             f'{"ნახე სხვაობები" if x["status"] == "failed" and not _no_compare(v) else "დეტალები"}</a></div></div>')
 
@@ -1302,8 +1325,10 @@ def _check_line(c: dict) -> str:
 
 
 def _reason_lines(v: dict) -> list[str]:
-    """ყველა მიზეზი, რის გამოც ფაილი ჩერდება: ჯერ მონაცემები, მერე გვერდების მიხედვით."""
-    sig = sorted((x for x in v.get("diffs") or [] if x.get("significant")), key=lambda x: x.get("page") or 0)
+    """ყველა მიზეზი, რის გამოც ფაილი ჩერდება: ჯერ მონაცემები, მერე მნიშვნელობით (ციფრი ხელნაწერის ეჭვზე წინ), მერე გვერდით.
+    სიაში პირველი სტრიქონი ჩანს — ის ყველაზე მნიშვნელოვანი უნდა იყოს და არა პირველი გვერდის ბეჭედი."""
+    sig = sorted((x for x in v.get("diffs") or [] if x.get("significant")),
+                 key=lambda x: (_DIFF_PRIORITY.get(x.get("kind"), 2), x.get("page") or 0))
     return [*(_check_line(c) for c in _blocking_checks(v)), *(_diff_line(x) for x in sig)]
 
 
@@ -1409,7 +1434,19 @@ def _crop(doc_id: str, n: int, pt: dict, boxes: list[list[int]], tone: str = "",
             f'alt="გვერდი {n}, პრობლემის ადგილი">{_overlay(boxes, tone, (x0, y0, x1, y1))}</a>')
 
 
-def _problem_card(doc_id: str, x: dict, pts: list[dict], action: str, purged: bool = False) -> str:
+def _problem_why(x: dict, pts: list[dict]) -> str:
+    n = int(x.get("page") or 0)
+    return _why_diff(x, pts[n - 1] if 0 < n <= len(pts) else {})
+
+
+def _problem_todo(x: dict, action: str) -> str:
+    return _TODO_KIND.get(x.get("kind"), _TODO_TEXT).format(action=action) if action else ""
+
+
+def _problem_card(doc_id: str, x: dict, pts: list[dict], action: str, purged: bool = False, in_group: bool = False,
+                  shared: bool = False) -> str:
+    """ერთი პრობლემა. `in_group` — ჯგუფში სათაური უკვე ზემოთაა, ბარათზე მხოლოდ ადგილი ჩანს;
+    `shared` — „რატომ“ და „რა ვქნა“ ჯგუფის ყველა ბარათზე ერთნაირია და ჯგუფის თავში ერთხელ წერია."""
     n = int(x.get("page") or 0)
     pt = pts[n - 1] if 0 < n <= len(pts) else {}
     lines = []
@@ -1419,14 +1456,17 @@ def _problem_card(doc_id: str, x: dict, pts: list[dict], action: str, purged: bo
     elif x.get("original") or x.get("scanned"):
         lines.append(f'<div><span class="lbl">MHR-ის ფაილში წერია</span><div class="val">{e(x.get("original") or "—")}</div></div>')
         lines.append(f'<div><span class="lbl">ქაღალდზე წერია</span><div class="val">{e(x.get("scanned") or "—")}</div></div>')
-    lines.append(f'<div><span class="lbl">{"რატომ გაჩერდა" if x.get("significant") else "რატომ საეჭვოა"}</span><div class="val">{e(_why_diff(x, pt))}</div></div>')
-    if action:
-        lines.append(f'<div><span class="lbl">რა ვქნა</span><div class="val">{e(_TODO_KIND.get(x.get("kind"), _TODO_TEXT).format(action=action))}</div></div>')
+    if not shared:
+        lines.append(f'<div><span class="lbl">{"რატომ გაჩერდა" if x.get("significant") else "რატომ საეჭვოა"}</span><div class="val">{e(_why_diff(x, pt))}</div></div>')
+        if action:
+            lines.append(f'<div><span class="lbl">რა ვქნა</span><div class="val">{e(_problem_todo(x, action))}</div></div>')
     if 0 < n <= len(pts):
         lines.append(f'<div><a href="/mhr/{e(doc_id)}/page/{n}">მთელი გვერდი {n}</a></div>')
     crop = _crop(doc_id, n, pt, x.get("boxes") or [], purged=purged)
-    return (f'<div class="prob"><div class="prob-h"><span class="ib tone-bad">{icon("alert", 18)}</span><div><b>{e(_clean_reason(x.get("reason")) or _DIFF_KA.get(x.get("kind"), ""))}</b>'
-            f'<div class="m">{e(_diff_place(x, pts))}</div></div></div>'
+    title = "" if in_group else f'<b>{e(_clean_reason(x.get("reason")) or _DIFF_KA.get(x.get("kind"), ""))}</b>'
+    head = (f'<div class="prob-h"><b class="place">{e(_diff_place(x, pts))}</b></div>' if in_group else
+            f'<div class="prob-h"><span class="ib tone-bad">{icon("alert", 18)}</span><div>{title}<div class="m">{e(_diff_place(x, pts))}</div></div></div>')
+    return (f'<div class="prob">{head}'
             + (f'<div class="prob-b"><div class="lines">{"".join(lines)}</div><div>{crop}</div></div>' if crop else f'<div class="lines">{"".join(lines)}</div>') + "</div>")
 
 
@@ -1708,20 +1748,70 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
         out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(_error_text(m["error"]))}</div></div>')
     out.append(_verdict(v, m))
     out.append(_notes_block(v))
+    # გადაწყვეტილება ზემოთაა, პრობლემების სიის წინ: ადრე ღილაკები ~15 ეკრანის ქვემოთ იყო, AI-ის დასკვნა კი ~12-ზე
+    out.append(_decision_block(c, m, d, v))
     sig_diffs = sorted((x for x in v.get("diffs") or [] if x.get("significant")), key=lambda x: x.get("page") or 0)
     action = _action_name(m)
     purged = bool(d is not None and d["purged_at"])
     if sig_diffs or _blocking_checks(v):
-        out.append(f'<h2>{"რა ნახა შემოწმებამ" if m["status"] in _PAST_APPROVAL else "რატომ გაჩერდა"}</h2><div class="card list" style="margin-bottom:18px">'
-                   + "".join(_check_card(ch, action, doc_id, meta, pts, purged) for ch in _blocking_checks(v))
-                   + "".join(_problem_card(doc_id, x, pts, action, purged) for x in sig_diffs) + "</div>")
+        out.append(f'<h2>{"რა ნახა შემოწმებამ" if m["status"] in _PAST_APPROVAL else "რატომ გაჩერდა"}</h2>'
+                   + "".join(f'<div class="card list" style="margin-bottom:12px">{_check_card(ch, action, doc_id, meta, pts, purged)}</div>'
+                             for ch in _blocking_checks(v))
+                   + _grouped_problems(doc_id, sig_diffs, pts, action, purged))
     suspects = [x for x in v.get("diffs") or [] if x.get("suspect") and not x.get("significant")]
     if suspects:
-        out.append('<h2>საეჭვო პატარა სხვაობები, არ აჩერებს</h2><div class="card list" style="margin-bottom:18px">'
-                   + "".join(_problem_card(doc_id, x, pts, action, purged) for x in suspects) + "</div>")
+        out.append('<h2>საეჭვო პატარა სხვაობები, არ აჩერებს</h2>' + _grouped_problems(doc_id, suspects, pts, action, purged))
     if parts is not None:
         out.append(_mhr_parts_block(parts, m))
     out.append(_ai_block(c, m, worker_alive))
+    out.append(_checked_block(c, m, d, v, pts))
+    out.append(_page_map(c, m, d, v, pts))
+    out.append(_data_and_text_blocks(v))
+    return "".join(out)
+
+
+# რაც უფრო მაღლაა, მით უფრო მნიშვნელოვანია: ციფრი/ამოღებული ტექსტი — ნამდვილი ცვლილება; ხელნაწერი/ბეჭედი — ხშირად ხმაური
+_DIFF_PRIORITY = {"changed": 0, "removed": 1, "page_count": 1, "added": 2, "signature": 3, "handwriting": 4}
+
+
+def _grouped_problems(doc_id: str, diffs: list[dict], pts: list[dict], action: str, purged: bool) -> str:
+    """ერთნაირი პრობლემები ერთ ჯგუფად: „ხელნაწერის ეჭვი · 13 გვერდი“ ერთი სტრიქონია და არა 13 ბარათი.
+    მნიშვნელოვანი (ციფრი, ამოღებული ტექსტი) და პატარა ჯგუფები ღიაა, დიდი და ხშირად ხმაურიანი — დაკეცილი."""
+    groups: dict[str, list[dict]] = {}
+    for x in diffs:
+        groups.setdefault(_clean_reason(x.get("reason")) or _DIFF_KA.get(x.get("kind"), "") or "სხვაობა", []).append(x)
+    out = []
+    for title, xs in sorted(groups.items(), key=lambda kv: (min(_DIFF_PRIORITY.get(x.get("kind"), 2) for x in kv[1]), kv[0])):
+        pages = sorted({int(x["page"]) for x in xs if x.get("page")})
+        where = (f'{len(pages)} გვერდზე' if len(pages) > 6 else
+                 f'გვერდ{"ი" if len(pages) == 1 else "ები"} {_page_list(pages)}' if pages else "")
+        important = min(_DIFF_PRIORITY.get(x.get("kind"), 2) for x in xs) <= 1
+        tone = "bad" if important else "warn"
+        whys = {_problem_why(x, pts) for x in xs}
+        todos = {_problem_todo(x, action) for x in xs}
+        shared = len(xs) > 1 and len(whys) == 1 and len(todos) == 1
+        intro = ""
+        if shared:
+            label = "რატომ გაჩერდა" if any(x.get("significant") for x in xs) else "რატომ საეჭვოა"
+            intro = (f'<div class="lines gintro"><div><span class="lbl">{label}</span><div class="val">{e(next(iter(whys)))}</div></div>'
+                     + (f'<div><span class="lbl">რა ვქნა</span><div class="val">{e(next(iter(todos)))}</div></div>' if action else "")
+                     + "</div>")
+        cards = "".join(_problem_card(doc_id, x, pts, action, purged, in_group=len(xs) > 1, shared=shared) for x in xs)
+        out.append(f'<details class="card pgroup"{" open" if important or len(xs) <= 2 else ""}><summary>'
+                   f'<span class="ib tone-{tone}">{icon("alert", 18)}</span><span class="grow"><b>{e(title)}</b>'
+                   f'<span class="m">{len(xs)} ადგილი{" · " + e(where) if where else ""}</span></span>'
+                   f'<span class="chev" aria-hidden="true"></span></summary>{intro}<div class="list">{cards}</div></details>')
+    return "".join(out)
+
+
+def _decision_block(c: Config, m, d, v: dict) -> str:
+    """„რა გავაკეთო“: AI-ის მოკლე დასკვნა და ყველა გადაწყვეტილების ღილაკი ერთ ადგილას, გვერდის თავში."""
+    ai = _ai_load(m)
+    ai_line = ""
+    if ai and ai.get("verdict") in AI_KA and ai.get("verdict") != "error" and ai.get("summary"):
+        lbl, tone = AI_KA[ai["verdict"]]
+        ai_line = (f'<div class="ai-line"><a class="chip tone-{tone}" href="#ai" title="AI-ის სრული ანალიზი">{e(lbl)}</a>'
+                   f'<p>{e(ai["summary"])} <a href="#ai">სრულად</a></p></div>')
     btn = {"ready": [("approve", "ატვირთვა MHR-ზე", "primary"), ("reject", "უარყოფა", "")],
            "failed": [("revalidate", "ხელახლა შედარება", ""), ("reject", "უარყოფა", "")],
            "upload_failed": [("retry", "ხელახლა ატვირთვა", "primary"), ("revalidate", "ხელახლა შედარება", "")],
@@ -1729,22 +1819,11 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
            "unavailable": [("revalidate", "ახლავე ცდა", "")], "rejected": [("revalidate", "ხელახლა შედარება", "")]}.get(m["status"], [])
     links = ""
     if d is not None:
-        links = (f'<a class="btn" href="/doc/{e(d["id"])}">{icon("file", 16)}დოკუმენტი</a>'
-                 f'<a class="btn" href="/file/output/{e(d["id"])}" target="_blank">{icon("open", 16)}PDF</a>')
-    out.append('<div class="btns" style="margin-bottom:20px">' + "".join(
-        f'<form class="inline" method="post" action="/mhr/{e(m["document_id"])}/{a}"><button class="btn {cls}">{e(lbl)}</button></form>'
-        for a, lbl, cls in btn) + links + "</div>")
+        links = (f'<a class="btn ghost" href="/doc/{e(d["id"])}">{icon("file", 16)}დოკუმენტი</a>'
+                 f'<a class="btn ghost" href="/file/output/{e(d["id"])}" target="_blank">{icon("open", 16)}PDF</a>')
     no_compare = _no_compare(v)
-    if d is not None and m["status"] != "pending" and not _mhr_did_not_answer(v) and (no_compare or not (m["status"] == "failed" and m["employee_id"])):
-        blk = _manual_block(c, d, m, f"/mhr/{m['document_id']}")
-        if blk:
-            title = "ხელით ატვირთვა — შედარების გარეშე" if no_compare else "ხელით ატვირთვა"
-            out.append(f'<div class="card" style="padding:14px 16px;margin-bottom:20px"><b>{title}</b>'
-                       + ('<div class="muted" style="font-size:13.5px;margin-top:4px">დოკუმენტი ქაღალდზე ნახე; თუ სწორია, '
-                          'ერთი დაჭერით აიტვირთება თანამშრომლის ბარათზე.</div>' if no_compare else "")
-                       + blk.replace("margin-top:16px", "margin-top:6px") + "</div>")
+    override = ""
     if m["status"] == "failed" and m["employee_id"]:
-        ai = _ai_load(m)
         ai_ok = bool(ai and ai.get("verdict") == "upload")
         if no_compare:
             lead = "შედარება არ მომხდარა — დოკუმენტი თვითონ ვნახე და სწორია"
@@ -1752,14 +1831,33 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
                     "ატვირთვა ჟურნალში ჩაიწერება, როგორც შენი გადაწყვეტილება.")
         else:
             lead = ("AI-მ სხვაობები გადახედა და თვლის, რომ ეს წაკითხვის შეცდომებია — დოკუმენტი სწორია" if ai_ok
-                    else "ზემოთ მოცემული პრობლემები ქაღალდზე ვნახე — დოკუმენტი სწორია")
+                    else "ქვემოთ ჩამოთვლილი პრობლემები ქაღალდზე ვნახე — დოკუმენტი სწორია")
             hint = "მაგ. ბეჭედი ან ხელმოწერა შეცდომით ჩაითვალა ცვლილებად. ატვირთვა ჟურნალში ჩაიწერება, როგორც შენი გადაწყვეტილება."
-        out.append(f'<form method="post" action="/mhr/{e(m["document_id"])}/override" class="card" style="padding:14px 16px;margin-bottom:20px">'
-                   f'<label class="switch" style="margin-bottom:10px"><input type="checkbox" name="confirm" value="1" required>'
-                   f'<span><b>{lead}</b><br><span class="muted" style="font-size:13.5px">{hint}'
-                   f'</span></span></label><button class="btn{" primary" if ai_ok else ""}">ატვირთვა მაინც</button></form>')
-    out.append(_checked_block(c, m, d, v, pts))
-    out.append(_page_map(c, m, d, v, pts))
+        override = (f'<form method="post" action="/mhr/{e(m["document_id"])}/override" class="override">'
+                    f'<label class="switch"><input type="checkbox" name="confirm" value="1" required>'
+                    f'<span><b>{lead}</b><br><span class="muted" style="font-size:13.5px">{hint}'
+                    f'</span></span></label><button class="btn{" primary" if ai_ok else ""}">{icon("cloud", 16)}ატვირთვა მაინც</button></form>')
+    actions = "".join(
+        f'<form class="inline" method="post" action="/mhr/{e(m["document_id"])}/{a}"><button class="btn {cls}">{e(lbl)}</button></form>'
+        for a, lbl, cls in btn) + links
+    manual = ""
+    if d is not None and m["status"] != "pending" and not _mhr_did_not_answer(v) and (no_compare or not (m["status"] == "failed" and m["employee_id"])):
+        blk = _manual_block(c, d, m, f"/mhr/{m['document_id']}")
+        if blk:
+            title = "ხელით ატვირთვა — შედარების გარეშე" if no_compare else "ხელით ატვირთვა"
+            manual = (f'<div class="card" style="padding:14px 16px;margin-bottom:20px"><b>{title}</b>'
+                      + ('<div class="muted" style="font-size:13.5px;margin-top:4px">დოკუმენტი ქაღალდზე ნახე; თუ სწორია, '
+                         'ერთი დაჭერით აიტვირთება თანამშრომლის ბარათზე.</div>' if no_compare else "")
+                      + blk.replace("margin-top:16px", "margin-top:6px") + "</div>")
+    if not (override or btn):   # გადასაწყვეტი აღარაფერია (მაგ. უკვე ატვირთულია) — „რა გავაკეთო“ დამაბნეველი იქნება
+        return f'<div class="btns" style="margin-bottom:20px">{links}</div>{manual}' if links or manual else ""
+    return (f'<section class="card decide" aria-labelledby="decide-h"><h2 id="decide-h">რა გავაკეთო</h2>{ai_line}{override}'
+            f'<div class="btns">{actions}</div></section>{manual}')
+
+
+def _data_and_text_blocks(v: dict) -> str:
+    """გვერდის ბოლო: მონაცემების ცხრილი და ტექსტის შედარება MHR-ის ორიგინალთან (დეტალები, ვისაც სჭირდება)."""
+    out = []
     checks = [ch for ch in v.get("checks") or [] if ch.get("field") != "already_uploaded"]
     if checks:
         rows = "".join(
