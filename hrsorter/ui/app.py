@@ -1487,8 +1487,53 @@ def _reason_lines(v: dict) -> list[str]:
     return [*(_check_line(c) for c in _blocking_checks(v)), *(_diff_line(x) for x in sig)]
 
 
+def _old_original(v: dict) -> dict | None:
+    """MHR-ის ორიგინალი სკანის თარიღს არ ემთხვევა. ორიგინალის არჩევისას (validation.original_candidates) ±7 დღის ვერსიას
+    უპირატესობა აქვს — თუ შენიშვნა `original_date` მაინც გაჩნდა, ბარათზე ამ თარიღის ვერსია არ არის და შედარდა სხვა,
+    მაგ. სტაჟირების დროს დაგენერირებული ფაილი. მაშინ ტექსტის ბევრი „სხვაობა“ ამით აიხსნება და არა ქაღალდის შეცდომით."""
+    ch = next((c for c in v.get("checks") or [] if c.get("field") == "original_date"), None)
+    if not ch or not ch.get("document_value") or not ch.get("mhr_value"):
+        return None
+    doc_date, mhr_date = str(ch["document_value"])[:10], str(ch["mhr_value"])[:10]
+    o = v.get("original") or {}
+    return {"doc_date": doc_date, "mhr_date": mhr_date, "older": mhr_date < doc_date,
+            "file": clean_file_title(o.get("filename")) or o.get("title") or "ფაილი"}
+
+
+def _old_original_line(v: dict) -> str:
+    oo = _old_original(v)
+    if not oo:
+        return ""
+    return (f'MHR-ში ამ ფაილის მხოლოდ ძველი ვერსიაა ({oo["mhr_date"]}), ქაღალდზე — {oo["doc_date"]}' if oo["older"] else
+            f'MHR-ში ფაილი ქაღალდის შემდეგ ხელახლა დაგენერირდა ({oo["mhr_date"]}), ქაღალდზე — {oo["doc_date"]}')
+
+
+def _old_original_banner(v: dict, m) -> str:
+    """გვერდის თავში, მკაფიოდ: რას შეადარა, რატომ შეიძლება იყოს ბევრი სხვაობა და რა გააკეთოს."""
+    oo = _old_original(v)
+    if not oo or m["status"] in _PAST_APPROVAL:
+        return ""
+    if oo["older"]:
+        head = "MHR-ში ამ ფაილის მხოლოდ ძველი ვერსიაა"
+        body = (f'შედარდა „{oo["file"]}“ — შექმნილია {oo["mhr_date"]}. ქაღალდზე კი {oo["doc_date"]} წერია, და ამ თარიღის ვერსია '
+                "თანამშრომლის ბარათზე არ არის. სავარაუდოდ, ახალი ვერსია (მაგ. სტაჟირების შემდეგ — გამოსაცდელი ან შრომითი) MHR-ში "
+                "არ დაგენერირებულა, ამიტომ ქვემოთ ჩამოთვლილი სხვაობების დიდი ნაწილი შეიძლება ამით იყოს გამოწვეული.")
+        todo = ("MHR-ში დააგენერირე ამ თარიღის ფაილი და მერე დააჭირე „ხელახლა შედარება“. თუ ქაღალდი ძველი ვერსიის ზუსტი "
+                "ასლია და მხოლოდ თარიღი შეიცვალა, შეგიძლია „ატვირთვა მაინც“.")
+    else:
+        head = "MHR-ში ფაილი ქაღალდის შემდეგ შეიცვალა"
+        body = (f'შედარდა „{oo["file"]}“ — დაგენერირდა {oo["mhr_date"]}, ქაღალდზე კი {oo["doc_date"]} წერია. შესაძლოა ფაილი '
+                "ხელმოწერის შემდეგ ხელახლა დააგენერირეს და ტექსტიც შეიცვალა.")
+        todo = "შეადარე ქაღალდი MHR-ის ახლანდელ ფაილს. თუ ქაღალდი სწორია, „ატვირთვა მაინც“; თუ არა — დაბეჭდე ახალი ვერსია და მოაწერინე."
+    return (f'<div class="banner tone-warn" role="note">{icon("alert", 18)}<div><b>{head}</b><br>{e(body)}'
+            f'<div style="margin-top:6px"><b>რა ვქნა:</b> {e(todo)}</div></div></div>')
+
+
 def _main_reason(v: dict) -> str:
     lines = _reason_lines(v)
+    old = _old_original_line(v)
+    if old and lines and (v.get("diffs") or []):   # ბევრი სხვაობის ძირითადი მიზეზი — სიაში ეს ჩანდეს პირველი
+        return f"{old} ({len(lines)} სხვაობა)"
     if lines:
         return lines[0] + (f" (და კიდევ {len(lines) - 1})" if len(lines) > 1 else "")
     return (v.get("summary") or [""])[0]
@@ -1686,9 +1731,10 @@ def _verdict(v: dict, m) -> str:
     return ""
 
 
-def _notes_block(v: dict) -> str:
-    """შენიშვნები, რომლებიც არ აჩერებს."""
-    notes = [c["note"] for c in v.get("checks") or [] if c.get("status") == "info" and not c.get("blocking") and c.get("note")]
+def _notes_block(v: dict, skip: frozenset[str] = frozenset()) -> str:
+    """შენიშვნები, რომლებიც არ აჩერებს. `skip` — ველები, რომლებზეც ზემოთ ცალკე გაფრთხილება უკვე ჩანს."""
+    notes = [c["note"] for c in v.get("checks") or [] if c.get("status") == "info" and not c.get("blocking") and c.get("note")
+             and c.get("field") not in skip]
     notes += [c.get("note") or f'{c.get("label_ka")}: დოკუმენტში „{c.get("document_value")}“, MHR-ში „{c.get("mhr_value")}“'
               for c in v.get("checks") or [] if c.get("status") == "mismatch" and not c.get("blocking")]
     notes += [s for s in v.get("summary") or [] if s.startswith("ყურადღება")]
@@ -1902,7 +1948,9 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
     if m["error"] and m["error"] != "MhrError":
         out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(_error_text(m["error"]))}</div></div>')
     out.append(_verdict(v, m))
-    out.append(_notes_block(v))
+    old_banner = _old_original_banner(v, m)
+    out.append(old_banner)
+    out.append(_notes_block(v, frozenset({"original_date"}) if old_banner else frozenset()))
     # გადაწყვეტილება ზემოთაა, პრობლემების სიის წინ: ადრე ღილაკები ~15 ეკრანის ქვემოთ იყო, AI-ის დასკვნა კი ~12-ზე
     out.append(_decision_block(c, m, d, v))
     sig_diffs = sorted((x for x in v.get("diffs") or [] if x.get("significant")), key=lambda x: x.get("page") or 0)
