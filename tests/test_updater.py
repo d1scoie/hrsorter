@@ -59,6 +59,48 @@ def test_same_or_older_release_does_nothing(tmp_path, current):
     assert hits == [API] and not (tmp_path / "_update").exists()
 
 
+def test_failed_install_is_retried_even_though_exe_is_already_new(tmp_path):
+    # ჩავარდნილი ინსტალაციის შემდეგ hrsorter.exe უკვე ახალია, installed-version.txt კი ძველ ვერსიას წერს
+    (tmp_path / updater.INSTALLED_FILE).write_text("0.1.0", encoding="utf-8")
+    launched = []
+    msg = updater.run(tmp_path / "none.db", client=_client(), current="0.2.0", app_dir=tmp_path,
+                      launch=lambda s, log: launched.append(s))
+    assert launched == [tmp_path / "_update" / "HRSorter-Setup-0.2.0.exe"]
+    assert "0.1.0 → 0.2.0" in msg and "თავიდან" in msg
+    check = updater.run(None, check_only=True, client=_client(), current="0.2.0", app_dir=tmp_path)
+    assert "ახლა 0.1.0" in check
+
+
+@pytest.mark.parametrize("content, expected", [
+    (None, "0.2.0"),            # ძველი ინსტალერი ფაილს არ წერდა — კოდის ვერსია
+    ("0.2.0\r\n", "0.2.0"),     # წარმატებით დაყენდა
+    ("0.1.9", "0.1.9"),         # ჩავარდა
+    ("0.3.0", "0.2.0"),         # ფაილი კოდზე ახალს ვერ იტყვის
+    ("garbage", "0.2.0"),
+])
+def test_installed_version_reads_marker_safely(tmp_path, content, expected):
+    if content is not None:
+        (tmp_path / updater.INSTALLED_FILE).write_text(content, encoding="utf-8")
+    assert updater.installed_version(tmp_path, "0.2.0") == expected
+
+
+def test_successful_install_marker_means_up_to_date(tmp_path):
+    (tmp_path / updater.INSTALLED_FILE).write_text("0.2.0", encoding="utf-8")
+    msg = updater.run(tmp_path / "none.db", client=_client(), current="0.2.0", app_dir=tmp_path,
+                      launch=lambda *a: pytest.fail("must not launch"))
+    assert msg == "უახლესი ვერსიაა (0.2.0)"
+
+
+def test_installer_restarts_app_after_failure_and_records_success():
+    from pathlib import Path
+    iss = (Path(__file__).parents[1] / "packaging" / "installer.iss").read_text(encoding="utf-8-sig")
+    assert "installed-version.txt" in iss and updater.INSTALLED_FILE == "installed-version.txt"
+    assert "procedure DeinitializeSetup" in iss and "AppStopped and not Installed" in iss
+    # Microsoft runtime — იგივე ვერსია არ გადაიწერება (სხვა პროგრამას შეიძლება ეკავოს)
+    runtime = next(line for line in iss.splitlines() if line.startswith('Source: "{#DistDir}\\_internal\\VCRUNTIME'))
+    assert "ignoreversion" not in runtime and "restartreplace" in runtime
+
+
 def test_busy_queue_postpones_update(tmp_path):
     db = tmp_path / "hrsorter.db"
     repo = Repository(db)
