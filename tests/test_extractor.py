@@ -270,6 +270,77 @@ def test_company_employer_vs_other_and_unrecognized(cfg):
     assert "ალფა" not in ext.unrecognized_companies and "ბეტა" not in ext.unrecognized_companies
 
 
+def _company_outcome(cfg, pages):
+    from hrsorter.resolve import resolve_company
+    ext = extract(pages, cfg.doc_type("contract"), cfg)
+    return ext, resolve_company(ext, cfg, "batch", None)
+
+
+# რეალური ხელშეკრულების სტრუქტურა (გამოგონილი მონაცემებით): როლი მომდევნო ხაზზეა, ბოლო გვერდზე კი ბეჭდის/OCR-ის
+# გამო სახელი სხვანაირად წაიკითხა — ერთი კომპანია „ორ კომპანიად“ ჩაითვალა და ფაილი გაჩერდა.
+PREAMBLE = ("შრომითი ხელშეკრულება\nქ. თბილისი 2026-11-02\nპრეამბულა\n"
+            "წინამდებარე ხელშეკრულებაზე ხელის მოწერით ერთი მხრივ, შპს „ალფა\" (ს/ნ 205000001)\n"
+            "(შემდგომში წინამდებარე ხელშეკრულებაში მოხსენიებული, როგორც „დამსაქმებელი\")\n"
+            "და მეორე მხრივ, ნინო კაპანაძე (პ/ნ 01001000001) (შემდგომში „დასაქმებული\")\n")
+
+
+SIGNATURE = "მხარეთა ხელმოწერები\n\"დამსაქმებელი\"\nშპს „ალზა\"\nს/ნ 205000001\nმისამართი: ქ. თბილისი"
+
+
+def test_real_contract_shape_is_one_company_not_a_conflict(cfg):
+    """რეალური შემთხვევა ერთად: როლი მომდევნო ხაზზე + ბოლო გვერდზე სახელი სხვანაირად წაკითხული."""
+    ext, res = _company_outcome(cfg, [pt(0, PREAMBLE), pt(1, SIGNATURE)])
+    assert ("alpha", "employer") in {(c["company_id"], c["role"]) for c in ext.companies_found}
+    assert ext.unrecognized_companies == []
+    assert res.company_id == "alpha" and not res.conflict
+
+
+def test_employer_role_on_the_next_line(cfg):
+    ext, _ = _company_outcome(cfg, [pt(0, PREAMBLE)])
+    assert [(c["company_id"], c["role"]) for c in ext.companies_found] == [("alpha", "employer")]
+
+
+def test_misread_name_with_the_same_tax_id_under_an_employer_header_is_the_same_company(cfg):
+    plain = PREAMBLE.replace("(შემდგომში წინამდებარე ხელშეკრულებაში მოხსენიებული, როგორც „დამსაქმებელი\")\n", "")
+    ext, res = _company_outcome(cfg, [pt(0, plain), pt(1, SIGNATURE)])
+    roles = {(c["company_id"], c["role"], c.get("via")) for c in ext.companies_found}
+    assert ("alpha", "unknown", None) in roles                        # პირველ გვერდზე როლი აღარ ჩანს
+    assert ("alpha", "employer", "tax_id") in roles                   # „ალზა“ + იგივე ს/ნ + სათაური „დამსაქმებელი“
+    assert ext.unrecognized_companies == [] and res.company_id == "alpha" and not res.conflict
+
+
+def test_one_letter_misread_of_a_long_name_is_the_same_company(tmp_path):
+    cfg = make_config({"paths": {"root": str(tmp_path)},
+                       "companies": [{"id": "omega", "name": "შპს „ომეგა 2009“", "folder": "ომეგა", "aliases": []}]})
+    text = ("შრომითი ხელშეკრულება\nთარიღი 2026-11-02\nტექსტი\nდამსაქმებელი: შპს „ომეგა 2009\"\n"
+            "მხარეთა ხელმოწერები\nშპს „ომეზა 2009\" ბეჭედი")
+    ext, res = _company_outcome(cfg, [pt(0, text)])
+    assert any(c["company_id"] == "omega" and c.get("via") == "spelling" for c in ext.companies_found)
+    assert ext.unrecognized_companies == [] and res.company_id == "omega" and not res.conflict
+
+
+def test_really_different_company_still_stops_and_short_names_are_not_merged(cfg):
+    other = "3.1. შპს „გამა\" (ს/ნ 205000999) უზრუნველყოფს სამუშაო ადგილს.\nშპს „ალფი\" ბეჭედი"
+    # დამსაქმებელი ცნობილია, ამიტომ სხვა ორგანიზაცია არ აჩერებს — მაგრამ „ერთ კომპანიად“ არ ითვლება
+    ext, res = _company_outcome(cfg, [pt(0, PREAMBLE + other)])
+    assert "გამა" in ext.unrecognized_companies and "ალფი" in ext.unrecognized_companies   # სხვა ს/ნ; მოკლე სახელი
+    assert res.company_id == "alpha"
+    # როლის გარეშე (არც იმავე, არც მომდევნო ხაზზე) — ისევ კონფლიქტია, როგორც ადრე
+    bare = "შრომითი ხელშეკრულება\nთარიღი 2026-11-02\nტექსტი\nშპს „ალფა\" და შპს „გამა\" თანხმდებიან."
+    ext2, res2 = _company_outcome(cfg, [pt(0, bare)])
+    assert res2.conflict and "გამა" in ext2.unrecognized_companies
+
+
+def test_employer_cue_after_the_other_side_belongs_to_the_other_side(cfg):
+    """მომდევნო ხაზზე ძებნა „მეორე მხრივ“-თან ჩერდება: იქ დაწერილი „დამსაქმებელი“ უკვე მეორე მხარისაა."""
+    text = ("შრომითი ხელშეკრულება\nთარიღი 2026-11-02\nტექსტი\n"
+            "ერთი მხრივ, სს ბეტა\nდა მეორე მხრივ, შპს „ალფა\" (შემდგომში „დამსაქმებელი\")\n")
+    ext, res = _company_outcome(cfg, [pt(0, text)])
+    roles = {(c["company_id"], c["role"]) for c in ext.companies_found}
+    assert ("alpha", "employer") in roles and ("beta", "employer") not in roles
+    assert res.company_id == "alpha"
+
+
 def test_company_alias_and_case_suffix(cfg):
     ext = extract([pt(0, "განცხადება\nალფა ჯგუფის დირექტორს\nგთხოვთ.")], None, cfg)
     assert [c["company_id"] for c in ext.companies_found] == ["alpha"]

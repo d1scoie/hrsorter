@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from .config import Config, DocType
-from .features import (CLOSING_RE, company_matchers, find_doc_number, find_names, find_personal_numbers,
+from .features import (CLOSING_RE, company_core, company_matchers, find_doc_number, find_names, find_personal_numbers,
                        has_closing_block, line_at)
 from .models import Extraction, FieldSource, FieldValue, PageText, SignatureStatus
 from .textnorm import normalize, title_zone
@@ -446,28 +446,96 @@ def _people(pages: list[PageText], norm: list[tuple[int, str]], ext: Extraction)
 
 
 # --- კომპანიები ------------------------------------------------------------------------------------------
+# „ერთი მხრივ, შპს X (ს/ნ …)\n(შემდგომში … „დამსაქმებელი“) და მეორე მხრივ …“ — როლი მომდევნო ხაზზეა
+_ROLE_INTRO_EMPLOYER_RE = re.compile(r"შემდგომში[^)\n]{0,120}დამსაქმებელ|შემდეგში[^)\n]{0,120}დამსაქმებელ")
+_OTHER_SIDE_RE = re.compile(r"მეორე\s+მხრივ|მეორე\s+მხარე")
+_ROLE_LOOKAHEAD = 260                     # სიმბოლო; მეორე მხარის/სხვა ორგანიზაციის ხსენებამდე
+# ხელმოწერის ბლოკი: ცალკე ხაზზე სათაური „დამსაქმებელი“, მის ქვეშ — კომპანია
+_EMPLOYER_HEADER_RE = re.compile(r"^[\s\"'„“”«»:]*დამსაქმებელი[\s\"'„“”«»:]*$")
+_TAXID_NEAR_RE = re.compile(r"(?:ს/ნ|ს/კ|საიდენტიფიკაციო\s+(?:კოდი|ნომერი))\s*[:.]?\s*(?:ს/[ნკ]\s*)?(\d{9})(?!\d)")
+_FUZZY_MIN_LEN = 6                        # ერთი ასოს სხვაობა მხოლოდ გრძელ სახელზე („არზო 2009“ ≈ „არბო 2009“)
+
+
+def _company_role(text: str, lines: list[str], first_page: bool, start: int, end: int) -> str:
+    line = line_at(text, start)
+    if _EMPLOYER_CUE_RE.search(line) or (first_page and line in lines[:LETTERHEAD_LINES]):
+        return "employer"
+    if _OTHER_CUE_RE.search(line):
+        return "other"
+    # მიმდინარე ხაზის დარჩენილი ნაწილი + მაქსიმუმ 2 მომდევნო ხაზი, მეორე მხარის/სხვა ორგანიზაციის ხსენებამდე
+    ahead = "\n".join(text[end:end + _ROLE_LOOKAHEAD].split("\n")[:3])
+    for stop in (_OTHER_SIDE_RE.search(ahead), _ORG_QUOTED_RE.search(ahead), _ORG_PLAIN_RE.search(ahead)):
+        if stop:
+            ahead = ahead[:stop.start()]
+    if _ROLE_INTRO_EMPLOYER_RE.search(ahead):
+        return "employer"
+    s = text.rfind("\n", 0, start)
+    prev = line_at(text, s - 1) if s > 0 else ""
+    if _EMPLOYER_HEADER_RE.match(prev):
+        return "employer"
+    return "unknown"
+
+
+def _tax_ids_near(text: str, start: int) -> list[str]:
+    """ს/ნ კომპანიის ხსენების ხაზზე ან მომდევნო ხაზზე (ხელმოწერის ბლოკში ნომერი სახელის ქვეშაა)."""
+    s = text.rfind("\n", 0, start) + 1
+    e = text.find("\n", start)
+    e2 = text.find("\n", e + 1) if e >= 0 else -1
+    return [m.group(1) for m in _TAXID_NEAR_RE.finditer(text[s:e2 if e2 >= 0 else len(text)])]
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """ზუსტად ერთი ასოს ჩანაცვლება/დამატება/წაშლა (OCR-ის ტიპური შეცდომა: „ბ“ → „ზ“)."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    short, long_ = sorted((a, b), key=len)
+    i = next((k for k, (x, y) in enumerate(zip(short, long_)) if x != y), len(short))
+    return short[i:] == long_[i + 1:]
+
+
 def _companies(norm: list[tuple[int, str]], cfg: Config, ext: Extraction) -> None:
     matchers = company_matchers(cfg.companies)
     seen: set[tuple[str, str]] = set()
+    # კომპანიის ს/ნ: პარამეტრებიდან და იმ ადგილებიდან, სადაც ცნობილი კომპანია დოკუმენტში ს/ნ-ით წერია
+    tax_owner: dict[str, str] = {re.sub(r"\D", "", c.tax_id): c.id for c in cfg.companies if c.tax_id and re.sub(r"\D", "", c.tax_id)}
+    cores = [(c.id, company_core(a)) for c in cfg.companies for a in (c.name, *c.aliases)]
+
+    def add(cid: str, role: str, page: int, line: str, via: str | None = None) -> None:
+        if (cid, role) in seen:
+            return
+        seen.add((cid, role))
+        hit = {"company_id": cid, "role": role, "page_index": page, "evidence": _snippet(line)}
+        if via:
+            hit["via"] = via
+        ext.companies_found.append(hit)
+
     for page, text in norm:
         lines = text.split("\n")
         for cid, rx in matchers:
             for m in rx.finditer(text):
-                line = line_at(text, m.start())
-                if _EMPLOYER_CUE_RE.search(line) or (page == norm[0][0] and line in lines[:LETTERHEAD_LINES]):
-                    role = "employer"
-                elif _OTHER_CUE_RE.search(line):
-                    role = "other"
-                else:
-                    role = "unknown"
-                if (cid, role) in seen:
-                    continue
-                seen.add((cid, role))
-                ext.companies_found.append({"company_id": cid, "role": role, "page_index": page, "evidence": _snippet(line)})
+                for tid in _tax_ids_near(text, m.start()):
+                    tax_owner.setdefault(tid, cid)
+                add(cid, _company_role(text, lines, page == norm[0][0], m.start(), m.end()), page, line_at(text, m.start()))
+
+    for page, text in norm:
+        lines = text.split("\n")
         for rx in (_ORG_QUOTED_RE, _ORG_PLAIN_RE):
             for m in rx.finditer(text):
                 name = m.group("n").strip()
                 if any(mx.search(name) for _, mx in matchers) or name in ext.unrecognized_companies:
+                    continue
+                # იგივე კომპანია, ოღონდ სახელი სხვანაირად წაიკითხა: იგივე ს/ნ ან ერთი ასოს სხვაობა გრძელ სახელში
+                owner = next((tax_owner[t] for t in _tax_ids_near(text, m.start()) if t in tax_owner), None)
+                via = "tax_id" if owner else None
+                if owner is None:
+                    core = company_core(name)
+                    owner = next((cid for cid, k in cores if len(k) >= _FUZZY_MIN_LEN and _one_edit_apart(core, k)), None)
+                    via = "spelling" if owner else None
+                if owner:
+                    add(owner, _company_role(text, lines, page == norm[0][0], m.start(), m.end()), page,
+                        line_at(text, m.start()), via)
                     continue
                 ext.unrecognized_companies.append(name)
 
