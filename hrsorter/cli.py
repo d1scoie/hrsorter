@@ -21,7 +21,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .config import (DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, EXAMPLE_TYPES_PATH, Config, load_config)
+from .config import (DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, EXAMPLE_TYPES_PATH, Config, load_config, merge_new_types)
 from .db import Repository
 
 
@@ -76,6 +76,10 @@ def cmd_setup(args) -> int:
     types_path = cfg_path.parent / data.get("paths", {}).get("types_file", "document_types.json")
     if not types_path.exists():
         shutil.copyfile(EXAMPLE_TYPES_PATH, types_path)
+    else:
+        added = merge_new_types(types_path)   # ახალ ვერსიაში დამატებული ტიპები; არსებული არ იცვლება
+        if added:
+            print(f"დაემატა დოკუმენტის ტიპები: {', '.join(added)}")
     cfg = load_config(cfg_path)
     _ensure_dirs(cfg)
     Repository(cfg.paths.db).close()

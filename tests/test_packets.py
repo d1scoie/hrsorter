@@ -187,7 +187,7 @@ def test_scan_with_several_files_is_split_and_each_is_ready(world):
     parts = validation(world, "doc_scan")["parts"]
     assert [(p["title"], p["pages"], p["matched"]) for p in parts] == [
         ("მენეჯერი - ხელშეკრულება", [1, 2], True), ("მენეჯერი - თანამდებობრივი ინსტრუქცია", [3, 4], True), ("ლიფტის წესები", [5], True)]
-    for key, pages, type_id in (("G1", 2, "contract"), ("G2", 2, "contract_annex"), ("G3", 1, "contract_annex")):
+    for key, pages, type_id in (("G1", 2, "contract"), ("G2", 2, "job_description"), ("G3", 1, "contract_annex")):
         d = world.repo.get_document(child(world, key))
         assert d["part_of"] == "doc_scan" and d["type_id"] == type_id and page_count(d["output_path"]) == pages
         assert world.repo.mhr_get(d["id"])["status"] == "ready", validation(world, d["id"])["summary"]
@@ -303,7 +303,7 @@ def test_only_the_file_named_contract_gets_every_page_rule(world):
     """კლასიფიკატორმა ინსტრუქციას „ხელშეკრულება" უწოდა: MHR-ის ფაილის სახელი წყვეტს, ხელმოწერა ბოლო გვერდზე მოწმდება."""
     add_scan(world, PACKET[2:4], type_id="contract")
     sweep(world)
-    assert world.repo.mhr_get("doc_scan")["status"] == "ready" and world.repo.get_document("doc_scan")["type_id"] == "contract_annex"
+    assert world.repo.mhr_get("doc_scan")["status"] == "ready" and world.repo.get_document("doc_scan")["type_id"] == "job_description"
 
 
 def test_already_uploaded_copy_stops_second_upload(world):

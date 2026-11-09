@@ -254,6 +254,8 @@ class DocType:
     auto_save_enabled: bool = False   # ჩაირთოს მხოლოდ გამოცდის შემდეგ
     attachment_policy: str = "keep_continuation"  # keep_continuation | split_independent | review
     signature_expected: bool = True
+    # MHR-ში თანამშრომლის დაგენერირებული ფაილი სავალდებულოა (ხელშეკრულების მსგავსად): არ არის → „დააგენერირე“
+    mhr_original: bool = False
 
 
 @dataclass
@@ -456,6 +458,32 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
+
+
+OFFERED_TYPES_KEY = "_offered_type_ids"
+
+
+def merge_new_types(types_path: Path, example_path: Path = EXAMPLE_TYPES_PATH) -> list[str]:
+    """განახლებისას (`setup`): ახალ ვერსიაში დამატებული ტიპები (მაგ. თანამდებობრივი ინსტრუქცია) არსებულ document_types.json-ს
+    ემატება. არსებული ტიპები და მომხმარებლის ცვლილებები ხელუხლებელია; ერთხელ დამატებული ტიპი, მერე წაშლილიც, აღარ ბრუნდება
+    (`_offered_type_ids`). აბრუნებს დამატებული ტიპების id-ებს."""
+    live = json.loads(types_path.read_text(encoding="utf-8"))
+    example = json.loads(example_path.read_text(encoding="utf-8"))
+    types = live.setdefault("types", [])
+    have = {t.get("id") for t in types}
+    offered = set(live.get(OFFERED_TYPES_KEY) or have)
+    added: list[str] = []
+    for t in example.get("types", []):
+        if t["id"] in have or t["id"] in offered:
+            continue
+        at = next((i for i, x in enumerate(types) if x.get("id") == "unknown"), len(types))   # „უცნობი“ ბოლოში რჩება
+        types.insert(at, t)
+        added.append(t["id"])
+    ids = sorted(offered | have | {t["id"] for t in example.get("types", [])})
+    if added or live.get(OFFERED_TYPES_KEY) != ids:
+        live[OFFERED_TYPES_KEY] = ids
+        _atomic_write_json(types_path, live)
+    return added
 
 
 def load_config(path: str | Path | None = None) -> Config:

@@ -163,7 +163,7 @@ def test_wrapped_body_line_starting_with_keyword_is_not_a_title(cfg):
     assert clf.title_hits(page2) == []
     assert clf.classify_text(page2).type_id == "unknown"
     # ნამდვილი სათაურები: მოკლე ხაზი, ხაზის უმეტესობა დამთხვევაა, ან „… შესახებ"
-    assert [h.type_id for h in clf.title_hits("შრომითი ხელშეკრულება № 15/2\nტექსტი")] == ["contract", "contract"]
+    assert [h.type_id for h in clf.title_hits("შრომითი ხელშეკრულება № 15/2\nტექსტი") if h.weight > 0] == ["contract", "contract"]
     assert any(h.type_id == "fine" for h in clf.title_hits("ბრძანება\nთანამშრომლის ნინო კაპანაძის დაჯარიმების შესახებ"))
 
 
