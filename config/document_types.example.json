@@ -93,6 +93,55 @@
       "signature_expected": true
     },
     {
+      "id": "job_description",
+      "name_ka": "თანამდებობრივი ინსტრუქცია",
+      "folder": "თანამდებობრივი-ინსტრუქცია",
+      "description": "თანამშრომლის თანამდებობრივი ინსტრუქცია (MHR-ში დაგენერირებული, ეტაპის მიხედვით)",
+      "positive": [
+        {
+          "pattern": "თანამდებობრივი\\s+ინსტრუქცია",
+          "weight": 5,
+          "title_only": true
+        },
+        {
+          "pattern": "თანამდებობრივ\\w*\\s+ინსტრუქცი",
+          "weight": 2
+        },
+        {
+          "pattern": "პოზიცია\\s+ექვემდებარება",
+          "weight": 1
+        },
+        {
+          "pattern": "საქმიანობაში\\s+(უნდა\\s+)?იხელმძღვანელოს",
+          "weight": 1
+        },
+        {
+          "pattern": "სახელმძღვანელო\\s+დოკუმენტაცია",
+          "weight": 1
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "დანართი",
+          "weight": 5,
+          "title_only": true
+        },
+        {
+          "pattern": "ხელშეკრულება",
+          "weight": 3,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true,
+      "mhr_original": true
+    },
+    {
       "id": "fine",
       "name_ka": "ჯარიმა",
       "folder": "ჯარიმა",

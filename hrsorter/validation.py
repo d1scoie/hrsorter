@@ -48,6 +48,7 @@ from .features import company_core, surname_lemma
 from .mhr_models import Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, TextDiff, ValidationResult, clean_file_title
 from .ocr.base import OcrError
 from .output import PartSpec, adopt_match, split_document
+from .stages import STAGE_KA, file_stage, strip_stage, text_stage
 from .ocr.chain import build_ocr_chain
 from .pdfio import PdfDocument, validate_pdf
 from .preprocess import apply_rotation, enhance
@@ -241,6 +242,79 @@ def original_date_note(ref: MhrDocRef, doc_date: str | None) -> Check | None:
                       f"დოკუმენტის თარიღია ({target.isoformat()}) — დარწმუნდი, რომ სწორი ვერსია დაიბეჭდა")
 
 
+def latest_versions(refs: list[MhrDocRef]) -> list[MhrDocRef]:
+    """ერთი და იგივე ფაილი (იგივე სახელი) რამდენჯერმე თუ დაგენერირდა — მხოლოდ ბოლო ცვლილება რჩება."""
+    newest: dict[str, MhrDocRef] = {}
+    for r in refs:
+        key = (clean_file_title(r.filename) or r.title or r.doc_id).casefold()
+        cur = newest.get(key)
+        if cur is None or (_ref_date(r) or _dt.date.min, r.created_at or "") > (_ref_date(cur) or _dt.date.min, cur.created_at or ""):
+            newest[key] = r
+    keep = {id(r) for r in newest.values()}
+    return [r for r in refs if id(r) in keep]
+
+
+def same_stage(refs: list[MhrDocRef], stage: str | None) -> list[MhrDocRef]:
+    """ქაღალდის ეტაპის ფაილები (და ეტაპის გარეშე დასახელებულები). ეტაპი უცნობია — ყველა."""
+    if stage is None:
+        return list(refs)
+    return [r for r in refs if file_stage(r.filename or r.title) in (None, stage)]
+
+
+def scan_stage(repo: Repository, row, scanned: list[dict[str, Any]]) -> str | None:
+    """ქაღალდის ეტაპი: დოკუმენტის ტექსტიდან; არ წერია და სკანის ნაწილია — მთელი სკანიდან (პაკეტში ხელშეკრულებაა)."""
+    stage = text_stage("\n".join(p.get("text") or "" for p in scanned))
+    parent = row["part_of"] if "part_of" in row.keys() else None
+    if stage is None and parent:
+        whole = repo.get_document(parent)
+        if whole is not None:
+            stage = text_stage("\n".join(p.get("text") or "" for p in document_pages(repo, whole)))
+    return stage
+
+
+def type_from_filename(cfg: Config, filename: str | None) -> str | None:
+    """MHR-ის ფაილის ტიპი სახელიდან, ტიპების სათაურის წესებით („… - თანამდებობრივი ინსტრუქცია“ → job_description).
+    None — სახელი ტიპს არ ამბობს (მაგ. „ლიფტით სარგებლობის წესები“)."""
+    from .classifier import Classifier
+    name = strip_stage(clean_file_title(filename))
+    if not name:
+        return None
+    clf = Classifier(cfg)
+    score: dict[str, float] = {}
+    for seg in dict.fromkeys([name, *(s for s in re.split(r"\s*-\s*", name) if s)]):
+        seg_score: dict[str, float] = {}
+        for h in clf.title_hits(seg):
+            seg_score[h.type_id] = seg_score.get(h.type_id, 0.0) + h.weight
+        for k, v in seg_score.items():
+            score[k] = max(score.get(k, v), v)
+    best = max(score, key=score.get, default=None)
+    return best if best is not None and score[best] > 0 else None
+
+
+def _fallback_pool(cfg: Config, refs: list[MhrDocRef], type_id: str, category: str) -> list[MhrDocRef]:
+    """გვერდებით ვერ დადგინდა, რომელ ფაილს ეკუთვნის: ბარათის ფაილების სახელები თუ ტიპს ამბობს — მხოლოდ ამ ტიპის ფაილები
+    (თორემ ხელშეკრულებად „ლიფტის წესები“ შეიძლება აიღოს); სახელები არაფერს ამბობს — MHR-ის კატეგორიით, როგორც ადრე."""
+    named = {id(r): type_from_filename(cfg, r.filename or r.title) for r in refs}
+    if any(named.values()):
+        return [r for r in refs if named[id(r)] == type_id]
+    return [r for r in refs if r.category == category]
+
+
+def missing_original_note(cfg: Config, type_id: str, stage: str | None, generated: list[MhrDocRef]) -> str:
+    """რატომ ვერ მოიძებნა ორიგინალი: ეტაპი ცნობილია და ბარათზე მხოლოდ სხვა ეტაპის ვერსიაა — ეს პირდაპირ წერია."""
+    if stage is None and type_id == "contract":
+        return NO_ORIGINAL_NOTE
+    dt = cfg.doc_type(type_id)
+    what = dt.name_ka if dt else "ფაილი"
+    others = sorted({s for r in generated if (s := file_stage(r.filename or r.title)) not in (None, stage)
+                     and type_from_filename(cfg, r.filename or r.title) == type_id}, key=list(STAGE_KA).index)
+    note = f"MHR-ში ამ თანამშრომლის {STAGE_KA[stage] + ' ' if stage else ''}{what} ვერ მოიძებნა"
+    if others:
+        note += f" — ბარათზე მხოლოდ {' და '.join(STAGE_KA[s] for s in others)} ვერსიაა"
+    return note + (". ჯერ MHR-ში დააგენერირე, მერე დაბეჭდე, მოაწერინე და დაასკანერე; თუ ქაღალდი უკვე ხელმოწერილია — "
+                   "დააგენერირე და დააჭირე „ხელახლა შედარება“")
+
+
 def pick_original(refs: list[MhrDocRef], doc_number: str | None, doc_date: str | None) -> MhrDocRef | None:
     cands = original_candidates(refs, doc_number, doc_date)
     return cands[0] if cands else None
@@ -336,6 +410,9 @@ def _matched_type(cfg: Config, ref: MhrDocRef, refs: list[MhrDocRef], is_largest
     if ref.category and ref.category != cats.get("contract", "contract"):
         tid = {v: k for k, v in cats.items()}.get(ref.category, ref.category)
         return tid if cfg.doc_type(tid) else "contract_annex"
+    named = type_from_filename(cfg, ref.filename or ref.title)   # ნასწავლი ტიპი სახელში (მაგ. თანამდებობრივი ინსტრუქცია)
+    if named and named != "contract" and cfg.doc_type(named):
+        return named
     if any(_CONTRACT_FILE.search(r.filename or "") for r in refs):
         return "contract" if _CONTRACT_FILE.search(ref.filename or "") else "contract_annex"
     return "contract" if is_largest else "contract_annex"
@@ -937,7 +1014,10 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     doc_date = row["document_date"] or meta.get("document_date")
     scanned = document_pages(repo, row, meta)
     refs = client.list_documents(employee.employee_id)
-    generated = [r for r in refs if _is_generated(r)]
+    all_generated = [r for r in refs if _is_generated(r)]
+    # თითო ეტაპს (სტაჟიორი / გამოსაცდელი / შრომითი) თავისი ფაილი აქვს: ქაღალდს მხოლოდ მისივე ეტაპის, ბოლო ცვლილების ფაილი ედარება
+    stage = scan_stage(repo, row, scanned)
+    generated = same_stage(latest_versions(all_generated), stage)
     category = (mhr.get("categories") or {}).get(type_id, type_id)
     pinned = str((meta.get("part") or {}).get("original_id") or "")   # სკანის ნაწილი: ფაილი დაყოფისას უკვე დადგინდა
     pool = [r for r in generated if (r.raw or {}).get("kind") == "generated" or r.category == category]
@@ -945,7 +1025,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     found: OriginalFile | None = None
     ref: MhrDocRef | None = None
     if pinned:
-        ref = next((r for r in generated if r.doc_id == pinned), None)
+        ref = next((r for r in all_generated if r.doc_id == pinned), None)
     else:
         plan = plan_pages(client, cfg, original_candidates(pool, None, doc_date), [p.get("text") or "" for p in scanned])
         if plan.needs_split:
@@ -960,7 +1040,9 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
                 type_id = new_type
 
     is_contract = type_id in (mhr.get("contract_type_ids") or [])
-    if ref is None and not pinned and not is_contract:
+    dt = cfg.doc_type(type_id)
+    needs_original = is_contract or bool(dt and dt.mhr_original)   # ორიგინალის გარეშე — „დააგენერირე“, არა მხოლოდ ველები
+    if ref is None and not pinned and not needs_original:
         if type_id == "unknown":
             return ValidationResult("skipped", employee=employee, validated_at=now_iso(),
                                     summary=["ამ თანამშრომლის დაგენერირებულ ფაილებს არ ემთხვევა და ტიპიც უცნობია — გადასამოწმებელში რჩება"])
@@ -985,7 +1067,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
 
     # --- ორიგინალი MHR-დან (მხოლოდ kind generated — .docx) ---
     if ref is None and not pinned:
-        fallback = original_candidates([r for r in generated if r.category == category],
+        fallback = original_candidates(_fallback_pool(cfg, generated, type_id, category),
                                        row["doc_number"] or _field(meta, "document_number"), doc_date)
         ref = fallback[0] if fallback else None
         found = plan.files.get(ref.doc_id) if ref else None
@@ -997,10 +1079,10 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
             checks.append(Check("original_contract", LABELS_KA["original_contract"], None, pinned, "missing_in_mhr", True,
                                 note="ეს ფაილი MHR-ის ბარათზე აღარ არის — ის შეიძლება წაიშალა ან ხელახლა დაგენერირდა"))
             return _finish(result)
-        if mhr.get("template_fallback"):   # ძველი ქცევა, მხოლოდ კონფიგით: თანამდებობის შაბლონთან შედარება
+        if is_contract and mhr.get("template_fallback"):   # ძველი ქცევა, მხოლოდ კონფიგით: თანამდებობის შაბლონთან შედარება
             return _compare_with_template(result, cfg, client, employee, scanned, repo, row)
         checks.append(Check("original_contract", LABELS_KA["original_contract"], None, None, "missing_in_mhr", True,
-                            note=NO_ORIGINAL_NOTE))
+                            note=missing_original_note(cfg, type_id, stage, latest_versions(all_generated))))
         return _finish(result)
     result.original = ref
     date_note = original_date_note(ref, doc_date)
