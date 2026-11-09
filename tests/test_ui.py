@@ -431,6 +431,38 @@ def test_manual_upload_button_on_document_and_mhr_pages(client, tmp_path):
     assert c.post("/doc/doc_nope/manual-upload", data={}, headers={"origin": LOCAL}).status_code == 404
 
 
+def test_only_an_older_original_on_the_card_is_said_plainly(client):
+    """რეალური შემთხვევა: ბარათზე მხოლოდ სტაჟირების დროს (ერთი თვით ადრე) დაგენერირებული ფაილია, ქაღალდი კი ახალი
+    კომპლექტისაა. ადრე ეს მხოლოდ პატარა შენიშვნაში ჩანდა, სიაში კი „გვერდი 1: …“ — ახლა ზემოთ ცალკე და სიაშიც."""
+    c, cfg_path = client
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["mhr"] = {"enabled": True}
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    repo = Repository(load_config(cfg_path).paths.db)
+    note = "ორიგინალი MHR-ში 31 დღით ადრე შეიქმნა (2026-10-02), ვიდრე დოკუმენტის თარიღია (2026-11-02) — დარწმუნდი, რომ სწორი ვერსია დაიბეჭდა"
+    v = {"status": "failed", "employee": {"employee_id": "E1", "first_name": "ნინო", "last_name": "ბერიძე"},
+         "original": {"doc_id": "550", "filename": "საწყობი - დანართი#2 (სტაჟიორი).docx", "created_at": "2026-10-02T08:43:19Z"},
+         "checks": [{"field": "original_date", "label_ka": "ორიგინალის თარიღი", "document_value": "2026-11-02",
+                     "mhr_value": "2026-10-02", "status": "info", "blocking": False, "note": note}],
+         "diffs": [{"page": 1, "kind": "changed", "significant": True, "reason": "ციფრები განსხვავდება",
+                    "original": "2026-10-02", "scanned": "2026-11-02"}], "summary": []}
+    doc = "doc_" + "6" * 32
+    repo.mhr_enqueue(doc, "01001000001")
+    repo.mhr_transition(doc, ("pending",), "failed", validation=v, employee_id="E1")
+    page = c.get(f"/mhr/{doc}").text
+    banner = page.index("MHR-ში ამ ფაილის მხოლოდ ძველი ვერსიაა")
+    assert banner < page.index('class="card decide"') < page.index("<h2>რატომ გაჩერდა")      # ზემოთ, გადაწყვეტილების წინ
+    assert "საწყობი - დანართი#2 (სტაჟიორი)" in page and "დააგენერირე ამ თარიღის ფაილი" in page
+    assert page.count(note) == 1 and page.index(note) > page.index("<h2>მონაცემების შედარება")   # მხოლოდ ქვედა ცხრილში
+    row = c.get("/mhr?tab=failed").text
+    assert "MHR-ში ამ ფაილის მხოლოდ ძველი ვერსიაა (2026-10-02), ქაღალდზე — 2026-11-02 (1 სხვაობა)" in row
+
+    repo.mhr_transition(doc, ("failed",), "uploaded", remote_id="9")                       # გადაწყვეტილების შემდეგ — ისტორიაა
+    done = c.get(f"/mhr/{doc}").text
+    assert "MHR-ში ამ ფაილის მხოლოდ ძველი ვერსიაა" not in done and note in done
+    repo.close()
+
+
 def test_pages_without_original_do_not_claim_the_text_matches(client, tmp_path):
     """ორიგინალი არ არის: „ტექსტი: ემთხვევა“ და „წესრიგშია“ ტყუილია, შედარება საერთოდ არ მომხდარა."""
     c, cfg_path = client
