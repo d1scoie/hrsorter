@@ -43,7 +43,11 @@ Name: "{commonappdata}\HRSorter"; Permissions: users-modify
 Name: "{code:GetDataDir}"; Permissions: users-modify
 
 [Files]
-Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "{#DistDir}\*"; DestDir: "{app}"; Excludes: "\_internal\VCRUNTIME140*.dll"; \
+  Flags: recursesubdirs createallsubdirs ignoreversion
+; Microsoft-ის საერთო runtime: მას სხვა პროგრამაც შეიძლება იყენებდეს (ასე ჩაიშალა 0.1.16-ის განახლება) — იგივე
+; ვერსია არ იცვლება (ignoreversion-ის გარეშე), ახალი თუ დაკავებულია — Windows-ის გადატვირთვისას ჩანაცვლდება
+Source: "{#DistDir}\_internal\VCRUNTIME140*.dll"; DestDir: "{app}\_internal"; Flags: restartreplace uninsrestartdelete
 Source: "THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -117,12 +121,33 @@ begin
   end;
 end;
 
+var
+  AppStopped, Installed: Boolean;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Code: Integer;
 begin
   if CurStep = ssInstall then
+  begin
     Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM hrsorter-bg.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    AppStopped := True;
+  end;
+  if CurStep = ssPostInstall then
+  begin
+    // ავტოგანახლება (updater.installed_version) ამით ხედავს, რომ ეს ვერსია ბოლომდე დადგა
+    SaveStringToFile(ExpandConstant('{app}\installed-version.txt'), '{#AppVersion}', False);
+    Installed := True;
+  end;
+end;
+
+procedure DeinitializeSetup;
+var
+  Code: Integer;
+begin
+  // ინსტალაცია ჩაიშალა, პროგრამა კი უკვე გავაჩერეთ — ძველი ვერსია თავიდან ჩაირთოს
+  if AppStopped and not Installed then
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/Run /TN "HRSorter\Start"', '', SW_HIDE, ewNoWait, Code);
 end;
 
 function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo, MemoComponentsInfo,

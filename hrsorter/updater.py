@@ -3,7 +3,12 @@
 `hrsorter update` (Task Scheduler-ის დავალება `HRSorter\\Update`, SYSTEM-ის სახელით — ჩატვირთვისას და ყოველ 4 საათში):
 ბოლო release → თუ ვერსია ახალია და რიგი ცარიელია → Setup.exe ჩამოტვირთვა `{app}\\_update`-ში (Program Files —
 ჩაწერა მხოლოდ ადმინს შეუძლია) → sha256 შემოწმება GitHub-ის `digest`-ით → ჩუმი ინსტალაცია. ინსტალერი თავად აჩერებს
-პროგრამას, ცვლის ფაილებს და `HRSorter\\Start` დავალებით თავიდან უშვებს შესული მომხმარებლების სესიებში.
+პროგრამას, ცვლის ფაილებს და `HRSorter\\Start` დავალებით თავიდან უშვებს შესული მომხმარებლების სესიებში —
+ჩავარდნისასაც (ძველ ვერსიას).
+
+„ახლანდელი ვერსია“ — ის, რაც ინსტალერმა ბოლომდე დააყენა (`{app}\\installed-version.txt`), და არა hrsorter.exe-ში
+ჩაშენებული: ჩავარდნილი ინსტალაციის უკან დაბრუნება შეცვლილ ფაილებს არ აბრუნებს, ანუ hrsorter.exe შეიძლება უკვე ახალი
+იყოს. ასე შემდეგი შემოწმება ინსტალაციას თავიდან ცდის.
 
 რეპოზიტორია კოდშია და არა config.json-ში: კონფიგურაციას ჩვეულებრივი მომხმარებელიც ცვლის, ეს კოდი კი
 გადმოწერილ ფაილს SYSTEM-ის უფლებით უშვებს.
@@ -28,6 +33,8 @@ GITHUB_REPO = "d1scoie/hrsorter-releases"
 ASSET_RE = re.compile(r"^HRSorter-Setup-(\d+\.\d+\.\d+)\.exe$")
 APP_DIR = Path(sys.executable).parent        # შეფუთულ ვერსიაში — {app}
 UPDATE_DIR_NAME = "_update"
+INSTALLED_FILE = "installed-version.txt"   # ინსტალერი წერს წარმატებით დასრულებისას (installer.iss, ssPostInstall)
+_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 TASK_UPDATE = r"HRSorter\Update"
 TASK_START = r"HRSorter\Start"
 
@@ -95,6 +102,18 @@ def download(client: httpx.Client, rel: Release, dest_dir: Path) -> Path:
     return target
 
 
+def installed_version(app_dir: Path, code_version: str) -> str:
+    """ბოლომდე დაყენებული ვერსია. ფაილი თუ არ არის (ძველი ინსტალერი) ან გაუგებარია — კოდის ვერსია.
+    ორიდან უმცირესი: ფაილი კოდზე ახალს ვერ დააყენებინებს (ჩამოქვეითება არ ხდება)."""
+    try:
+        v = (app_dir / INSTALLED_FILE).read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeDecodeError):
+        return code_version
+    if not _VERSION_RE.match(v):
+        return code_version
+    return min(v, code_version, key=parse_version)
+
+
 def _launch(setup: Path, log: Path) -> None:
     """ინსტალერის ჩუმი გაშვება და მაშინვე გამოსვლა — hrsorter.exe დაკავებული არ უნდა დარჩეს, რომ Setup-მა შეცვალოს."""
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -106,19 +125,21 @@ def run(db_path: Path | None, *, check_only: bool = False, client: httpx.Client 
         current: str = PIPELINE_VERSION, app_dir: Path = APP_DIR, launch=_launch) -> str:
     """ერთი შემოწმება/განახლება. აბრუნებს შედეგის მოკლე აღწერას (ჟურნალისთვის)."""
     client = client or httpx.Client(timeout=60, follow_redirects=True, headers={"User-Agent": "hrsorter-updater"})
+    installed = installed_version(app_dir, current)
+    retry = " (წინა ინსტალაცია ბოლომდე ვერ დასრულდა — თავიდან)" if installed != current else ""
     rel = latest_release(client)
     if rel is None:
         return "release არ მოიძებნა"
-    if parse_version(rel.version) <= parse_version(current):
-        return f"უახლესი ვერსიაა ({current})"
+    if parse_version(rel.version) <= parse_version(installed):
+        return f"უახლესი ვერსიაა ({installed})"
     if check_only:
-        return f"ხელმისაწვდომია {rel.version} (ახლა {current})"
+        return f"ხელმისაწვდომია {rel.version} (ახლა {installed}){retry}"
     if queue_busy(db_path):
         return f"ხელმისაწვდომია {rel.version}, მაგრამ რიგი ცარიელი არ არის — შემდეგ შემოწმებაზე"
     upd = app_dir / UPDATE_DIR_NAME
     setup = download(client, rel, upd)
     launch(setup, upd / "setup.log")
-    return f"{current} → {rel.version}: ინსტალაცია დაიწყო"
+    return f"{installed} → {rel.version}: ინსტალაცია დაიწყო{retry}"
 
 
 def append_log(msg: str, app_dir: Path | None = None) -> bool:
