@@ -104,6 +104,7 @@ class ValidationResult:
     parts: list[dict[str, Any]] = field(default_factory=list)   # status="split": {document_id, title, pages, matched}
     validated_at: str | None = None
     error: str | None = None
+    mhr_snapshot: str | None = None   # რა ნახა შედარებამ MHR-ში (validation.mhr_snapshot) — „MHR-ში აკლია“-ს თავისით გადამოწმებისთვის
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

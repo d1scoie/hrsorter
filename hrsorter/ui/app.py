@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
+from .. import mhr_missing, mhr_queue
 from ..config import Config, ConfigError, load_config
 from ..db import Repository
 from ..mhr_models import clean_file_title
@@ -382,6 +383,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                              "total": cur["progress_total"]} if cur else None),
                 "mhr_enabled": bool(cfg().section("mhr")["enabled"]),
                 "mhr": {x["status"]: x["n"] for x in r.q("SELECT status, COUNT(*) n FROM mhr_items GROUP BY status")},
+                "mhr_missing": dict(zip(("files", "people"), mhr_missing.count(_missing_rows(r)))),
             }
         finally:
             r.close()
@@ -421,10 +423,17 @@ def create_app(config_path: str | None = None) -> FastAPI:
         if review:
             tasks.append(("warn", f"{review} დოკუმენტი გადასამოწმებელია", "პროგრამა ვერ დარწმუნდა — თითოეულზე წერია, რატომ და რა გააკეთო.",
                           ("/review", "გადახედვა", True)))
-        if m.get("failed"):
-            tasks.append(("warn", f"{m['failed']} ფაილმა ვერ გაიარა MHR-ის შემოწმება",
-                          "რაღაც არ ემთხვევა, ან MHR-ში ფაილი ვერ მოიძებნა. ნახე რატომ; თუ დოკუმენტი სწორია, ატვირთე მაინც.",
+        miss = s["mhr_missing"] if s["mhr_enabled"] else {"files": 0, "people": 0}
+        differs = m.get("failed", 0) - miss["files"]
+        if differs > 0:
+            tasks.append(("warn", f"{differs} ფაილმა ვერ გაიარა MHR-ის შემოწმება",
+                          "რაღაც არ ემთხვევა. ნახე რატომ; თუ დოკუმენტი სწორია, ატვირთე მაინც.",
                           ("/mhr?tab=failed", "ნახე რატომ", True)))
+        if miss["files"]:
+            tasks.append(("warn", f"{miss['people']} თანამშრომელს MHR-ში რაღაც აკლია",
+                          f"{miss['files']} სკანი დგას, რადგან MHR-ში ჯერ არ არის ის ფაილი, რასაც უნდა შეედაროს. "
+                          "შექმენი MHR-ში — პროგრამა თავად შეადარებს.",
+                          ("/mhr?tab=missing", "ნახე სია", True)))
         if mhr_stuck:
             tasks.append(("warn", f"{mhr_stuck} ატვირთვა გასარკვევია", "ატვირთვა ვერ მოხერხდა ან შედეგი გაურკვეველია — შეამოწმე MHR-ში.",
                           ("/mhr?tab=other", "ნახე", False)))
@@ -637,7 +646,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         return page("დოკუმენტი", body, "/review" if x["status"] == "needs_review" else "/documents", side_info(status_data()))
 
     @app.get("/mhr", response_class=HTMLResponse)
-    def mhr_list(tab: str = "ready"):
+    def mhr_list(tab: str = "ready", msg: str = ""):
         c = cfg()
         tab = tab if tab in _MHR_TABS else "ready"
         r = repo()
@@ -647,11 +656,21 @@ def create_app(config_path: str | None = None) -> FastAPI:
                         f" LEFT JOIN documents d ON d.id=m.document_id LEFT JOIN sources s ON s.id=d.source_id"
                         f" WHERE m.status IN ({','.join('?' for _ in _MHR_TABS[tab][1])}) ORDER BY m.updated_at DESC LIMIT 300",
                         _MHR_TABS[tab][1])
+            n_missing = mhr_missing.count(_missing_rows(r))[0]
+            checked = r.get_control(mhr_queue.MISSING_CHECKED_KEY)
         finally:
             r.close()
-        seg = "".join(f'<a href="/mhr?tab={k}"{" aria-current=true" if k == tab else ""}>{e(lbl)} ({sum(counts.get(x, 0) for x in st)})</a>'
+        # „ვერ გაიარა“ ორად იყოფა: სადაც რაღაც არ ემთხვევა, და სადაც MHR-ში შესადარებელი ჯერ არ არის (ცალკე ჩანართი, სია)
+        if tab in ("failed", "missing"):
+            items = [x for x in items if bool(mhr_missing.missing_kind(json.loads(x["validation"] or "{}"))) == (tab == "missing")]
+        n_tab = {k: sum(counts.get(x, 0) for x in st) for k, (_, st) in _MHR_TABS.items()}
+        n_tab |= {"missing": n_missing, "failed": n_tab["failed"] - n_missing}
+        seg = "".join(f'<a href="/mhr?tab={k}"{" aria-current=true" if k == tab else ""}>{e(lbl)} ({n_tab[k]})</a>'
                       for k, (lbl, st) in _MHR_TABS.items())
-        rows = "".join(_mhr_row(c, x, back=f"/mhr?tab={tab}") for x in items)
+        if tab == "missing":
+            rows = _missing_html(c, items, checked)
+        else:
+            rows = "".join(_mhr_row(c, x, back=f"/mhr?tab={tab}") for x in items)
         bulk = (f'<form method="post" action="/mhr-approve-all" style="margin-left:auto"><button class="btn primary">{icon("cloud", 16)}'
                 f'ყველას ატვირთვა ({counts.get("ready", 0)})</button></form>' if tab == "ready" and counts.get("ready") else "")
         off = ("" if c.section("mhr")["enabled"] else
@@ -659,14 +678,17 @@ def create_app(config_path: str | None = None) -> FastAPI:
         tip = {"ready": "ყველაფერი ემთხვევა — „ატვირთვა“ ან „ყველას ატვირთვა“, და დოკუმენტი თანამშრომლის ბარათზე აიტვირთება.",
                "failed": "რაღაც არ ემთხვევა ან შედარება ვერ მოხერხდა — „დეტალები“ აჩვენებს, ზუსტად რა. "
                          "დარწმუნებული რომ ხარ — „ატვირთვა მაინც“ ან „ხელით ატვირთვა“.",
+               "missing": "სკანში გასასწორებელი არაფერია: MHR-ში ჯერ არ არის ის, რასაც სკანი უნდა შეედაროს. "
+                          "შექმენი MHR-ში — პროგრამა თავად შეამჩნევს და შეადარებს.",
                "queue": "ელოდება შემოწმებას ან ატვირთვას — ჩარევა არ სჭირდება.",
                "done": "უკვე MHR-შია.", "other": "გამოტოვებული, ვერ ატვირთული ან უარყოფილი — თითოეულზე წერია, რატომ."}[tab]
-        body = (f'<h1>MHR</h1><p class="sub">{e(tip)}</p>{off}'
+        body = (f'<h1>MHR</h1><p class="sub">{e(tip)}</p>{off}{_flash(msg, "")}'
                 '<details style="border:0;padding:0;margin:-12px 0 18px"><summary style="font-size:13.5px;font-weight:500">როგორ მოწმდება?</summary>'
                 '<p class="muted" style="font-size:13.5px;margin:6px 0 0">ყოველი დასკანერებული ხელშეკრულება ავტომატურად მოწმდება: თანამშრომელი MHR-ში '
                 'პირადი ნომრით, პირადი მონაცემები, ხელმოწერები ყველა გვერდზე და ტექსტი — MHR-ში დაგენერირებულ ხელშეკრულებასთან. '
-                'თუ ბარათზე დაგენერირებული ხელშეკრულება არ არის, შედარება არ ხდება და დოკუმენტი აქ გაფრთხილებით რჩება — '
-                'ქაღალდზე ნახვის შემდეგ „ხელით ატვირთვა“ მაინც მუშაობს. ატვირთვა მხოლოდ შენი დადასტურებით ხდება.</p></details>'
+                'თუ ბარათზე დაგენერირებული ხელშეკრულება არ არის, შედარება არ ხდება და დოკუმენტი „MHR-ში აკლია“ ჩანართში რჩება: როცა '
+                'ფაილს MHR-ში შექმნი, პროგრამა თავად შეადარებს. ქაღალდზე ნახვის შემდეგ „ხელით ატვირთვა“ მაინც მუშაობს. '
+                'ატვირთვა მხოლოდ შენი დადასტურებით ხდება.</p></details>'
                 f'<div class="toolbar"><div class="seg">{seg}</div><a class="btn" href="/manual">{icon("upload", 16)}ხელით ატვირთვა</a>{bulk}</div>'
                 f'<div class="card list">{rows or empty("cloud", "mute", "აქ ჯერ არაფერია")}</div>')
         return page("MHR", body, "/mhr", side_info(status_data()), watch=True)
@@ -740,6 +762,18 @@ def create_app(config_path: str | None = None) -> FastAPI:
         finally:
             r.close()
         return RedirectResponse("/mhr?tab=queue", status_code=303)
+
+    @app.post("/mhr-recheck-missing")
+    def mhr_recheck_missing():
+        """„MHR-ში აკლია“: ფაილი MHR-ში ახლახან შეიქმნა — შემდეგი გავლა (≤ წუთი) MHR-ს შეეკითხება, ლოდინის გარეშე."""
+        r = repo()
+        try:
+            n = mhr_queue.recheck_missing_now(r)
+        finally:
+            r.close()
+        text = ("პროგრამა ერთ წუთში შეეკითხება MHR-ს. სადაც ფაილი გაჩნდა, შედარება თავიდან გაეშვება და ფაილი ამ სიიდან გაქრება."
+                if n else "შესამოწმებელი არაფერია.")
+        return RedirectResponse("/mhr?" + urlencode({"tab": "missing", "msg": text}), status_code=303)
 
     # --- ხელით ატვირთვა: თანამშრომელი პ/ნ + სახელ-გვარით დასტურდება MHR-ში, დოკუმენტები შედარების გარეშე იტვირთება
     @app.get("/manual", response_class=HTMLResponse)
@@ -1069,7 +1103,8 @@ def _home_flow(s: dict, trial: bool) -> str:
                 ("/documents?status=" + ("proposed" if trial else "auto_saved"), "check",
                  "შემოთავაზებული" if trial else "დალაგდა", d.get("proposed" if trial else "auto_saved", 0), "ok")]
     stuck = [("/review", "inbox", "გადასამოწმებელი", d.get("needs_review", 0)),
-             *([("/mhr?tab=failed", "alert", "MHR-ში ვერ გაიარა", m.get("failed", 0)),
+             *([("/mhr?tab=failed", "alert", "MHR-ში ვერ გაიარა", m.get("failed", 0) - s["mhr_missing"]["files"]),
+                ("/mhr?tab=missing", "cloud", "MHR-ში აკლია", s["mhr_missing"]["files"]),
                 ("/mhr?tab=other", "alert", "ატვირთვა გასარკვევია", m.get("upload_failed", 0) + m.get("needs_check", 0))]
                if s["mhr_enabled"] else []),
              ("/stats#stuck", "x", "ვერ დამუშავდა", j.get("failed", 0) + s["inbox_errors"])]
@@ -1234,7 +1269,7 @@ MHR_KA = {"pending": ("ვალიდაციას ელოდება", "m
 AI_KA = {"upload": ("AI: ატვირთვა შეიძლება", "ok"), "check": ("AI: გადაამოწმე", "warn"),
          "reject": ("AI: არ ატვირთო", "bad"), "error": ("AI ანალიზი ვერ შესრულდა", "mute")}
 _AI_CONF_KA = {"high": "მაღალი დარწმუნებულობა", "medium": "საშუალო დარწმუნებულობა", "low": "დაბალი დარწმუნებულობა"}
-_MHR_TABS = {"ready": ("მზადაა", ("ready",)), "failed": ("ვერ გაიარა", ("failed",)),
+_MHR_TABS = {"ready": ("მზადაა", ("ready",)), "failed": ("ვერ გაიარა", ("failed",)), "missing": ("MHR-ში აკლია", ("failed",)),
              "queue": ("მიმდინარე", ("pending", "unavailable", "approved", "uploading")),
              "done": ("ატვირთულია", ("uploaded",)), "other": ("სხვა", ("skipped", "upload_failed", "needs_check", "rejected", "split"))}
 _CHECK_KA = {"match": ("ემთხვევა", "ok"), "mismatch": ("განსხვავდება", "bad"), "missing_in_document": ("დოკუმენტში არ არის", "mute"),
@@ -1398,6 +1433,41 @@ def _mhr_parts_block(states: dict, m) -> str:
            f'<div class="card" style="overflow-x:auto"><table class="tbl"><tr><th>გვერდი</th><th>ფაილი</th><th>რატომ</th></tr>'
            + "".join(t for _pg, t in sorted(table, key=lambda z: z[0])) + '</table></div></details>') if table else ""
     return f'<h2>ფაილები ამ სკანში</h2><div class="card list">{"".join(rows)}</div>{how}'
+
+
+def _missing_rows(r: Repository) -> list:
+    """„ვერ გაიარა“ ჩანაწერები, სადაც MHR-ში რაღაც აკლია (წინასწარი ფილტრი; ზუსტად — `mhr_missing.missing_kind`)."""
+    return r.q("SELECT document_id, personal_number, validation FROM mhr_items WHERE status='failed' AND error IS NULL"
+               " AND validation LIKE ?", (mhr_missing.SQL_LIKE,))
+
+
+def _missing_html(c: Config, items, checked: str | None) -> str:
+    """„MHR-ში აკლია“ ჩანართი: თანამშრომლების სია — ვის რა უნდა გაუჩნდეს MHR-ში — და როდის შეეკითხა პროგრამა MHR-ს ბოლოს."""
+    people = mhr_missing.groups(items, c)
+    if not people:
+        return ""
+    minutes = int(float(c.section("mhr").get("missing_recheck_minutes") or 0))
+    files = sum(len(g["items"]) for g in people)
+    if minutes:
+        last = ago(checked)
+        auto = (f"პროგრამა ყოველ {minutes} წუთში თავად ეკითხება MHR-ს{f' (ბოლოს: {last})' if last else ''}. "
+                "როგორც კი ფაილი იქ გაჩნდება, სკანს თავიდან შეადარებს და ის ამ სიიდან გაქრება.")
+        now_btn = (f'<form class="inline" method="post" action="/mhr-recheck-missing"><button class="btn sm">{icon("refresh", 14)}'
+                   "ახლავე შეამოწმე</button></form>")
+    else:
+        auto = "თავისით გადამოწმება გამორთულია — MHR-ში შექმნის შემდეგ გახსენი ფაილი და დააჭირე „ხელახლა შედარება“."
+        now_btn = ""
+    out = [f'<div class="row"><div class="grow"><div class="t">{len(people)} თანამშრომელი · {files} ფაილი</div>'
+           f'<div class="m">{e(auto)}</div></div><div class="btns">{now_btn}</div></div>']
+    for g in people:
+        who = " · ".join(x for x in (str(g["personal_number"] or ""), f'MHR ID {g["employee_id"]}' if g["employee_id"] else "") if x)
+        lines = "".join(f'<li><a href="/mhr/{e(i["document_id"])}">{e(i["type"])}</a> — {e(i["what"])}'
+                        + (f' <span class="muted">({e(i["scan"])})</span>' if i["scan"] else "") + "</li>" for i in g["items"])
+        n = len(g["items"])
+        out.append(f'<div class="row"><div class="grow"><div class="t">{e(g["name"] or "თანამშრომელი MHR-ში ვერ მოიძებნა")}</div>'
+                   f'<div class="m">{e(who)}</div><ul style="margin:6px 0 0;padding-left:18px;font-size:14px;line-height:1.55">{lines}</ul></div>'
+                   f'{chip(f"{n} ფაილი", "warn")}</div>')
+    return "".join(out)
 
 
 def _mhr_did_not_answer(v: dict) -> bool:
@@ -1576,7 +1646,8 @@ _TODO_KIND = {"signature": "გახსენი ქაღალდი. თუ 
               "handwriting": "გახსენი გვერდი და ნახე, რა წერია. თუ ეს ბეჭედი ან ხელმოწერაა, {action}.",
               "page_count": "შეამოწმე, ყველა გვერდი დასკანერდა თუ არა."}
 _TODO_CHECK = {"already_uploaded": "ნახე თანამშრომლის ბარათი MHR-ში. თუ ეს ახალი ვერსიაა, {action}; თუ იგივეა, უარყავი.",
-               "original_contract": "ჯერ MHR-ში დააგენერირე ფაილი და მერე „ხელახლა შედარება“, ან დოკუმენტი ქაღალდზე ნახე და ატვირთე ხელით.",
+               "original_contract": "ჯერ MHR-ში დააგენერირე ფაილი — პროგრამა რამდენიმე წუთში თავად შეადარებს თავიდან "
+                                    "(„ხელახლა შედარება“ ამას ახლავე აკეთებს). ან დოკუმენტი ქაღალდზე ნახე და ატვირთე ხელით.",
                "personal_number": "შეამოწმე პირადი ნომერი ქაღალდზე და MHR-ში."}
 _TODO_FIELD = "შეამოწმე, რომელია სწორი: დოკუმენტი თუ MHR-ის ჩანაწერი. თუ დოკუმენტი სწორია, {action}."
 
@@ -1864,7 +1935,8 @@ def _checked_block(c: Config, m, d, v: dict, pts: list[dict]) -> str:
     if o:
         step("ok", "რას შევადარე", f'{o.get("filename") or o.get("title")} · MHR ID {o.get("doc_id")}' + (f' · შექმნილია {str(o.get("created_at"))[:10]}' if o.get("created_at") else ""))
     elif _no_compare(v):
-        step("bad", "შესადარებელი ფაილი ვერ მოიძებნა", "თანამშრომლის ბარათზე დაგენერირებული ფაილი არ არის, ამიტომ ტექსტი არაფერს შედარებია.")
+        step("bad", "შესადარებელი ფაილი ვერ მოიძებნა", "თანამშრომლის ბარათზე დაგენერირებული ფაილი არ არის, ამიტომ ტექსტი არაფერს შედარებია. "
+             "როცა MHR-ში შექმნი, პროგრამა თავად შეამჩნევს და შეადარებს.")
     diffs = v.get("diffs") or []
     if o:
         text_diffs = [x for x in diffs if x.get("kind") in ("changed", "added", "removed", "page_count")]

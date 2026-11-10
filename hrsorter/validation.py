@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import io
 import json
 import logging
@@ -195,6 +196,21 @@ def _is_generated(ref: MhrDocRef) -> bool:
     return "kind" not in raw or raw.get("kind") == "generated"
 
 
+def mhr_snapshot(cfg: Config, employee: MhrEmployee | None, refs: list[MhrDocRef]) -> str:
+    """რა ნახა შედარებამ MHR-ში, მოკლე ანაბეჭდად: თანამშრომლის ძირითადი მონაცემები და დაგენერირებული ფაილების სია.
+    ამით ხვდება `mhr_queue`, რომ MHR-ში რამე შეიცვალა (ფაილი დაგენერირდა, თანამშრომელი დაემატა, თარიღი ჩაიწერა) და
+    „MHR-ში აკლია“-ში მდგარი ფაილის შედარება თავიდან ღირს. ატვირთული სკანები აქ არ შედის — ისინი ორიგინალი არ არის."""
+    person = None
+    if employee is not None:
+        jobs = _get_path(employee.raw or {}, (cfg.data["mhr"].get("employee_map") or {}).get("employments") or "")
+        jobs = [[j.get("start"), j.get("end")] for j in jobs if isinstance(j, dict)] if isinstance(jobs, list) else []
+        person = [employee.employee_id, employee.personal_number, employee.first_name, employee.last_name,
+                  employee.contract_start, employee.contract_end, jobs]
+    files = sorted([r.doc_id, r.filename or r.title or "", r.created_at or "", str((r.raw or {}).get("sha256") or "")]
+                   for r in refs if _is_generated(r))
+    return hashlib.sha256(json.dumps([person, files], ensure_ascii=False, default=str).encode("utf-8")).hexdigest()[:16]
+
+
 ORIGINAL_DATE_TOLERANCE_DAYS = 7
 
 
@@ -314,7 +330,7 @@ def missing_original_note(cfg: Config, type_id: str, stage: str | None, generate
     if others:
         note += f" — ბარათზე მხოლოდ {' და '.join(STAGE_KA[s] for s in others)} ვერსიაა"
     return note + (". ჯერ MHR-ში დააგენერირე, მერე დაბეჭდე, მოაწერინე და დაასკანერე; თუ ქაღალდი უკვე ხელმოწერილია — "
-                   "დააგენერირე და დააჭირე „ხელახლა შედარება“")
+                   "დააგენერირე, პროგრამა რამდენიმე წუთში თავად შეადარებს თავიდან")
 
 
 # --- პირადობა ------------------------------------------------------------------------------------------------
@@ -1203,6 +1219,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
         if type_id == "unknown":   # ტიპიც უცნობია, პ/ნ-იც შეიძლება არასწორია — გადასამოწმებელში რჩება, MHR-ის შეცდომად არ ითვლება
             return ValidationResult("skipped", summary=["ამ პირადი ნომრით თანამშრომელი MHR-ში ვერ მოიძებნა, დოკუმენტის ტიპიც უცნობია"],
                                     validated_at=now_iso())
+        result.mhr_snapshot = mhr_snapshot(cfg, None, [])
         result.checks.append(Check("personal_number", LABELS_KA["personal_number"], pn, None, "missing_in_mhr", True,
                                    note="თანამშრომელი ამ პირადი ნომრით MHR-ში ვერ მოიძებნა"))
         return _finish(result)
@@ -1212,6 +1229,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     doc_date = row["document_date"] or meta.get("document_date")
     scanned = document_pages(repo, row, meta)
     refs = client.list_documents(employee.employee_id)
+    result.mhr_snapshot = mhr_snapshot(cfg, employee, refs)
     dt = cfg.doc_type(type_id)
     if dt is not None and dt.identity:   # პირადობა: MHR-ის ფაილებთან კი არა — თანამშრომლის სახელთან და პ/ნ-თან, ზუსტად
         return _validate_identity(result, cfg, row, type_id, scanned, employee, refs)

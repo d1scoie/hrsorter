@@ -182,6 +182,8 @@ DEFAULTS: dict[str, Any] = {
         "max_retries": 3,
         "sweep_seconds": 60,
         "retry_minutes": 10,
+        "missing_recheck_minutes": 15,      # „MHR-ში აკლია“ (ფაილი/თანამშრომელი): ამ სიხშირით ეკითხება MHR-ს, გაჩნდა თუ არა;
+                                            # გაჩნდა → შედარება თავიდან, დაჭერის გარეშე. 0 = გამორთულია
     },
     "naming": {
         "template": "{date}_{type}_{name}_{personal_number}_{doc_number}_{short_id}",
