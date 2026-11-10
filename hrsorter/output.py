@@ -46,10 +46,27 @@ def _tmp_paths(doc_id: str, cfg: Config) -> tuple[Path, Path]:
     return w / f"{doc_id}.pdf.tmp", w / f"{doc_id}.json.tmp"
 
 
+def _replace(tmp: Path, dest: Path) -> None:
+    """`os.replace(tmp, dest)`. ზოგი ქსელური საცავი (NAS) გრძელ ბილიკზე **არსებული** ფაილის ჩანაცვლებას ვერ ასრულებს —
+    PermissionError (WinError 31), თუმცა ფაილი არც დაკავებულია და არც დაცული, ახალ სახელზე გადატანა კი მუშაობს. ნამდვილ
+    შემთხვევაში (ქართული სახელი ~130 სიმბოლოიან ბილიკზე) ამაზე თავიდან დამუშავება ყოველ ცდაზე ჩერდებოდა. მაშინ შიგთავსი
+    პირდაპირ იწერება არსებულ ფაილში: ატომური აღარ არის, მაგრამ sidecar-ის/შედეგის წყარო ბაზაა და `recover_publishing`
+    sha-თი ამოწმებს. მართლა დაკავებულ ფაილზე ეს გზაც PermissionError-ს იძლევა — შეცდომა ისევ ზემოთ ადის."""
+    try:
+        os.replace(tmp, dest)
+    except PermissionError:
+        if not dest.exists():
+            raise
+        with open(tmp, "rb") as src, open(dest, "r+b") as out:
+            shutil.copyfileobj(src, out)
+            out.truncate()
+        tmp.unlink(missing_ok=True)
+
+
 def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    _replace(tmp, path)
 
 
 def _shingles(repo, outcome: DocumentOutcome) -> list[int]:
@@ -156,8 +173,8 @@ def publish(repo, outcome: DocumentOutcome, cfg: Config) -> DocumentOutcome:
             "text_shingles": _shingles(repo, outcome),
         })
         final_pdf.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(tmp_pdf, final_pdf)
-        os.replace(tmp_json, side)
+        _replace(tmp_pdf, final_pdf)
+        _replace(tmp_json, side)
     except OSError as e:
         if _is_disk_full(e):
             raise JobError(ErrorCode.DISK_FULL.value, "no space left while publishing", retryable=True) from e
@@ -196,7 +213,7 @@ def split_document(repo, cfg: Config, row, meta: dict[str, Any], specs: list[Par
         dest = parent_pdf.with_name(f"{parent_pdf.stem}__{spec.key}.pdf")
         tmp = dest.with_name(dest.name + ".tmp")
         write_subset(parent_pdf, [p - int(row["page_start"]) for p in spec.pages], tmp)
-        os.replace(tmp, dest)
+        _replace(tmp, dest)
         matched = spec.original_id is not None
         ext = extract([PageText.from_dict(texts[p]) for p in spec.pages], cfg.doc_type(spec.type_id), cfg)
         reasons = [] if matched else ["pages_not_in_mhr"]
