@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -298,7 +299,29 @@ def _redirect_windowless_streams() -> None:
         sys.stderr = stream
 
 
+def normal_priority() -> bool:
+    """დაბალი პრიორიტეტიდან ჩვეულებრივზე დაბრუნება; True — შეიცვალა. Task Scheduler-იდან გაშვებული პროცესი (განახლება და
+    მის შემდეგ ჩართული worker/UI/tray) „ჩვეულებრივზე დაბალი“ პრიორიტეტით იწყება და შვილებიც — ინსტალერი, Claude-ის
+    გამოძახება — ამას მემკვიდრეობენ. დატვირთულ კომპიუტერზე ეს ყველაფერს აჩერებდა: ნამდვილ შემთხვევაში worker-მა 5 წამში
+    0 წამი პროცესორი მიიღო, 30-წამიანი განახლება კი 17 წუთს გაგრძელდა. ჩვეულებრივზე მაღლა არასდროს ადის."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        normal, lower = 0x20, (0x4000, 0x40)   # NORMAL; BELOW_NORMAL, IDLE
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetPriorityClass.argtypes, k32.GetPriorityClass.restype = [wintypes.HANDLE], wintypes.DWORD
+        k32.SetPriorityClass.argtypes, k32.SetPriorityClass.restype = [wintypes.HANDLE, wintypes.DWORD], wintypes.BOOL
+        me = k32.GetCurrentProcess()
+        return k32.GetPriorityClass(me) in lower and bool(k32.SetPriorityClass(me, normal))
+    except Exception:   # პრიორიტეტი მოხერხებულობაა, არა აუცილებლობა — პროგრამა მის გარეშეც უნდა ჩაირთოს
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
+    normal_priority()
     _redirect_windowless_streams()
     for stream in (sys.stdout, sys.stderr):
         if stream is not None and hasattr(stream, "reconfigure"):
