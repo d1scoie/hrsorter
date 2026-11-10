@@ -184,6 +184,9 @@ DEFAULTS: dict[str, Any] = {
         "retry_minutes": 10,
         "missing_recheck_minutes": 15,      # „MHR-ში აკლია“ (ფაილი/თანამშრომელი): ამ სიხშირით ეკითხება MHR-ს, გაჩნდა თუ არა;
                                             # გაჩნდა → შედარება თავიდან, დაჭერის გარეშე. 0 = გამორთულია
+        # გვერდი „თანამშრომლები“: რომელი საბუთი უნდა ჰქონდეს ყველას MHR-ის ბარათზე (ტიპების id-ები, ამ რიგით ჩანს)
+        "required_type_ids": ["id_card", "employee_form", "contract", "job_description"],
+        "card_refresh_minutes": 60,         # MHR-ის ბარათი (ფაილების სია) ამ სიხშირით ახლდება ფონზე. 0 = გვერდი გამორთულია
     },
     "naming": {
         "template": "{date}_{type}_{name}_{personal_number}_{doc_number}_{short_id}",

@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
-from .. import mhr_missing, mhr_queue
+from .. import mhr_missing, mhr_queue, people
 from ..config import Config, ConfigError, load_config
 from ..db import Repository
 from ..mhr_models import clean_file_title
@@ -75,6 +75,7 @@ _ICON_PATHS = {
     "scan": '<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/>',
     "cloud": '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z"/><path d="m9 15 3-3 3 3M12 12v7"/>',
     "shield": '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+    "users": '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
 }
 
 
@@ -311,6 +312,8 @@ def page(title: str, body: str, active: str = "", side: dict | None = None, watc
     if side.get("mhr"):
         items.insert(4, ("/mhr", "cloud", "MHR"))
         items.insert(5, ("/manual", "upload", "ხელით ატვირთვა"))
+        if side.get("people"):
+            items.insert(5, ("/people", "users", "თანამშრომლები"))
     badge = {"/review": side.get("review"), "/mhr": side.get("mhr_ready")}
     nav = "".join(
         f'<a href="{href}"{" aria-current=page" if href == active else ""}>{icon(ic)}<span>{e(lbl)}</span>'
@@ -389,8 +392,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
             r.close()
 
     def side_info(s: dict) -> dict:
+        m = cfg().section("mhr")
         return {"alive": s["worker_alive"], "paused": s["paused"], "review": s["documents"].get("needs_review", 0),
-                "mhr": s["mhr_enabled"], "mhr_ready": s["mhr"].get("ready", 0)}
+                "mhr": s["mhr_enabled"], "mhr_ready": s["mhr"].get("ready", 0),
+                "people": bool(float(m.get("card_refresh_minutes") or 0) > 0 and m.get("required_type_ids"))}
 
     @app.get("/api/status")
     def api_status():
@@ -762,6 +767,17 @@ def create_app(config_path: str | None = None) -> FastAPI:
         finally:
             r.close()
         return RedirectResponse("/mhr?tab=queue", status_code=303)
+
+    @app.get("/people", response_class=HTMLResponse)
+    def people_list(only: str = ""):
+        """თანამშრომლების საბუთების სისრულე: ვის რა აქვს MHR-ის ბარათზე და რა აკლია (`people.overview`)."""
+        c = cfg()
+        r = repo()
+        try:
+            rows = people.overview(r, c)
+        finally:
+            r.close()
+        return page("თანამშრომლები", _people_body(c, rows, only == "missing"), "/people", side_info(status_data()))
 
     @app.post("/mhr-recheck-missing")
     def mhr_recheck_missing():
@@ -1467,6 +1483,46 @@ def _missing_html(c: Config, items, checked: str | None) -> str:
         out.append(f'<div class="row"><div class="grow"><div class="t">{e(g["name"] or "თანამშრომელი MHR-ში ვერ მოიძებნა")}</div>'
                    f'<div class="m">{e(who)}</div><ul style="margin:6px 0 0;padding-left:18px;font-size:14px;line-height:1.55">{lines}</ul></div>'
                    f'{chip(f"{n} ფაილი", "warn")}</div>')
+    return "".join(out)
+
+
+_PEOPLE_MARK = {people.UPLOADED: ("check", "ok"), people.LOCAL: ("clock", "warn"), people.TO_SCAN: ("x", "bad"),
+                people.NOT_IN_MHR: ("x", "bad"), people.UNKNOWN: ("clock", "mute")}
+
+
+def _people_body(c: Config, rows: list[dict], only_missing: bool) -> str:
+    """გვერდი „თანამშრომლები“: თითო თანამშრომელზე სავალდებულო საბუთები — ატვირთულია, დასკანერებულია თუ არ არის."""
+    need = [t.name_ka for t in (c.doc_type(x) for x in people.required(c)) if t]
+    lacking = [p for p in rows if p["missing"]]
+    shown = lacking if only_missing else rows
+    minutes = int(float(c.section("mhr").get("card_refresh_minutes") or 0))
+    seg = "".join(f'<a href="/people{q}"{" aria-current=true" if on else ""}>{e(lbl)} ({n})</a>'
+                  for q, on, lbl, n in (("", not only_missing, "ყველა", len(rows)),
+                                        ("?only=missing", only_missing, "ვისაც აკლია", len(lacking))))
+    out = [f'<h1>თანამშრომლები</h1><p class="sub">ვის რა საბუთი აქვს MHR-ის ბარათზე და რა აკლია. ყველას უნდა ჰქონდეს: '
+           f'{e(", ".join(need))}.</p>'
+           '<details style="border:0;padding:0;margin:-12px 0 18px"><summary style="font-size:13.5px;font-weight:500">ვინ ჩანს აქ?</summary>'
+           '<p class="muted" style="font-size:13.5px;margin:6px 0 0">თანამშრომლები, ვისი ერთი სკანი მაინც უნახავს პროგრამას და MHR-ში უპოვია. '
+           f'MHR-ის ბარათს პროგრამა ფონზე კითხულობს, {minutes} წუთში ერთხელ, ამიტომ MHR-ში ხელით ატვირთული ფაილი აქ მაშინვე არ ჩანს. '
+           'პროგრამით ატვირთული მაშინვე ჩანს.</p></details>'
+           f'<div class="toolbar"><div class="seg">{seg}</div></div>']
+    cards = []
+    for p in shown:
+        who = " · ".join(x for x in (p["personal_number"], f'MHR ID {p["employee_id"]}' if p["employee_id"] else "",
+                                     f'ბარათი შემოწმდა {ago(p["synced_at"])}' if ago(p["synced_at"]) else "") if x)
+        lines = []
+        for row in p["rows"]:
+            ic, tone = _PEOPLE_MARK[row["state"]]
+            label = (f'<a href="/mhr/{e(row["document_id"])}">{e(row["label"])}</a>' if row.get("document_id") else e(row["label"]))
+            lines.append(f'<div style="display:flex;gap:8px;align-items:center;margin-top:5px;font-size:14px">'
+                         f'<span class="tone-{tone}" style="display:inline-flex;border-radius:50%;padding:2px">{icon(ic, 16)}</span>'
+                         f'<span><b style="font-weight:600">{label}</b> — {e(row["note"])}</span></div>')
+        badge = chip(f'{p["missing"]} აკლია', "warn") if p["missing"] else chip("სრულია", "ok")
+        cards.append(f'<div class="row"><div class="grow"><div class="t">{e(p["name"] or "სახელი უცნობია")}</div>'
+                     f'<div class="m">{e(who)}</div>{"".join(lines)}</div>{badge}</div>')
+    text = ("ყველას ყველაფერი აქვს." if only_missing and rows else
+            "ჯერ არცერთი თანამშრომლის სკანი არ შემოწმებულა MHR-თან.")
+    out.append(f'<div class="card list">{"".join(cards) or empty("users", "mute", "აქ ჯერ არაფერია", text)}</div>')
     return "".join(out)
 
 
