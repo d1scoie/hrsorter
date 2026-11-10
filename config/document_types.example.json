@@ -142,6 +142,46 @@
       "mhr_original": true
     },
     {
+      "id": "id_card",
+      "name_ka": "პირადობის მოწმობა",
+      "folder": "პირადობის-მოწმობა",
+      "description": "საქართველოს მოქალაქის პირადობის მოწმობა (ID ბარათი): სახელი, გვარი და პირადი ნომერი MHR-ს ზუსტად ედარება",
+      "positive": [
+        {
+          "pattern": "პირადობის\\s+მოწმობა",
+          "weight": 5,
+          "title_only": true
+        },
+        {
+          "pattern": "identity\\s+card",
+          "weight": 3
+        },
+        {
+          "pattern": "personal\\s+no",
+          "weight": 1
+        },
+        {
+          "pattern": "given\\s+name",
+          "weight": 1
+        },
+        {
+          "pattern": "date\\s+of\\s+expiry|მოქმედების\\s+ვადა",
+          "weight": 1
+        }
+      ],
+      "negative": [],
+      "fields": [
+        "personal_number",
+        "first_name",
+        "last_name"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": false,
+      "identity": true
+    },
+    {
       "id": "fine",
       "name_ka": "ჯარიმა",
       "folder": "ჯარიმა",

@@ -48,6 +48,7 @@ from .features import company_core, surname_lemma
 from .mhr_models import Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, TextDiff, ValidationResult, clean_file_title
 from .ocr.base import OcrError
 from .output import PartSpec, adopt_match, split_document
+from .idcard import parse_id_card, same_name
 from .stages import STAGE_KA, file_stage, strip_stage, text_stage
 from .ocr.chain import build_ocr_chain
 from .pdfio import PdfDocument, validate_pdf
@@ -313,6 +314,105 @@ def missing_original_note(cfg: Config, type_id: str, stage: str | None, generate
         note += f" — ბარათზე მხოლოდ {' და '.join(STAGE_KA[s] for s in others)} ვერსიაა"
     return note + (". ჯერ MHR-ში დააგენერირე, მერე დაბეჭდე, მოაწერინე და დაასკანერე; თუ ქაღალდი უკვე ხელმოწერილია — "
                    "დააგენერირე და დააჭირე „ხელახლა შედარება“")
+
+
+# --- პირადობა ------------------------------------------------------------------------------------------------
+IDENTITY_TITLE = "პირადობის მოწმობა — MHR-ს ემთხვევა"   # ატვირთვის სათაური: სხვა კომპიუტერიც ხედავს, რომ დადასტურებულია
+
+
+def identity_type_ids(cfg: Config) -> list[str]:
+    return [t.id for t in cfg.types if t.identity]
+
+
+def verified_identity(repo: Repository, cfg: Config, employee_id: str | None, refs: list[MhrDocRef]) -> dict[str, Any] | None:
+    """ამ თანამშრომლის პირადობა უკვე დადასტურდა: აქ (ვალიდაციაში „identity: match“) ან MHR-ში ჩვენ მიერ ატვირთული
+    დადასტურებული პირადობა (სხვა კომპიუტერიდან). None — არ დადასტურებულა."""
+    ids = identity_type_ids(cfg)
+    if not employee_id or not ids:
+        return None
+    q = ",".join("?" * len(ids))
+    for r in repo.q(f"SELECT m.document_id, m.status, m.validation FROM mhr_items m JOIN documents d ON d.id = m.document_id "
+                    f"WHERE m.employee_id = ? AND d.active = 1 AND d.type_id IN ({q}) ORDER BY m.updated_at DESC",
+                    (str(employee_id), *ids)):
+        v = json.loads(r["validation"] or "{}")
+        if any(c.get("field") == "identity" and c.get("status") == "match" for c in v.get("checks", [])):
+            return {"document_id": r["document_id"], "status": r["status"], "where": "local"}
+    cats = {(cfg.data["mhr"].get("categories") or {}).get(t, t) for t in ids}
+    for ref in refs:
+        if ref.category in cats and (ref.raw or {}).get("kind") == "uploaded" and IDENTITY_TITLE in (ref.title or ""):
+            return {"document_id": None, "status": "uploaded", "where": "mhr", "remote_id": ref.doc_id}
+    return None
+
+
+def _validate_identity(result: ValidationResult, cfg: Config, row, type_id: str, scanned: list[dict[str, Any]],
+                       employee: MhrEmployee, refs: list[MhrDocRef]) -> ValidationResult:
+    """პირადობის მოწმობა: გვარი, სახელი, პირადი ნომერი — MHR-ს „ერთი ერთში“. ქართული სახელი ლათინურით/MRZ-ით უნდა
+    დადასტურდეს (წაკითხვის შეცდომა ავტომატურად არ აიტვირთოს). ყველაფერი ემთხვევა → `identity: match` (დადასტურებულია)."""
+    card = parse_id_card("\n".join(p.get("text") or "" for p in scanned))
+    checks = result.checks
+
+    def exact(field: str, doc_val: str | None, mhr_val: str | None, same) -> Check:
+        label = LABELS_KA[field]
+        if not doc_val:
+            return Check(field, label, None, mhr_val, "missing_in_document", True, note=f"{label} პირადობიდან ვერ წაიკითხა")
+        if not mhr_val:
+            return Check(field, label, doc_val, None, "missing_in_mhr", True, note=f"{label} MHR-ში ცარიელია")
+        if same(doc_val, mhr_val):
+            return Check(field, label, doc_val, mhr_val, "match", False)
+        return Check(field, label, doc_val, mhr_val, "mismatch", True,
+                     note=f"პირადობაზე „{doc_val}“, MHR-ში „{mhr_val}“ — თუ MHR-ში შეცდომაა, შეასწორე და „ხელახლა შედარება“")
+
+    names = [exact("last_name", card.last_name, employee.last_name, same_name),
+             exact("first_name", card.first_name, employee.first_name, same_name),
+             exact("personal_number", card.personal_number, employee.personal_number,
+                   lambda d, m: digits_only(str(d)) == digits_only(str(m)))]
+    checks.extend(names)
+    for p in card.problems:
+        checks.append(Check("id_reading", "წაკითხვა", None, None, "mismatch", True, note=p))
+    if card.expiry_date and card.expiry_date < _dt.date.today().isoformat():
+        checks.append(Check("id_expiry", "მოქმედების ვადა", card.expiry_date, None, "info", True,
+                            note=f"პირადობის მოწმობას ვადა გაუვიდა ({card.expiry_date}) — ახალი მოითხოვე; თუ მაინც გინდა, „ატვირთვა მაინც“"))
+    category = (cfg.data["mhr"].get("categories") or {}).get(type_id, type_id)
+    other = next((r for r in refs if r.category == category and (r.raw or {}).get("kind") == "uploaded"
+                  and (r.raw or {}).get("external_id") != row["id"]), None)
+    if other is not None:
+        when = (other.created_at or "")[:10]
+        checks.append(Check("already_uploaded", "უკვე ატვირთულია", None, other.doc_id, "info", True,
+                            note=f"ამ თანამშრომლის პირადობა MHR-ში უკვე ატვირთულია{f' ({when})' if when else ''} — მეორედ არ "
+                                 "ავტვირთავთ; თუ ეს ახალი პირადობაა, „ატვირთვა მაინც“"))
+    if all(c.status == "match" for c in names) and not card.problems:
+        checks.append(Check("identity", "პირადობა", None, None, "match", False,
+                            note="გვარი, სახელი და პირადი ნომერი ზუსტად ემთხვევა MHR-ს — პირადობა დადასტურებულია"))
+    res = _finish(result)
+    if res.status == "passed":
+        res.summary.insert(0, "პირადობა MHR-ს ზუსტად ემთხვევა — დადასტურების გარეშე აიტვირთება")
+    elif any(c.field == "identity" for c in checks):
+        res.summary.insert(0, "პირადობა MHR-ს ემთხვევა (სახელი დადასტურებულია), მაგრამ ატვირთვა გაჩერდა — მიზეზი ქვემოთაა")
+    return res
+
+
+def _name_check(field: str, doc_val: Any, mhr_val: Any, threshold: float, verified: dict[str, Any] | None) -> Check:
+    """სახელი/გვარი. პირადობით დადასტურებულ თანამშრომელზე MHR-ის სახელი სწორია: წაკითხვის მცირე შეცდომა აღარ აჩერებს,
+    სხვა სახელი კი ისევ აჩერებს და პირდაპირ წერია, რომელია სწორი."""
+    c = _check(field, doc_val, mhr_val, lambda d, m: _name_match(d, m, threshold))
+    if not verified:
+        return c
+    if c.status == "match":
+        c.note = "პირადობით დადასტურებული"
+    elif c.status == "mismatch":
+        if _name_close(str(doc_val), str(mhr_val)):
+            c.status, c.blocking = "match", False
+            c.note = f"ქაღალდზე წაიკითხა „{doc_val}“ — წაკითხვის შეცდომაა: პირადობით დადასტურებულია „{mhr_val}“"
+        else:
+            c.note = f"პირადობით დადასტურებულია „{mhr_val}“ — ქაღალდზე სხვა {c.label_ka.lower()} წერია"
+    return c
+
+
+VERIFIED_NAME_SIMILARITY = 0.7   # დადასტურებულ სახელთან ამდენი მსგავსება (მოკლე სახელებზეც) — წაკითხვის შეცდომაა
+
+
+def _name_close(doc: str, mhr: str) -> bool:
+    return any(len(x) >= 3 and len(y) >= 3 and _ratio(x, y) >= VERIFIED_NAME_SIMILARITY for x in _forms(doc) for y in _forms(mhr))
 
 
 def pick_original(refs: list[MhrDocRef], doc_number: str | None, doc_date: str | None) -> MhrDocRef | None:
@@ -970,14 +1070,16 @@ def _place_diffs(result: ValidationResult, pages: list[dict[str, Any]]) -> None:
             d.boxes = locate(pt.get("words") or [], d.scan_parts)
 
 
-def _field_checks(result: ValidationResult, cfg: Config, row, meta: dict[str, Any], pn: str, employee: MhrEmployee) -> None:
+def _field_checks(result: ValidationResult, cfg: Config, row, meta: dict[str, Any], pn: str, employee: MhrEmployee,
+                  verified: dict[str, Any] | None = None) -> None:
     mhr = cfg.data["mhr"]
     threshold = float(mhr.get("name_similarity", 0.85))
     checks = result.checks
-    checks.append(_check("first_name", _field(meta, "first_name"), employee.first_name,
-                         lambda d, m: _name_match(d, m, threshold)))
-    checks.append(_check("last_name", _field(meta, "last_name"), employee.last_name,
-                         lambda d, m: _name_match(d, m, threshold)))
+    checks.append(_name_check("first_name", _field(meta, "first_name"), employee.first_name, threshold, verified))
+    checks.append(_name_check("last_name", _field(meta, "last_name"), employee.last_name, threshold, verified))
+    if verified:
+        checks.append(Check("identity", "პირადობა", None, None, "match", False,
+                            note="თანამშრომლის პირადობა დადასტურებულია — MHR-ში სახელი და გვარი სწორია"))
     checks.append(_check("personal_number", pn, employee.personal_number,
                          lambda d, m: digits_only(str(d)) == digits_only(str(m))))
     doc_company = row["company_id"] or meta.get("company_id")
@@ -1014,6 +1116,10 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     doc_date = row["document_date"] or meta.get("document_date")
     scanned = document_pages(repo, row, meta)
     refs = client.list_documents(employee.employee_id)
+    dt = cfg.doc_type(type_id)
+    if dt is not None and dt.identity:   # პირადობა: MHR-ის ფაილებთან კი არა — თანამშრომლის სახელთან და პ/ნ-თან, ზუსტად
+        return _validate_identity(result, cfg, row, type_id, scanned, employee, refs)
+    verified = verified_identity(repo, cfg, employee.employee_id, refs)
     all_generated = [r for r in refs if _is_generated(r)]
     # თითო ეტაპს (სტაჟიორი / გამოსაცდელი / შრომითი) თავისი ფაილი აქვს: ქაღალდს მხოლოდ მისივე ეტაპის, ბოლო ცვლილების ფაილი ედარება
     stage = scan_stage(repo, row, scanned)
@@ -1046,15 +1152,18 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
         if type_id == "unknown":
             return ValidationResult("skipped", employee=employee, validated_at=now_iso(),
                                     summary=["ამ თანამშრომლის დაგენერირებულ ფაილებს არ ემთხვევა და ტიპიც უცნობია — გადასამოწმებელში რჩება"])
-        _field_checks(result, cfg, row, meta, pn, employee)   # სხვა ტიპი, ორიგინალის გარეშე — მხოლოდ ველები
+        _field_checks(result, cfg, row, meta, pn, employee, verified)   # სხვა ტიპი, ორიგინალის გარეშე — მხოლოდ ველები
         return _finish(result)
 
     checks = result.checks
     if is_contract:
-        _field_checks(result, cfg, row, meta, pn, employee)
+        _field_checks(result, cfg, row, meta, pn, employee, verified)
     else:   # ინსტრუქცია, წესები, დანართი: სახელი და მონაცემები ფაილის ტექსტშია — შედარება ამას ამოწმებს
         checks.append(_check("personal_number", pn, employee.personal_number,
                              lambda d, m: digits_only(str(d)) == digits_only(str(m))))
+        if verified:
+            checks.append(Check("identity", "პირადობა", None, None, "match", False,
+                                note="თანამშრომლის პირადობა დადასტურებულია — MHR-ში სახელი და გვარი სწორია"))
 
     # --- ხელმოწერები (ორიგინალის გარეშეც მოწმდება) ---
     marked = handwriting_diffs(scanned)
