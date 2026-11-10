@@ -445,6 +445,16 @@ def create_app(config_path: str | None = None) -> FastAPI:
         if m.get("ready"):
             tasks.append(("info", f"{m['ready']} ფაილი მზადაა MHR-ზე ასატვირთად", "ყველაფერი ემთხვევა — ერთი ღილაკით აიტვირთება თანამშრომლის ბარათზე.",
                           ("post:/mhr-approve-all", f"ყველას ატვირთვა ({m['ready']})", True)))
+        if s["mhr_enabled"] and side_info(s)["people"]:   # თარიღების გაფრთხილებები (პირადობის ვადა, არასრულწლოვანი)
+            r = repo()
+            try:
+                warned = sum(1 for p in people.overview(r, c) if p["warnings"])
+            finally:
+                r.close()
+            if warned:
+                tasks.append(("warn", f"{warned} თანამშრომელზე გაფრთხილებაა",
+                              "პირადობის მოწმობას ვადა გასდის ან გაუვიდა, ან თანამშრომელი არასრულწლოვანია.",
+                              ("/people?only=warn", "ნახე", False)))
         if cur or (busy and not s["paused"]):
             txt = (f"{cur['file']} — {cur['done']}/{cur['total']} გვერდი" if cur else f"რიგში {busy} ფაილი") + ". ჩარევა არ სჭირდება."
             tasks.append(("info", "მუშავდება", txt, None))
@@ -777,7 +787,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             rows = people.overview(r, c)
         finally:
             r.close()
-        return page("თანამშრომლები", _people_body(c, rows, only == "missing"), "/people", side_info(status_data()))
+        return page("თანამშრომლები", _people_body(c, rows, only), "/people", side_info(status_data()))
 
     @app.post("/mhr-recheck-missing")
     def mhr_recheck_missing():
@@ -1490,15 +1500,18 @@ _PEOPLE_MARK = {people.UPLOADED: ("check", "ok"), people.LOCAL: ("clock", "warn"
                 people.NOT_IN_MHR: ("x", "bad"), people.UNKNOWN: ("clock", "mute")}
 
 
-def _people_body(c: Config, rows: list[dict], only_missing: bool) -> str:
-    """გვერდი „თანამშრომლები“: თითო თანამშრომელზე სავალდებულო საბუთები — ატვირთულია, დასკანერებულია თუ არ არის."""
+def _people_body(c: Config, rows: list[dict], only: str = "") -> str:
+    """გვერდი „თანამშრომლები“: თითო თანამშრომელზე სავალდებულო საბუთები — ატვირთულია, დასკანერებულია თუ არ არის — და
+    თარიღების გაფრთხილებები (პირადობის ვადა, არასრულწლოვანი). `only`: "" | "missing" | "warn"."""
     need = [t.name_ka for t in (c.doc_type(x) for x in people.required(c)) if t]
     lacking = [p for p in rows if p["missing"]]
-    shown = lacking if only_missing else rows
+    warned = [p for p in rows if p["warnings"]]
+    shown = {"missing": lacking, "warn": warned}.get(only, rows)
     minutes = int(float(c.section("mhr").get("card_refresh_minutes") or 0))
     seg = "".join(f'<a href="/people{q}"{" aria-current=true" if on else ""}>{e(lbl)} ({n})</a>'
-                  for q, on, lbl, n in (("", not only_missing, "ყველა", len(rows)),
-                                        ("?only=missing", only_missing, "ვისაც აკლია", len(lacking))))
+                  for q, on, lbl, n in (("", only not in ("missing", "warn"), "ყველა", len(rows)),
+                                        ("?only=missing", only == "missing", "ვისაც აკლია", len(lacking)),
+                                        ("?only=warn", only == "warn", "გაფრთხილებით", len(warned))))
     out = [f'<h1>თანამშრომლები</h1><p class="sub">ვის რა საბუთი აქვს MHR-ის ბარათზე და რა აკლია. ყველას უნდა ჰქონდეს: '
            f'{e(", ".join(need))}.</p>'
            '<details style="border:0;padding:0;margin:-12px 0 18px"><summary style="font-size:13.5px;font-weight:500">ვინ ჩანს აქ?</summary>'
@@ -1510,7 +1523,8 @@ def _people_body(c: Config, rows: list[dict], only_missing: bool) -> str:
     for p in shown:
         who = " · ".join(x for x in (p["personal_number"], f'MHR ID {p["employee_id"]}' if p["employee_id"] else "",
                                      f'ბარათი შემოწმდა {ago(p["synced_at"])}' if ago(p["synced_at"]) else "") if x)
-        lines = []
+        lines = [f'<div class="tone-warn" style="display:flex;gap:8px;align-items:center;margin-top:6px;padding:5px 9px;border-radius:8px;'
+                 f'font-size:14px">{icon("alert", 16)}<span>{e(w)}</span></div>' for w in p["warnings"]]
         for row in p["rows"]:
             ic, tone = _PEOPLE_MARK[row["state"]]
             label = (f'<a href="/mhr/{e(row["document_id"])}">{e(row["label"])}</a>' if row.get("document_id") else e(row["label"]))
@@ -1518,9 +1532,11 @@ def _people_body(c: Config, rows: list[dict], only_missing: bool) -> str:
                          f'<span class="tone-{tone}" style="display:inline-flex;border-radius:50%;padding:2px">{icon(ic, 16)}</span>'
                          f'<span><b style="font-weight:600">{label}</b> — {e(row["note"])}</span></div>')
         badge = chip(f'{p["missing"]} აკლია', "warn") if p["missing"] else chip("სრულია", "ok")
+        if p["warnings"]:
+            badge = chip("გაფრთხილება", "warn") + badge
         cards.append(f'<div class="row"><div class="grow"><div class="t">{e(p["name"] or "სახელი უცნობია")}</div>'
                      f'<div class="m">{e(who)}</div>{"".join(lines)}</div>{badge}</div>')
-    text = ("ყველას ყველაფერი აქვს." if only_missing and rows else
+    text = ("ყველას ყველაფერი აქვს." if only == "missing" and rows else "გაფრთხილება არცერთზე არ არის." if only == "warn" and rows else
             "ჯერ არცერთი თანამშრომლის სკანი არ შემოწმებულა MHR-თან.")
     out.append(f'<div class="card list">{"".join(cards) or empty("users", "mute", "აქ ჯერ არაფერია", text)}</div>')
     return "".join(out)

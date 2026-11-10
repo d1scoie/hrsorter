@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from . import textquality
+from . import hrdates, textquality
 from .config import Config
 from .db import Repository, now_iso
 from .employee_api import _get_path
@@ -386,9 +386,14 @@ def _validate_identity(result: ValidationResult, cfg: Config, row, type_id: str,
     checks.extend(names)
     for p in card.problems:
         checks.append(Check("id_reading", "წაკითხვა", None, None, "mismatch", True, note=p))
-    if card.expiry_date and card.expiry_date < _dt.date.today().isoformat():
+    # დაბადების თარიღი და ვადა სხვა შემოწმებებს სჭირდება (ასაკი, „ვადა გასდის“) — ტექსტის ხელახლა კითხვის გარეშე
+    result.facts = {k: v for k, v in (("birth_date", card.birth_date), ("id_expiry", card.expiry_date)) if v}
+    expiry = hrdates.id_expiry(card.expiry_date, None, hrdates.limits(cfg)[1])
+    if expiry and expiry[0] == hrdates.EXPIRED:
         checks.append(Check("id_expiry", "მოქმედების ვადა", card.expiry_date, None, "info", True,
                             note=f"პირადობის მოწმობას ვადა გაუვიდა ({card.expiry_date}) — ახალი მოითხოვე; თუ მაინც გინდა, „ატვირთვა მაინც“"))
+    elif expiry:   # მალე გასდის: ატვირთვას არ აჩერებს, მხოლოდ აფრთხილებს
+        checks.append(Check("id_expiry", "მოქმედების ვადა", card.expiry_date, None, "info", False, note=expiry[1]))
     category = (cfg.data["mhr"].get("categories") or {}).get(type_id, type_id)
     other = next((r for r in refs if r.category == category and (r.raw or {}).get("kind") == "uploaded"
                   and (r.raw or {}).get("external_id") != row["id"]), None)
@@ -483,6 +488,10 @@ def _validate_employee_form(result: ValidationResult, cfg: Config, repo: Reposit
                       note="დაბადების თარიღი ანკეტიდან ვერ წაიკითხა — ნახე ქაღალდი; თუ სწორია, „ატვირთვა მაინც“")
     if birth:
         checks.append(birth)
+    if birth is not None and birth.status == "match" and start.status == "match":   # ორივე თარიღი დადასტურებულია
+        minor = hrdates.minor_note(id_birth, form.start_date, hrdates.limits(cfg)[0])
+        if minor:
+            checks.append(Check("age", "ასაკი", id_birth, form.start_date, "info", False, note=minor))
 
     threshold = float(cfg.data["mhr"].get("name_similarity", 0.85))
     mhr_name = " ".join(x for x in (employee.first_name, employee.last_name) if x)
@@ -518,6 +527,20 @@ def _validate_employee_form(result: ValidationResult, cfg: Config, repo: Reposit
     if res.status == "passed" and full:
         res.summary.insert(0, "ანკეტა MHR-ს და პირადობას ემთხვევა — დადასტურების გარეშე აიტვირთება")
     return res
+
+
+def _contract_date_warnings(result: ValidationResult, cfg: Config, repo: Repository, meta: dict[str, Any], doc_date: Any,
+                            verified: dict[str, Any] | None) -> None:
+    """ხელშეკრულების თარიღების გაფრთხილებები (არ აჩერებს): ხელი მუშაობის დაწყების შემდეგ მოეწერა; მუშაობის დაწყებისას
+    არასრულწლოვანია (დაბადების თარიღი — დადასტურებული პირადობიდან). მუშაობის დაწყება — ის, რაც თვითონ ქაღალდზე წერია."""
+    start, signed = _iso(_field(meta, "contract_start")), _iso(doc_date)
+    late = hrdates.signed_late_note(signed, start)
+    if late:
+        result.checks.append(Check("signed_late", "ხელმოწერის თარიღი", signed, start, "info", False, note=late))
+    birth = _verified_birth_date(repo, verified)
+    minor = hrdates.minor_note(birth, start or signed, hrdates.limits(cfg)[0]) if birth else None
+    if minor:
+        result.checks.append(Check("age", "ასაკი", birth, start or signed, "info", False, note=minor))
 
 
 VERIFIED_NAME_SIMILARITY = 0.7   # დადასტურებულ სახელთან ამდენი მსგავსება (მოკლე სახელებზეც) — წაკითხვის შეცდომაა
@@ -1274,6 +1297,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     checks = result.checks
     if is_contract:
         _field_checks(result, cfg, row, meta, pn, employee, verified)
+        _contract_date_warnings(result, cfg, repo, meta, doc_date, verified)
     else:   # ინსტრუქცია, წესები, დანართი: სახელი და მონაცემები ფაილის ტექსტშია — შედარება ამას ამოწმებს
         checks.append(_check("personal_number", pn, employee.personal_number,
                              lambda d, m: digits_only(str(d)) == digits_only(str(m))))

@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from . import mhr_missing
+from . import hrdates, mhr_missing
 from .mhr_models import MhrDocRef, MhrError, MhrStatus as S, MhrUnavailable
 from .stages import STAGE_KA, file_stage
 
@@ -51,8 +51,29 @@ def local_items(repo) -> dict[str, list[dict[str, Any]]]:
             "document_id": x["document_id"], "status": x["status"], "type_id": x["type_id"] or "unknown",
             "employee_id": x["employee_id"], "original_id": str((v.get("original") or {}).get("doc_id") or ""),
             "missing": bool(mhr_missing.missing_kind(v)) if x["status"] == S.FAILED.value else False,
-            "name": " ".join(p for p in (emp.get("first_name"), emp.get("last_name")) if p)})
+            "name": " ".join(p for p in (emp.get("first_name"), emp.get("last_name")) if p),
+            "facts": v.get("facts") or {},
+            "identity_ok": any(c.get("field") == "identity" and c.get("status") == "match" for c in v.get("checks") or [])})
     return out
+
+
+def identity_facts(repo, cfg, items: list[dict[str, Any]]) -> dict[str, Any]:
+    """დადასტურებული პირადობის მონაცემები (`birth_date`, `id_expiry`) გაფრთხილებებისთვის; {} — პირადობა აქ არ დადასტურებულა.
+    ძველი ვერსიით შემოწმებულ პირადობას ფაქტები შენახული არ აქვს — მაშინ იკითხება მისივე ტექსტიდან."""
+    for i in items:
+        t = cfg.doc_type(i["type_id"])
+        if t is None or not t.identity or not i["identity_ok"]:
+            continue
+        if i["facts"]:
+            return i["facts"]
+        from .idcard import parse_id_card
+        from .validation import document_pages
+        doc = repo.get_document(i["document_id"])
+        if doc is None:
+            continue
+        parsed = parse_id_card("\n".join(p.get("text") or "" for p in document_pages(repo, doc)))
+        return {k: v for k, v in (("birth_date", parsed.birth_date), ("id_expiry", parsed.expiry_date)) if v}
+    return {}
 
 
 def known(items: dict[str, list[dict[str, Any]]]) -> list[str]:
@@ -186,9 +207,9 @@ def checklist(cfg, card_data: dict[str, Any] | None, items: list[dict[str, Any]]
     return out
 
 
-def overview(repo, cfg) -> list[dict[str, Any]]:
+def overview(repo, cfg, today: Any = None) -> list[dict[str, Any]]:
     """გვერდისთვის: თანამშრომლები სისრულით — ჯერ ისინი, ვისაც ყველაზე მეტი აკლია.
-    [{personal_number, employee_id, name, rows, missing, synced_at}]"""
+    [{personal_number, employee_id, name, rows, missing, warnings, synced_at}]; `warnings` — თარიღების გაფრთხილებები (hrdates)."""
     items = local_items(repo)
     out = []
     for pn in known(items):
@@ -198,5 +219,6 @@ def overview(repo, cfg) -> list[dict[str, Any]]:
                     "employee_id": (data or {}).get("employee_id") or next((i["employee_id"] for i in items[pn] if i["employee_id"]), None),
                     "name": (data or {}).get("name") or next((i["name"] for i in items[pn] if i["name"]), ""),
                     "rows": rows, "missing": sum(1 for r in rows if r["state"] in MISSING_STATES),
+                    "warnings": hrdates.person_warnings(cfg, identity_facts(repo, cfg, items[pn]), today),
                     "synced_at": (data or {}).get("synced_at")})
     return sorted(out, key=lambda p: (-p["missing"], p["name"], p["personal_number"]))

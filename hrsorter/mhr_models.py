@@ -105,6 +105,7 @@ class ValidationResult:
     validated_at: str | None = None
     error: str | None = None
     mhr_snapshot: str | None = None   # რა ნახა შედარებამ MHR-ში (validation.mhr_snapshot) — „MHR-ში აკლია“-ს თავისით გადამოწმებისთვის
+    facts: dict[str, Any] = field(default_factory=dict)   # დოკუმენტიდან ამოღებული ფაქტები სხვა შემოწმებებისთვის (პირადობა: birth_date, id_expiry)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
