@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import io
 import json
 import logging
@@ -40,7 +41,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from . import textquality
+from . import hrdates, textquality
 from .config import Config
 from .db import Repository, now_iso
 from .employee_api import _get_path
@@ -195,6 +196,21 @@ def _is_generated(ref: MhrDocRef) -> bool:
     return "kind" not in raw or raw.get("kind") == "generated"
 
 
+def mhr_snapshot(cfg: Config, employee: MhrEmployee | None, refs: list[MhrDocRef]) -> str:
+    """რა ნახა შედარებამ MHR-ში, მოკლე ანაბეჭდად: თანამშრომლის ძირითადი მონაცემები და დაგენერირებული ფაილების სია.
+    ამით ხვდება `mhr_queue`, რომ MHR-ში რამე შეიცვალა (ფაილი დაგენერირდა, თანამშრომელი დაემატა, თარიღი ჩაიწერა) და
+    „MHR-ში აკლია“-ში მდგარი ფაილის შედარება თავიდან ღირს. ატვირთული სკანები აქ არ შედის — ისინი ორიგინალი არ არის."""
+    person = None
+    if employee is not None:
+        jobs = _get_path(employee.raw or {}, (cfg.data["mhr"].get("employee_map") or {}).get("employments") or "")
+        jobs = [[j.get("start"), j.get("end")] for j in jobs if isinstance(j, dict)] if isinstance(jobs, list) else []
+        person = [employee.employee_id, employee.personal_number, employee.first_name, employee.last_name,
+                  employee.contract_start, employee.contract_end, jobs]
+    files = sorted([r.doc_id, r.filename or r.title or "", r.created_at or "", str((r.raw or {}).get("sha256") or "")]
+                   for r in refs if _is_generated(r))
+    return hashlib.sha256(json.dumps([person, files], ensure_ascii=False, default=str).encode("utf-8")).hexdigest()[:16]
+
+
 ORIGINAL_DATE_TOLERANCE_DAYS = 7
 
 
@@ -314,7 +330,7 @@ def missing_original_note(cfg: Config, type_id: str, stage: str | None, generate
     if others:
         note += f" — ბარათზე მხოლოდ {' და '.join(STAGE_KA[s] for s in others)} ვერსიაა"
     return note + (". ჯერ MHR-ში დააგენერირე, მერე დაბეჭდე, მოაწერინე და დაასკანერე; თუ ქაღალდი უკვე ხელმოწერილია — "
-                   "დააგენერირე და დააჭირე „ხელახლა შედარება“")
+                   "დააგენერირე, პროგრამა რამდენიმე წუთში თავად შეადარებს თავიდან")
 
 
 # --- პირადობა ------------------------------------------------------------------------------------------------
@@ -370,9 +386,14 @@ def _validate_identity(result: ValidationResult, cfg: Config, row, type_id: str,
     checks.extend(names)
     for p in card.problems:
         checks.append(Check("id_reading", "წაკითხვა", None, None, "mismatch", True, note=p))
-    if card.expiry_date and card.expiry_date < _dt.date.today().isoformat():
+    # დაბადების თარიღი და ვადა სხვა შემოწმებებს სჭირდება (ასაკი, „ვადა გასდის“) — ტექსტის ხელახლა კითხვის გარეშე
+    result.facts = {k: v for k, v in (("birth_date", card.birth_date), ("id_expiry", card.expiry_date)) if v}
+    expiry = hrdates.id_expiry(card.expiry_date, None, hrdates.limits(cfg)[1])
+    if expiry and expiry[0] == hrdates.EXPIRED:
         checks.append(Check("id_expiry", "მოქმედების ვადა", card.expiry_date, None, "info", True,
                             note=f"პირადობის მოწმობას ვადა გაუვიდა ({card.expiry_date}) — ახალი მოითხოვე; თუ მაინც გინდა, „ატვირთვა მაინც“"))
+    elif expiry:   # მალე გასდის: ატვირთვას არ აჩერებს, მხოლოდ აფრთხილებს
+        checks.append(Check("id_expiry", "მოქმედების ვადა", card.expiry_date, None, "info", False, note=expiry[1]))
     category = (cfg.data["mhr"].get("categories") or {}).get(type_id, type_id)
     other = next((r for r in refs if r.category == category and (r.raw or {}).get("kind") == "uploaded"
                   and (r.raw or {}).get("external_id") != row["id"]), None)
@@ -467,6 +488,10 @@ def _validate_employee_form(result: ValidationResult, cfg: Config, repo: Reposit
                       note="დაბადების თარიღი ანკეტიდან ვერ წაიკითხა — ნახე ქაღალდი; თუ სწორია, „ატვირთვა მაინც“")
     if birth:
         checks.append(birth)
+    if birth is not None and birth.status == "match" and start.status == "match":   # ორივე თარიღი დადასტურებულია
+        minor = hrdates.minor_note(id_birth, form.start_date, hrdates.limits(cfg)[0])
+        if minor:
+            checks.append(Check("age", "ასაკი", id_birth, form.start_date, "info", False, note=minor))
 
     threshold = float(cfg.data["mhr"].get("name_similarity", 0.85))
     mhr_name = " ".join(x for x in (employee.first_name, employee.last_name) if x)
@@ -476,7 +501,9 @@ def _validate_employee_form(result: ValidationResult, cfg: Config, repo: Reposit
         checks.append(Check("full_name", "სახელი, გვარი", form.full_name, mhr_name, "match" if ok else "info", False,
                             note="" if ok else f"ხელნაწერი სახელი ასე წაიკითხა: „{form.full_name}“, MHR-ში „{mhr_name}“ — შეამოწმე ქაღალდზე"))
 
-    signed = form.signed or any(p.get("signature_hint") == "present" for p in scanned)
+    # მკითხველმა პირდაპირ თქვა, მოაწერა თუ არა თანამშრომელმა → ეს წყვეტს; არ უთქვამს → გვერდის ზოგადი შეფასება
+    said = [x for x in ((p.get("signature_parties") or {}).get("employee") for p in scanned) if x is not None]
+    signed = form.signed or (any(said) if said else any(p.get("signature_hint") == "present" for p in scanned))
     if not signed:
         checks.append(Check("signature", "ხელმოწერა", None, None, "missing_in_document", True,
                             note="ანკეტაზე თანამშრომლის ხელმოწერა არ ჩანს — მოაწერინე და ხელახლა დაასკანერე"))
@@ -502,6 +529,20 @@ def _validate_employee_form(result: ValidationResult, cfg: Config, repo: Reposit
     if res.status == "passed" and full:
         res.summary.insert(0, "ანკეტა MHR-ს და პირადობას ემთხვევა — დადასტურების გარეშე აიტვირთება")
     return res
+
+
+def _contract_date_warnings(result: ValidationResult, cfg: Config, repo: Repository, meta: dict[str, Any], doc_date: Any,
+                            verified: dict[str, Any] | None) -> None:
+    """ხელშეკრულების თარიღების გაფრთხილებები (არ აჩერებს): ხელი მუშაობის დაწყების შემდეგ მოეწერა; მუშაობის დაწყებისას
+    არასრულწლოვანია (დაბადების თარიღი — დადასტურებული პირადობიდან). მუშაობის დაწყება — ის, რაც თვითონ ქაღალდზე წერია."""
+    start, signed = _iso(_field(meta, "contract_start")), _iso(doc_date)
+    late = hrdates.signed_late_note(signed, start)
+    if late:
+        result.checks.append(Check("signed_late", "ხელმოწერის თარიღი", signed, start, "info", False, note=late))
+    birth = _verified_birth_date(repo, verified)
+    minor = hrdates.minor_note(birth, start or signed, hrdates.limits(cfg)[0]) if birth else None
+    if minor:
+        result.checks.append(Check("age", "ასაკი", birth, start or signed, "info", False, note=minor))
 
 
 VERIFIED_NAME_SIMILARITY = 0.7   # დადასტურებულ სახელთან ამდენი მსგავსება (მოკლე სახელებზეც) — წაკითხვის შეცდომაა
@@ -1203,6 +1244,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
         if type_id == "unknown":   # ტიპიც უცნობია, პ/ნ-იც შეიძლება არასწორია — გადასამოწმებელში რჩება, MHR-ის შეცდომად არ ითვლება
             return ValidationResult("skipped", summary=["ამ პირადი ნომრით თანამშრომელი MHR-ში ვერ მოიძებნა, დოკუმენტის ტიპიც უცნობია"],
                                     validated_at=now_iso())
+        result.mhr_snapshot = mhr_snapshot(cfg, None, [])
         result.checks.append(Check("personal_number", LABELS_KA["personal_number"], pn, None, "missing_in_mhr", True,
                                    note="თანამშრომელი ამ პირადი ნომრით MHR-ში ვერ მოიძებნა"))
         return _finish(result)
@@ -1212,6 +1254,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     doc_date = row["document_date"] or meta.get("document_date")
     scanned = document_pages(repo, row, meta)
     refs = client.list_documents(employee.employee_id)
+    result.mhr_snapshot = mhr_snapshot(cfg, employee, refs)
     dt = cfg.doc_type(type_id)
     if dt is not None and dt.identity:   # პირადობა: MHR-ის ფაილებთან კი არა — თანამშრომლის სახელთან და პ/ნ-თან, ზუსტად
         return _validate_identity(result, cfg, row, type_id, scanned, employee, refs)
@@ -1256,6 +1299,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     checks = result.checks
     if is_contract:
         _field_checks(result, cfg, row, meta, pn, employee, verified)
+        _contract_date_warnings(result, cfg, repo, meta, doc_date, verified)
     else:   # ინსტრუქცია, წესები, დანართი: სახელი და მონაცემები ფაილის ტექსტშია — შედარება ამას ამოწმებს
         checks.append(_check("personal_number", pn, employee.personal_number,
                              lambda d, m: digits_only(str(d)) == digits_only(str(m))))

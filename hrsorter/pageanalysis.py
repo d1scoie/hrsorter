@@ -511,6 +511,7 @@ def analyze_page(doc: PdfDocument, index: int, cfg: Config, chain: OcrChain | No
     hand_cues: list[tuple[int, int, int, int]] = []
     ocr_words: list[dict[str, Any]] = []
     word_boxes: list[tuple[str, tuple[int, int, int, int], float]] = []   # OCR სიტყვები ანალიზის პიქსელებში + სანდოობა
+    reader_parties: dict[str, bool] = {}   # ონლაინ მკითხველის პასუხი „ვინ მოაწერა ხელი“ (კოორდინატები მას არ აქვს)
     mask_available = False
 
     if layer_q >= float(th.get("text_layer_min_quality", 0.6)):
@@ -554,6 +555,7 @@ def analyze_page(doc: PdfDocument, index: int, cfg: Config, chain: OcrChain | No
                 text, quality = res.result.text, res.quality
                 text_source, provider = f"ocr:{res.provider.name}", res.provider.name
                 model_version = res.provider.model_version
+                reader_parties = getattr(res.result, "signature_parties", None) or {}
                 ocr_words = res.result.words
                 s = analysis_dpi / dpi
                 text_boxes_px = [(int(l * s), int(t * s), int(np.ceil(r * s)), int(np.ceil(b * s)))
@@ -631,6 +633,8 @@ def analyze_page(doc: PdfDocument, index: int, cfg: Config, chain: OcrChain | No
         text = drop_stamp_words(text, word_boxes, stamp_boxes(arr_sig, word_boxes, cell, analysis_dpi))
     zones: dict[str, tuple[float, float, float, float]] = {}
     parties = page_parties(arr_sig, word_boxes, cell, analysis_dpi, zones) if has_text and word_boxes else {}
+    if not parties and has_text:   # სიტყვების კოორდინატები არ არის (Claude-ით წაკითხული გვერდი) → მისივე პასუხი
+        parties = dict(reader_parties)
     page_w_px = arr.shape[1]
     return PageText(
         page_index=index, text=text, text_source=text_source, ocr_quality=round(float(quality), 4),

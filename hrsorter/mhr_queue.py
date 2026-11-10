@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import PIPELINE_VERSION
+from . import PIPELINE_VERSION, mhr_missing
 from .db import now_iso
 from .mhr_client import MhrClient, MhrUploadUncertain, build_mhr_client
 from .mhr_models import MhrEmployee, MhrError, MhrStatus as S, MhrUnavailable, ValidationResult, clean_file_title
@@ -27,6 +27,8 @@ from .mhr_models import MhrEmployee, MhrError, MhrStatus as S, MhrUnavailable, V
 log = logging.getLogger(__name__)
 
 SWEEP_LIMIT = 20                  # ერთ გავლაზე მაქსიმუმ ამდენი ვალიდაცია / ატვირთვა
+MISSING_LIMIT = 200               # ერთ გავლაზე ამდენ „MHR-ში აკლია“ ჩანაწერს ეკითხება MHR-ს (თითო თანამშრომელზე ორი GET)
+MISSING_CHECKED_KEY = "mhr_missing_checked"   # control: ბოლოს როდის შეეკითხა MHR-ს (UI-ში „ბოლოს შემოწმდა“)
 STALE_UPLOADING_SECONDS = 600     # ამაზე დიდხანს `uploading` → ავარია → needs_check
 UPLOAD_MAX_ATTEMPTS = 5           # MHR მიუწვდომლობისას ატვირთვის ცდები, შემდეგ upload_failed
 
@@ -85,6 +87,14 @@ def revalidate_refused(repo) -> int:
     """ახალი ტოკენი შეინახეს: MHR-მა ვისზეც უარი თქვა (შედარება არ მომხდარა), თავიდან მოწმდება. რამდენი ფაილი."""
     rows = repo.q("SELECT document_id FROM mhr_items WHERE status=? AND error='MhrError'", (S.FAILED.value,))
     return sum(revalidate(repo, r["document_id"]) for r in rows)
+
+
+def recheck_missing_now(repo) -> int:
+    """„MHR-ში აკლია“: ოპერატორმა ფაილი MHR-ში ახლახან შექმნა და ლოდინი არ უნდა — შემდეგი გავლა (≤ წუთი) MHR-ს ყველაზე
+    შეეკითხება. თვითონ შედარებას არ უშვებს: ის მხოლოდ იქ იწყება, სადაც MHR-ში რამე შეიცვალა. აბრუნებს ჩანაწერების რაოდენობას."""
+    cur = repo.conn.execute("UPDATE mhr_items SET next_try=NULL WHERE status=? AND error IS NULL AND validation LIKE ?",
+                            (S.FAILED.value, mhr_missing.SQL_LIKE))
+    return cur.rowcount
 
 
 def rerun_ai_review(repo, document_id: str) -> bool:
@@ -163,11 +173,12 @@ def upload_now(repo, cfg, document_id: str, client: MhrClient | None = None) -> 
 
 def sweep(repo, cfg, client: MhrClient | None = None, validate_fn: ValidateFn | None = None,
           now: Callable[[], float] = time.time, review_fn: ReviewFn | None = None) -> dict[str, int]:
-    """ერთი გავლა: stale uploading → needs_check; unavailable (ვადა გავიდა) → pending; pending → ვალიდაცია;
-    ready|failed AI ანალიზის გარეშე → AI ანალიზი; approved → ატვირთვა. აბრუნებს მთვლელებს.
+    """ერთი გავლა: stale uploading → needs_check; unavailable (ვადა გავიდა) → pending; „MHR-ში აკლია“ და იქ რამე შეიცვალა →
+    pending; pending → ვალიდაცია; ready|failed AI ანალიზის გარეშე → AI ანალიზი; approved → ატვირთვა. აბრუნებს მთვლელებს.
     `mhr.enabled=false` → არაფერს აკეთებს."""
     counts = {k: 0 for k in ("requeued", "ready", "approved", "failed", "skipped", "unavailable", "uploaded",
-                             "upload_retry", "upload_failed", "needs_check", "rejected", "recovered", "ai_reviewed", "split")}
+                             "upload_retry", "upload_failed", "needs_check", "rejected", "recovered", "ai_reviewed", "split",
+                             "rechecked")}
     m = cfg.section("mhr")
     if not m.get("enabled"):
         return counts
@@ -195,6 +206,9 @@ def sweep(repo, cfg, client: MhrClient | None = None, validate_fn: ValidateFn | 
                       " ORDER BY updated_at LIMIT ?", (S.NEEDS_CHECK.value, t, UPLOAD_MAX_ATTEMPTS, SWEEP_LIMIT)):
         _resolve_needs_check(repo, client, row, retry_at, counts)
 
+    # (a2) MHR-ში ფაილი/თანამშრომელი აკლდა: გაჩნდა? — მაშინ ქვემოთ, ამავე გავლაზე, თავიდან შედარდება
+    _recheck_missing(repo, cfg, m, client, t, counts)
+
     # (b) ვალიდაცია
     for row in repo.q("SELECT * FROM mhr_items WHERE status=? ORDER BY updated_at LIMIT ?",
                       (S.PENDING.value, SWEEP_LIMIT)):
@@ -208,6 +222,60 @@ def sweep(repo, cfg, client: MhrClient | None = None, validate_fn: ValidateFn | 
                       " ORDER BY updated_at LIMIT ?", (S.APPROVED.value, t, SWEEP_LIMIT)):
         _upload_one(repo, cfg, m, client, row, retry_at, counts)
     return counts
+
+
+def _recheck_missing(repo, cfg, m: dict[str, Any], client: MhrClient, t: float, counts: dict[str, int]) -> None:
+    """„MHR-ში აკლია“ ჩანაწერები: MHR-ს ეკითხება (მხოლოდ კითხვა — თანამშრომელი და მისი ფაილების სია), შეიცვალა თუ არა
+    რამე იმის შემდეგ, რაც შედარებამ ნახა (`validation.mhr_snapshot`). შეიცვალა → failed → pending, ოპერატორის დაჭერის გარეშე;
+    არ შეიცვალა → შემდეგი კითხვა `mhr.missing_recheck_minutes` წუთში. AI ანალიზი არ იშლება: თუ ახალი შედარება იგივეს
+    იტყვის, `_validate_one` ძველს დატოვებს. ძველი ვერსიის ჩანაწერს ანაბეჭდი არ აქვს — ის ერთხელ მოწმდება თავიდან."""
+    minutes = float(m.get("missing_recheck_minutes") or 0)
+    if minutes <= 0:
+        return
+    rows = repo.q("SELECT document_id, personal_number, validation, attempts FROM mhr_items WHERE status=? AND error IS NULL"
+                  " AND validation LIKE ? AND (next_try IS NULL OR next_try <= ?) ORDER BY updated_at LIMIT ?",
+                  (S.FAILED.value, mhr_missing.SQL_LIKE, t, MISSING_LIMIT))
+    by_person: dict[str, list[tuple[Any, dict[str, Any]]]] = defaultdict(list)
+    for row in rows:
+        v = json.loads(row["validation"] or "{}")
+        if row["personal_number"] and mhr_missing.missing_kind(v):
+            by_person[row["personal_number"]].append((row, v))
+    if not by_person:
+        return
+    from .validation import mhr_snapshot
+    later = t + minutes * 60
+    for pn, items in by_person.items():
+        try:
+            emp = client.get_employee(pn)
+            now_in_mhr = mhr_snapshot(cfg, emp, client.list_documents(emp.employee_id) if emp else [])
+        except (MhrUnavailable, MhrError) as e:   # MHR ახლა არ პასუხობს — ჩანაწერი ადგილზე რჩება, მოგვიანებით ისევ
+            log.info("missing-in-MHR recheck postponed: %s", type(e).__name__)
+            now_in_mhr = None
+        for row, v in items:
+            doc_id, seen = row["document_id"], v.get("mhr_snapshot")
+            changed = now_in_mhr is not None and (seen != now_in_mhr if seen else row["attempts"] == 0)
+            if changed and repo.mhr_transition(doc_id, (S.FAILED.value,), S.PENDING.value, attempts=1, next_try=None):
+                counts["rechecked"] += 1
+                _event(repo, doc_id, "recheck (MHR changed)")
+            elif not changed:   # updated_at-ს არ ვეხებით: სიაში რიგი და „როდის შემოწმდა“ არ უნდა იცვლებოდეს ყოველ კითხვაზე
+                repo.conn.execute("UPDATE mhr_items SET next_try=? WHERE document_id=? AND status=?",
+                                  (later, doc_id, S.FAILED.value))
+    repo.set_control(MISSING_CHECKED_KEY, now_iso())
+
+
+def _same_outcome(old_validation: str | None, res: ValidationResult) -> bool:
+    """ახალი შედარება იმავეს ამბობს, რასაც ძველი (იგივე შემოწმებები და სხვაობები) — AI ანალიზის თავიდან გაკეთება ზედმეტი ხარჯია.
+    შენიშვნის ტექსტი არ ითვლება: ის ვერსიიდან ვერსიამდე იცვლება, შედეგი კი იგივე რჩება."""
+    try:
+        old = json.loads(old_validation or "{}")
+    except ValueError:
+        return False
+
+    def essence(v: dict[str, Any]) -> tuple:
+        return (v.get("status"),
+                [(c.get("field"), c.get("status"), c.get("blocking")) for c in v.get("checks") or []],
+                [(d.get("page"), d.get("kind"), d.get("significant"), d.get("original"), d.get("scanned")) for d in v.get("diffs") or []])
+    return essence(old) == essence(res.to_dict())
 
 
 def _ai_review_pending(repo, cfg, review_fn: ReviewFn | None, counts: dict[str, int]) -> None:
@@ -296,7 +364,10 @@ def _validate_one(repo, cfg, m: dict[str, Any], client: MhrClient, validate_fn: 
             counts["unavailable"] += 1
             _event(repo, doc_id, f"unavailable ({type(e).__name__})", type_id, level="warning")
         return
-    fields: dict[str, Any] = {"validation": res.to_dict(), "error": res.error, "ai_review": None,
+    # AI ანალიზი აქამდე მხოლოდ თავისით გადამოწმებისას აღწევს (ოპერატორის „ხელახლა შედარება“ მას წინასწარ შლის):
+    # MHR-ში სხვა რამ შეიცვალა და შედეგი იგივე დარჩა → ძველი ანალიზი ძალაშია
+    keep_ai = row["ai_review"] if row["ai_review"] and _same_outcome(row["validation"], res) else None
+    fields: dict[str, Any] = {"validation": res.to_dict(), "error": res.error, "ai_review": keep_ai,
                               "employee_id": res.employee.employee_id if res.employee else None}
     if res.status == "passed":
         dt = cfg.doc_type(type_id)

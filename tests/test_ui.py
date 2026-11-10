@@ -825,9 +825,9 @@ def test_missing_original_is_a_warning_with_working_manual_upload(client, tmp_pa
     assert "ხელით ატვირთვა — შედარების გარეშე" in page and f'action="/doc/{doc}/manual-upload"' in page
     assert "შედარება არ მომხდარა" in page and "ატვირთვა მაინც" in page       # ორივე გზა ღიაა
     assert "MHR-ში ხელშეკრულება ვერ მოიძებნა" in c.get(f"/doc/{doc}").text   # დოკუმენტის გვერდზე სწორი სათაური
-    home = c.get("/").text
-    assert "1 ფაილმა ვერ გაიარა MHR-ის შემოწმება" in home and "ნახე რატომ" in home and "ნახე სხვაობები" not in home
-    assert "ნახე სხვაობები" not in c.get("/mhr?tab=failed").text              # შესადარებელი არაფერია — ღილაკი „დეტალები“
+    home = c.get("/").text                                                    # „ვერ გაიარა“ კი არა — MHR-ში აკლია, ცალკე სიით
+    assert "1 თანამშრომელს MHR-ში რაღაც აკლია" in home and "ნახე სია" in home and "ვერ გაიარა MHR-ის შემოწმება" not in home
+    assert doc not in c.get("/mhr?tab=failed").text and doc in c.get("/mhr?tab=missing").text
 
     r = c.post(f"/doc/{doc}/manual-upload", data={"back": f"/mhr/{doc}"}, headers={"origin": LOCAL}, follow_redirects=False)
     assert r.status_code == 303 and "ატვირთულია MHR-ზე — ნინო ბერიძე" in c.get(r.headers["location"]).text
