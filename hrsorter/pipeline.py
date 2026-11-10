@@ -27,7 +27,7 @@ from .employee_api import build_directory, lookup_employee
 from .errors import HRSorterError, JobError
 from .extractor import extract
 from .features import page_features
-from .models import (DocumentOutcome, ErrorCode, InputMode, PageRole, PageText, Segment, SegmentKind)
+from .models import (DocumentOutcome, ErrorCode, FieldSource, FieldValue, InputMode, PageRole, PageText, Segment, SegmentKind)
 from .ocr import build_ocr_chain
 from .output import MATCH_RESOLVED_REASONS, publish, retire_previous
 from .pageanalysis import analyze_page
@@ -141,12 +141,36 @@ def _goes_to_mhr(outcome: DocumentOutcome) -> bool:
     return bool(pn and pn.value) and set(outcome.decision.review_reasons) <= MATCH_RESOLVED_REASONS
 
 
+def _typed_document_date(extraction, doc_type, seg_pages: list[PageText]) -> None:
+    """პირადობაზე და ანკეტაზე ტექსტში პირველი თარიღი დაბადების თარიღია. დოკუმენტის თარიღი კი პირადობაზე გაცემის, ანკეტაზე
+    შევსების თარიღია; ვერ წაიკითხა → თარიღი უცნობია (დაბადების თარიღით წელი და საქაღალდე არ დგება)."""
+    if doc_type is None or not (doc_type.identity or doc_type.employee_form):
+        return
+    text = "\n".join(p.text or "" for p in seg_pages)
+    if doc_type.identity:
+        from .idcard import parse_id_card
+        iso, what = parse_id_card(text).issue_date, "გაცემის თარიღი"
+    else:
+        from .empform import parse_employee_form
+        form = parse_employee_form(text)
+        iso, what = form.fill_date or form.start_date, "შევსების თარიღი"
+    old = extraction.fields.get("document_date")
+    candidates = [c for c in (old.candidates if old else []) if c != iso]
+    if old and old.value and old.value != iso:
+        candidates.append(old.value)
+    extraction.fields["document_date"] = FieldValue(
+        value=iso, source=FieldSource.DOCUMENT.value if iso else None, page_index=seg_pages[0].page_index if seg_pages else None,
+        confidence=0.9 if iso else 0.0, evidence=what if iso else None, handwritten=bool(doc_type.employee_form),
+        candidates=candidates)
+
+
 def _build_outcome(repo, job, src, cfg: Config, s: Segment, pages: list[PageText], page_hashes: list[str],
                    classifier: Classifier, directory, mode_mismatch: bool, attempts: list[dict]) -> DocumentOutcome:
     seg_pages = [pages[i] for i in s.pages]
     classification = classifier.classify_pages(seg_pages)
     doc_type = cfg.doc_type(classification.type_id)
     extraction = extract(seg_pages, doc_type, cfg)
+    _typed_document_date(extraction, doc_type, seg_pages)
     employee = lookup_employee(directory, extraction)
     company = resolve_company(extraction, cfg, job["profile_id"], employee)
     document_date, year = resolve_year(extraction)

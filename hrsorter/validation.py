@@ -48,6 +48,7 @@ from .features import company_core, surname_lemma
 from .mhr_models import Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, TextDiff, ValidationResult, clean_file_title
 from .ocr.base import OcrError
 from .output import PartSpec, adopt_match, split_document
+from .empform import parse_employee_form
 from .idcard import parse_id_card, same_name
 from .stages import STAGE_KA, file_stage, strip_stage, text_stage
 from .ocr.chain import build_ocr_chain
@@ -406,6 +407,101 @@ def _name_check(field: str, doc_val: Any, mhr_val: Any, threshold: float, verifi
         else:
             c.note = f"პირადობით დადასტურებულია „{mhr_val}“ — ქაღალდზე სხვა {c.label_ka.lower()} წერია"
     return c
+
+
+# --- ანკეტა („ინფორმაცია თანამშრომელზე“) -------------------------------------------------------------------------
+def _employment_starts(cfg: Config, employee: MhrEmployee) -> list[str]:
+    """MHR-ში ჩაწერილი მუშაობის დაწყების თარიღები (ყველა დასაქმების პერიოდი + მიმდინარე), ISO."""
+    emap = cfg.data["mhr"].get("employee_map") or {}
+    emps = _get_path(employee.raw or {}, emap.get("employments") or "")
+    starts = {_iso(e.get("start")) for e in emps if isinstance(e, dict)} if isinstance(emps, list) else set()
+    starts.add(_iso(employee.contract_start))
+    return sorted(s for s in starts if s)
+
+
+def _verified_birth_date(repo: Repository, verified: dict[str, Any] | None) -> str | None:
+    """დადასტურებული პირადობის დაბადების თარიღი (პირადობა ამ კომპიუტერზეა დამუშავებული); სხვაგვარად None."""
+    if not verified or not verified.get("document_id"):
+        return None
+    doc = repo.get_document(verified["document_id"])
+    if doc is None:
+        return None
+    return parse_id_card("\n".join(p.get("text") or "" for p in document_pages(repo, doc))).birth_date
+
+
+def _validate_employee_form(result: ValidationResult, cfg: Config, repo: Repository, row, type_id: str,
+                            scanned: list[dict[str, Any]], employee: MhrEmployee, refs: list[MhrDocRef],
+                            verified: dict[str, Any] | None) -> ValidationResult:
+    """ხელით შევსებული ანკეტა. MHR-ს ედარება ის, რაც ციფრებია: პირადი ნომერი და მუშაობის დაწყების თარიღი; დაბადების თარიღი —
+    დადასტურებულ პირადობას. ხელნაწერი სახელი მხოლოდ შენიშვნაა (ხშირად ვერ იკითხება). ყველაფერი ემთხვევა და ხელმოწერილია →
+    `employee_form: match` (ავტომატური ატვირთვა); პირადობა ჯერ არ დადასტურებულა → გადის, მაგრამ ოპერატორი ადასტურებს."""
+    form = parse_employee_form("\n".join(p.get("text") or "" for p in scanned))
+    checks = result.checks
+    pn = form.personal_number or digits_only(str(row["personal_number"] or ""))
+    pn_check = _check("personal_number", pn, employee.personal_number, lambda d, m: digits_only(str(d)) == digits_only(str(m)))
+    checks.append(pn_check)
+
+    starts = _employment_starts(cfg, employee)
+    label = "მუშაობის დაწყების თარიღი"
+    if not form.start_date:
+        start = Check("start_date", label, None, ", ".join(starts) or None, "missing_in_document", True,
+                      note="მუშაობის დაწყების თარიღი ანკეტიდან ვერ წაიკითხა — ნახე ქაღალდი; თუ სწორია, „ატვირთვა მაინც“")
+    elif not starts:
+        start = Check("start_date", label, form.start_date, None, "missing_in_mhr", True,
+                      note="MHR-ში ამ თანამშრომლის მუშაობის დაწყების თარიღი არ წერია")
+    elif form.start_date in starts:
+        start = Check("start_date", label, form.start_date, form.start_date, "match", False)
+    else:
+        start = Check("start_date", label, form.start_date, ", ".join(starts), "mismatch", True,
+                      note="თუ MHR-ში შეცდომაა, შეასწორე და „ხელახლა შედარება“; თუ ხელნაწერი არასწორად წაიკითხა — „ატვირთვა მაინც“")
+    checks.append(start)
+
+    id_birth = _verified_birth_date(repo, verified)
+    birth: Check | None = None
+    if id_birth and form.birth_date:
+        same = id_birth == form.birth_date
+        birth = Check("birth_date", "დაბადების თარიღი", form.birth_date, id_birth, "match" if same else "mismatch", not same,
+                      note="" if same else "ანკეტაზე და დადასტურებულ პირადობაზე დაბადების თარიღი სხვადასხვაა — ნახე ქაღალდი")
+    elif id_birth:
+        birth = Check("birth_date", "დაბადების თარიღი", None, id_birth, "missing_in_document", True,
+                      note="დაბადების თარიღი ანკეტიდან ვერ წაიკითხა — ნახე ქაღალდი; თუ სწორია, „ატვირთვა მაინც“")
+    if birth:
+        checks.append(birth)
+
+    threshold = float(cfg.data["mhr"].get("name_similarity", 0.85))
+    mhr_name = " ".join(x for x in (employee.first_name, employee.last_name) if x)
+    if form.full_name and mhr_name:   # ხელნაწერი: სხვაობა არ აჩერებს — ციფრები უკვე შედარდა
+        words = form.full_name.split()
+        ok = any(employee_name_matches(a, b, employee, threshold) for a, b in ((words[0], words[-1]), (words[-1], words[0])))
+        checks.append(Check("full_name", "სახელი, გვარი", form.full_name, mhr_name, "match" if ok else "info", False,
+                            note="" if ok else f"ხელნაწერი სახელი ასე წაიკითხა: „{form.full_name}“, MHR-ში „{mhr_name}“ — შეამოწმე ქაღალდზე"))
+
+    signed = form.signed or any(p.get("signature_hint") == "present" for p in scanned)
+    if not signed:
+        checks.append(Check("signature", "ხელმოწერა", None, None, "missing_in_document", True,
+                            note="ანკეტაზე თანამშრომლის ხელმოწერა არ ჩანს — მოაწერინე და ხელახლა დაასკანერე"))
+
+    category = (cfg.data["mhr"].get("categories") or {}).get(type_id, type_id)
+    other = next((r for r in refs if r.category == category and (r.raw or {}).get("kind") == "uploaded"
+                  and (r.raw or {}).get("external_id") != row["id"]), None)
+    if other is not None:
+        when = (other.created_at or "")[:10]
+        checks.append(Check("already_uploaded", "უკვე ატვირთულია", None, other.doc_id, "info", True,
+                            note=f"ამ თანამშრომლის ანკეტა MHR-ში უკვე ატვირთულია{f' ({when})' if when else ''} — მეორედ არ "
+                                 "ავტვირთავთ; თუ ეს ახალი ანკეტაა, „ატვირთვა მაინც“"))
+
+    full = pn_check.status == "match" and start.status == "match" and signed and birth is not None and birth.status == "match"
+    if full:
+        checks.append(Check("employee_form", "ანკეტა", None, None, "match", False,
+                            note="პირადი ნომერი და მუშაობის დაწყების თარიღი MHR-ს ემთხვევა, დაბადების თარიღი — დადასტურებულ პირადობას"))
+    elif birth is None:
+        checks.append(Check("identity", "პირადობა", None, None, "info", False,
+                            note="ამ თანამშრომლის პირადობა ჯერ არ დადასტურებულა — დაბადების თარიღი ვერ შედარდა; ანკეტა თავისით არ "
+                                 "აიტვირთება (დაასკანერე პირადობა, ან ატვირთვა შენ დაადასტურე)"))
+    res = _finish(result)
+    if res.status == "passed" and full:
+        res.summary.insert(0, "ანკეტა MHR-ს და პირადობას ემთხვევა — დადასტურების გარეშე აიტვირთება")
+    return res
 
 
 VERIFIED_NAME_SIMILARITY = 0.7   # დადასტურებულ სახელთან ამდენი მსგავსება (მოკლე სახელებზეც) — წაკითხვის შეცდომაა
@@ -1120,6 +1216,8 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     if dt is not None and dt.identity:   # პირადობა: MHR-ის ფაილებთან კი არა — თანამშრომლის სახელთან და პ/ნ-თან, ზუსტად
         return _validate_identity(result, cfg, row, type_id, scanned, employee, refs)
     verified = verified_identity(repo, cfg, employee.employee_id, refs)
+    if dt is not None and dt.employee_form:   # ხელით შევსებული ანკეტა: MHR-ის ფაილებთან კი არა — თანამშრომლის მონაცემებთან
+        return _validate_employee_form(result, cfg, repo, row, type_id, scanned, employee, refs, verified)
     all_generated = [r for r in refs if _is_generated(r)]
     # თითო ეტაპს (სტაჟიორი / გამოსაცდელი / შრომითი) თავისი ფაილი აქვს: ქაღალდს მხოლოდ მისივე ეტაპის, ბოლო ცვლილების ფაილი ედარება
     stage = scan_stage(repo, row, scanned)

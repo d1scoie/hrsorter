@@ -182,6 +182,45 @@
       "identity": true
     },
     {
+      "id": "employee_form",
+      "name_ka": "თანამშრომლის ანკეტა",
+      "folder": "თანამშრომლის-ანკეტა",
+      "description": "ხელით შევსებული ფორმა „ინფორმაცია თანამშრომელზე“ (სამსახურში აყვანის ფორმა): პირადი ნომერი და მუშაობის დაწყების თარიღი MHR-ს ედარება, დაბადების თარიღი — დადასტურებულ პირადობას",
+      "positive": [
+        {
+          "pattern": "ინფორმაცია\\s+თანამშრომელზე",
+          "weight": 5,
+          "title_only": true
+        },
+        {
+          "pattern": "მუშაობის\\s+დაწყების\\s+თარიღი",
+          "weight": 2
+        },
+        {
+          "pattern": "ოფიციალური\\s+სახელი",
+          "weight": 1
+        },
+        {
+          "pattern": "სამსახურში\\s+აყვანის\\s+ფორმა",
+          "weight": 2
+        },
+        {
+          "pattern": "ანკეტაში\\s+(შევსებული|დაშვებული)",
+          "weight": 1
+        }
+      ],
+      "negative": [],
+      "fields": [
+        "personal_number",
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true,
+      "employee_form": true
+    },
+    {
       "id": "fine",
       "name_ka": "ჯარიმა",
       "folder": "ჯარიმა",
