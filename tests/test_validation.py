@@ -467,7 +467,7 @@ def test_pick_original_generated_only_by_document_date_tie_newest():
     assert pick_original([ref("u", "2024-06-04", "uploaded")], None, "2024-06-04") is None
 
 
-ALPHA_MHR = {"id": "1", "name": "შპს ალფა", "tax_id": "205273498"}
+ALPHA_MHR = {"id": "1", "name": "შპს ალფა", "tax_id": "200000001"}
 EMPLOYMENTS = [
     {"company": ALPHA_MHR, "position": "დირექტორი", "salary": {"amount": "3000.00", "currency": "GEL"},
      "start": "2025-03-15", "end": None, "active": True},
@@ -487,8 +487,8 @@ def emp_with_history(employments=EMPLOYMENTS) -> MhrEmployee:
 def cfg_tax(tmp_path):
     return make_config({"paths": {"root": str(tmp_path)},
                         "companies": [{"id": "alpha", "name": "შპს „ალფა\"", "folder": "ალფა", "aliases": ["ალფა"],
-                                       "tax_id": "205273498"},
-                                      {"id": "beta", "name": "შპს ბეტა", "folder": "ბეტა", "tax_id": "405405413"}],
+                                       "tax_id": "200000001"},
+                                      {"id": "beta", "name": "შპს ბეტა", "folder": "ბეტა", "tax_id": "400000002"}],
                         "mhr": {"contract_type_ids": ["contract"]}})
 
 
@@ -524,21 +524,21 @@ def test_employments_without_covering_period_uses_nearest_start(repo, cfg_tax):
 
 def test_company_matched_by_tax_id_not_raw_id(repo, cfg_tax):
     doc = add_doc(repo, type_id="hire_order")              # config id "alpha", MHR id "1"
-    raw = {"company": {"id": "1", "name": "სხვა სახელი", "tax_id": "205273498"}}
+    raw = {"company": {"id": "1", "name": "სხვა სახელი", "tax_id": "200000001"}}
     r = validate_document(repo, cfg_tax, doc, FakeClient(employee=employee(company_id="1", raw=raw)))
     c = next(c for c in r.checks if c.field == "company")
-    assert c.status == "match" and "205273498" in c.mhr_value
+    assert c.status == "match" and "200000001" in c.mhr_value
     assert c.document_value == cfg_tax.company("alpha").name   # ადამიანის სახელი, არა პროგრამის შიდა კოდი
-    raw2 = {"company": {"id": "alpha", "name": "შპს „ალფა\"", "tax_id": "405405413"}}   # id/სახელი ემთხვევა, tax_id — არა
+    raw2 = {"company": {"id": "alpha", "name": "შპს „ალფა\"", "tax_id": "400000002"}}   # id/სახელი ემთხვევა, tax_id — არა
     r2 = validate_document(repo, cfg_tax, doc, FakeClient(employee=employee(company_id="alpha", raw=raw2)))
     assert [c.field for c in r2.blocking_failures] == ["company"]
 
 
 def test_company_name_alias_fallback_without_config_tax_id(repo, cfg):
     doc = add_doc(repo, type_id="hire_order")              # cfg: alpha = „შპს ალფა", tax_id-ის გარეშე
-    ok = {"company": {"id": "1", "name": "შპს ალფა", "tax_id": "205273498"}}
+    ok = {"company": {"id": "1", "name": "შპს ალფა", "tax_id": "200000001"}}
     assert validate_document(repo, cfg, doc, FakeClient(employee=employee(company_id="1", raw=ok))).status == "passed"
-    bad = {"company": {"id": "alpha", "name": "შპს მადარტ დელივერი", "tax_id": "405405413"}}
+    bad = {"company": {"id": "alpha", "name": "შპს გამა დელივერი", "tax_id": "400000002"}}
     r = validate_document(repo, cfg, doc, FakeClient(employee=employee(company_id="alpha", raw=bad)))
     assert [c.field for c in r.blocking_failures] == ["company"]
 
@@ -828,7 +828,7 @@ def test_recheck_skipped_when_disabled_or_offline_or_failing(repo, cfg, monkeypa
 
 
 def test_clean_recheck_text_drops_model_markers():
-    t = "მუხლი 5\n[ბეჭედი: შპს არბო 2009, 205273498]\nხელფასი 1300 [?] ლარი [ხელნაწერი: ა. მ.]"
+    t = "მუხლი 5\n[ბეჭედი: შპს არბო 2009, 200000001]\nხელფასი 1300 [?] ლარი [ხელნაწერი: ა. მ.]"
     assert validation._clean_recheck_text(t).split() == ["მუხლი", "5", "ხელფასი", "1300", "ლარი"]
 
 
