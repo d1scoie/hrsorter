@@ -22,6 +22,7 @@ class OcrResult:
     text: str
     mean_confidence: float | None = None           # 0..1; None თუ პროვაიდერი არ იძლევა
     words: list[dict[str, Any]] = field(default_factory=list)  # {text, conf (0..1|None), bbox (l,t,r,b) px}
+    signature_parties: dict[str, bool] | None = None  # ონლაინ მკითხველის პასუხი „ვინ მოაწერა ხელი“ (ocr/signatures.py); None — არ უთქვამს
 
 
 @runtime_checkable

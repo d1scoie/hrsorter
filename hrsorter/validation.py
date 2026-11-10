@@ -501,7 +501,9 @@ def _validate_employee_form(result: ValidationResult, cfg: Config, repo: Reposit
         checks.append(Check("full_name", "სახელი, გვარი", form.full_name, mhr_name, "match" if ok else "info", False,
                             note="" if ok else f"ხელნაწერი სახელი ასე წაიკითხა: „{form.full_name}“, MHR-ში „{mhr_name}“ — შეამოწმე ქაღალდზე"))
 
-    signed = form.signed or any(p.get("signature_hint") == "present" for p in scanned)
+    # მკითხველმა პირდაპირ თქვა, მოაწერა თუ არა თანამშრომელმა → ეს წყვეტს; არ უთქვამს → გვერდის ზოგადი შეფასება
+    said = [x for x in ((p.get("signature_parties") or {}).get("employee") for p in scanned) if x is not None]
+    signed = form.signed or (any(said) if said else any(p.get("signature_hint") == "present" for p in scanned))
     if not signed:
         checks.append(Check("signature", "ხელმოწერა", None, None, "missing_in_document", True,
                             note="ანკეტაზე თანამშრომლის ხელმოწერა არ ჩანს — მოაწერინე და ხელახლა დაასკანერე"))
