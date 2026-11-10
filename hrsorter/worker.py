@@ -163,10 +163,11 @@ class Worker:
 
     def _mhr_sweep(self, cfg: Config) -> None:
         """MHR რიგის ერთი გავლა საკუთარი კავშირით; შეცდომა worker-ს არ აჩერებს (ჟურნალში — მხოლოდ ტიპი)."""
-        from . import mhr_queue
+        from . import mhr_queue, sameperson
         repo: Repository | None = None
         try:
             repo = Repository(self.db_path)
+            sameperson.sweep(repo, cfg)   # პ/ნ-ის გარეშე დანართი → ნომერი იმავე თანამშრომლის სხვა სკანიდან, შემდეგ შედარება
             mhr_queue.sweep(repo, cfg)
         except Exception as e:
             log.error("mhr sweep failed: %s\n%s", type(e).__name__, "".join(traceback.format_tb(e.__traceback__)))
