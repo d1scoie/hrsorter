@@ -299,8 +299,13 @@ def _validate_one(repo, cfg, m: dict[str, Any], client: MhrClient, validate_fn: 
     fields: dict[str, Any] = {"validation": res.to_dict(), "error": res.error, "ai_review": None,
                               "employee_id": res.employee.employee_id if res.employee else None}
     if res.status == "passed":
-        to = S.APPROVED if not m.get("require_approval", True) else S.READY
+        dt = cfg.doc_type(type_id)
+        auto_identity = bool(dt and dt.identity and m.get("identity_auto_upload", True)
+                             and any(c.field == "identity" and c.status == "match" for c in res.checks))
+        to = S.APPROVED if not m.get("require_approval", True) or auto_identity else S.READY
         fields.update(attempts=0, next_try=None)
+        if auto_identity:   # პირადობა MHR-ს „ერთი ერთში“ ემთხვევა — მომხმარებელმა ასე ითხოვა: დადასტურების გარეშე
+            fields["decided_by"] = "auto:identity"
     elif res.status == "split":   # ნაწილები უკვე რიგშია — თითოეული შემდეგ გავლაზე ცალკე მოწმდება
         to = S.SPLIT
     elif res.status in ("failed", "skipped"):
@@ -335,10 +340,15 @@ def _upload_meta(repo, cfg, row, doc, type_id: str, sha: str) -> dict[str, Any]:
     src = repo.get_source(doc["source_id"])
     date = doc["document_date"] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", doc["document_date"] or "") else None
     number = (doc["doc_number"] or "").strip()
+    title = f"{name or (t.name_ka if t else type_id)} — ხელმოწერილი სკანი"
+    if t is not None and t.identity:   # სხვა კომპიუტერიც სათაურით ხედავს, რომ პირადობა MHR-ს ემთხვევა (validation.verified_identity)
+        from .validation import IDENTITY_TITLE
+        verified = any(c.get("field") == "identity" and c.get("status") == "match" for c in v.get("checks", []))
+        title = IDENTITY_TITLE if verified else t.name_ka
     return {
         "external_id": doc["id"],
         "sha256": sha,
-        "title": f"{name or (t.name_ka if t else type_id)} — ხელმოწერილი სკანი"[:255],
+        "title": title[:255],
         "document_date": date,
         "document_number": number if 0 < len(number) <= 100 else None,
         "signed_copy_of": signed_copy_of,
