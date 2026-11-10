@@ -17,7 +17,7 @@ from hrsorter.mhr_client import MAX_UPLOAD_BYTES, HttpMhr, MhrUploadUncertain, M
 from hrsorter.mhr_models import MhrDocRef, MhrError, MhrUnavailable
 
 DOCX_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-ARBO = {"id": "1", "name": "შპს არბო 2009", "tax_id": "205273498"}
+ARBO = {"id": "1", "name": "შპს არბო 2009", "tax_id": "200000001"}
 EMP = {"id": "4521", "personal_number": "01001000001", "first_name": "ნინო", "last_name": "ბერიძე",
        "company": ARBO, "branch": "ვაზისუბანი", "position": "ბუღალტერი",
        "salary": {"amount": "2500.00", "currency": "GEL"}, "contract_start": "2024-06-04",
@@ -72,7 +72,7 @@ def test_mock_get_employee_nested_maps(mock_dir):
     c = MockMhr(mock_dir)
     e = c.get_employee("01001000001")
     assert e.employee_id == "4521" and e.first_name == "ნინო" and e.company_id == "1" and e.salary == "2500.00"
-    assert e.raw["company"]["tax_id"] == "205273498" and len(e.raw["employments"]) == 2
+    assert e.raw["company"]["tax_id"] == "200000001" and len(e.raw["employments"]) == 2
     assert c.get_employee("99999999999") is None
 
 
