@@ -300,12 +300,17 @@ def _validate_one(repo, cfg, m: dict[str, Any], client: MhrClient, validate_fn: 
                               "employee_id": res.employee.employee_id if res.employee else None}
     if res.status == "passed":
         dt = cfg.doc_type(type_id)
-        auto_identity = bool(dt and dt.identity and m.get("identity_auto_upload", True)
-                             and any(c.field == "identity" and c.status == "match" for c in res.checks))
-        to = S.APPROVED if not m.get("require_approval", True) or auto_identity else S.READY
+
+        def matched(field: str) -> bool:
+            return any(c.field == field and c.status == "match" for c in res.checks)
+        # პირადობა MHR-ს „ერთი ერთში“ ემთხვევა / ანკეტა MHR-ს და პირადობას ემთხვევა — მომხმარებელმა ასე ითხოვა: დადასტურების გარეშე
+        auto = ("identity" if dt and dt.identity and m.get("identity_auto_upload", True) and matched("identity") else
+                "employee_form" if dt and dt.employee_form and m.get("employee_form_auto_upload", True) and matched("employee_form")
+                else None)
+        to = S.APPROVED if not m.get("require_approval", True) or auto else S.READY
         fields.update(attempts=0, next_try=None)
-        if auto_identity:   # პირადობა MHR-ს „ერთი ერთში“ ემთხვევა — მომხმარებელმა ასე ითხოვა: დადასტურების გარეშე
-            fields["decided_by"] = "auto:identity"
+        if auto:
+            fields["decided_by"] = f"auto:{auto}"
     elif res.status == "split":   # ნაწილები უკვე რიგშია — თითოეული შემდეგ გავლაზე ცალკე მოწმდება
         to = S.SPLIT
     elif res.status in ("failed", "skipped"):

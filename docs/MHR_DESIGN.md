@@ -27,7 +27,7 @@ endpoint-ები/map-ები = **MHR HR Sorter API** (`docs/api/hr-sorter-op
   413 `file_too_large`, 422 `unknown_category`/`not_pdf`/`sha256_mismatch`/`invalid_signed_copy_of`/`validation_failed`;
   429 + `Retry-After` (≤ 30 წმ ერთ ლოდინზე, retry-ს ბიუჯეტში). `signed_copy_of` ⇒ MHR ორიგინალს ხელმოწერილად ნიშნავს.
 - კატეგორიები: contract, annex, fine, vacation, application, hire_order, dismissal_order, explanation, id_card
-  (id_card — პირადობის მოწმობა; MHR-ის მხარეს დასამატებელია, იხ. MHR_API_PROMPT.md)
+  (id_card — პირადობის მოწმობა), employee_form (თანამშრომლის ანკეტა; MHR-ის მხარეს დასამატებელია, იხ. MHR_API_PROMPT.md)
   (`mhr.categories`: `contract_annex` → `annex`). შეცდომის შეტყობინებაში მხოლოდ მანქანური `error.code`.
 
 ეს ეტაპი ცვლის ტექნიკური დავალების §3-ის „ატვირთვა ფარგლებს გარეთაა" — მომხმარებელმა ცალსახად მოითხოვა.
