@@ -342,7 +342,7 @@ def test_claude_code_auth_status_and_login_launch(monkeypatch):
 
 def test_claude_code_recognize_printed_uses_recheck_prompt(img):
     """ხელახალი წაკითხვა (validation._recheck_diffs): ინსტრუქცია ბეჭდებს/ხელმოწერებს საერთოდ გამოტოვებს — რეალურ სკანზე
-    ჩვეულებრივი OCR-ინსტრუქციით მოდელი „[ბეჭედი: შპს არბო 2009 …]"-ს წერდა და ის ორიგინალთან შედარებაში ჩანდა."""
+    ჩვეულებრივი OCR-ინსტრუქციით მოდელი „[ბეჭედი: შპს ალფა 2009 …]"-ს წერდა და ის ორიგინალთან შედარებაში ჩანდა."""
     from hrsorter.ocr.claude_code_vision import PROMPT, RECHECK_PROMPT, ClaudeCodeVisionProvider
     run = FakeClaude({"is_error": False, "subtype": "success", "result": "მუხლი 5", "total_cost_usd": 0.1})
     p = ClaudeCodeVisionProvider(_cc_cfg(claude_cmd=sys.executable), runner=run, secret_getter=lambda s, n: None)

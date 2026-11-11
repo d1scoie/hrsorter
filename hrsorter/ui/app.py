@@ -2663,7 +2663,7 @@ def _settings_body(c: Config, msg: str, err: str) -> str:
     choices = "".join(f'<option value="{e(co["id"])}" {"selected" if co["id"] == d["default_company"]["id"] else ""}>{e(co["name"])}</option>'
                       for co in d["companies"])
     out.append('<div class="card section"><h2>კომპანიები</h2><p class="hint">რომელი კომპანიების დოკუმენტებს ელოდები. '
-               'სხვა ფორმებში ჩაწერე, როგორ შეიძლება ეწეროს დოკუმენტში (მაგ. „არბო 2009, არბო“). წასაშლელად წაშალე დასახელება.</p>'
+               'სხვა ფორმებში ჩაწერე, როგორ შეიძლება ეწეროს დოკუმენტში (მაგ. „ალფა 2009, ალფა“). წასაშლელად წაშალე დასახელება.</p>'
                f'{rows}' + _field("თუ კომპანია დოკუმენტში ვერ მოიძებნა", f'<select name="default_company_choice"><option value="">'
                                   f'— {e(d["default_company"]["name"])} (ამჟამინდელი) —</option>{choices}</select>') + "</div>")
 

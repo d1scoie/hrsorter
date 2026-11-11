@@ -198,7 +198,7 @@ def test_running_lines_detection():
 
 
 # --- თანამდებობის შაბლონი: `${key-ლეიბლი}` ცვლადები ---------------------------------------------------------
-TEMPLATE = ("ერთი მხრივ, შპს „არბო 2009“ (ს/ნ 200000001) და მეორე მხრივ, ${user_name-სახელი} ${user_lastname-გვარი} "
+TEMPLATE = ("ერთი მხრივ, შპს „ალფა 2009“ (ს/ნ 200000001) და მეორე მხრივ, ${user_name-სახელი} ${user_lastname-გვარი} "
             "(პ/ნ ${user_personal_number-პირადი ნომერი}) ყოველთვიურად შეადგენს ${fixed_salery-2000} (ორი ათასი) ლარს. "
             "ხელშეკრულება მოქმედებს ${fixed_user_contract_end_date-1} (ერთი) წლის ვადით, პუნქტი 1.5 ძალაშია.")
 
@@ -210,20 +210,20 @@ def _tpl_diffs(scanned: str):
 
 
 def test_template_placeholders_accept_filled_values():
-    scanned = ("ერთი მხრივ, შპს „არბო 2009“ (ს/ნ 200000001) და მეორე მხრივ, მარინა პეტროვი (3/6 01001000202) "
+    scanned = ("ერთი მხრივ, შპს „ალფა 2009“ (ს/ნ 200000001) და მეორე მხრივ, მარინა პეტროვი (3/6 01001000202) "
                "ყოველთვიურად შეადგენს 2000 (ორი ათასი) ლარს. ხელშეკრულება მოქმედებს 1 (ერთი) წლის ვადით, პუნქტი 1.5 ძალაშია.")
     assert _tpl_diffs(scanned) == []
 
 
 def test_template_literal_words_next_to_placeholder_must_match():
-    scanned = ("ერთი მხრივ, შპს „არბო 2009“ (ს/ნ 200000001) და მეორე მხრივ, მარინა პეტროვი (3/6 01001000202) "
+    scanned = ("ერთი მხრივ, შპს „ალფა 2009“ (ს/ნ 200000001) და მეორე მხრივ, მარინა პეტროვი (3/6 01001000202) "
                "ყოველთვიურად შეადგენს 1800 (ათას რვაასი) ლარს. ხელშეკრულება მოქმედებს 1 (ერთი) წლის ვადით, პუნქტი 1.5 ძალაშია.")
     diffs = _tpl_diffs(scanned)
     assert len(diffs) == 1 and "რვაასი" in diffs[0].scanned and "{…}" in diffs[0].original
 
 
 def test_template_literal_number_change_is_detected():
-    scanned = ("ერთი მხრივ, შპს „არბო 2009“ (ს/ნ 200000001) და მეორე მხრივ, მარინა პეტროვი (3/6 01001000202) "
+    scanned = ("ერთი მხრივ, შპს „ალფა 2009“ (ს/ნ 200000001) და მეორე მხრივ, მარინა პეტროვი (3/6 01001000202) "
                "ყოველთვიურად შეადგენს 2000 (ორი ათასი) ლარს. ხელშეკრულება მოქმედებს 1 (ერთი) წლის ვადით, პუნქტი 1.6 ძალაშია.")
     assert [d.reason for d in _tpl_diffs(scanned)] == ["ციფრები განსხვავდება"]
 
@@ -305,10 +305,10 @@ def test_requisites_table_columns_read_in_other_order_with_mhr_values():
     """ბოლო გვერდის რეკვიზიტების ცხრილი: OCR სვეტებს სხვა რიგით კითხულობს, ცვლადების ადგილას MHR-ის თანამშრომლის
     მონაცემებია — ხმაური. შეცვლილი ბანკი/ნომერი და ჩამატებული ტექსტი იმავე გვერდზე ისევ ჩანს."""
     from hrsorter.textcompare import mark_placeholders
-    tpl = ("დამსაქმებელი დასაქმებული\nშპს არბო 2009 ${name}\nს/ნ 200000001 პ/ნ ${pn}\nმისამართი ქ თბილისი პეკინის ქ 17\n"
+    tpl = ("დამსაქმებელი დასაქმებული\nშპს ალფა 2009 ${name}\nს/ნ 200000001 პ/ნ ${pn}\nმისამართი ქ თბილისი პეკინის ქ 17\n"
            "მისამართი ${address}\nელ ფოსტა info@example.ge\nელ ფოსტა ${email}\nდირექტორი\nტელ ${phone}\n"
            "დავით გელაშვილი\nბანკი tbc")
-    scanned = ("დამსაქმებელი დასაქმებული\nშპს არბო 2009\nს/ნ 200000001\nმარინა პეტროვი\nპ/ნ 01001000202\n"
+    scanned = ("დამსაქმებელი დასაქმებული\nშპს ალფა 2009\nს/ნ 200000001\nმარინა პეტროვი\nპ/ნ 01001000202\n"
                "მისამართი ქ თბილისი პეკინის ქ ne17\nქ თბილისი წერეთლის 3/6 ბ 13\nელ ფოსტა info@example.ge\n"
                "ელ ფოსტა marinapetrova@example.com\nტელ 555000111\nდირექტორი დავით გელაშვილი\nბანკი tbc")
     known = ["მარინა", "პეტროვი", "01001000202", "წერეთლის", "3/6", "13"]
@@ -333,10 +333,10 @@ def test_last_page_inserted_clause_line_is_detected_despite_table_leniency():
     ცხრილის მოკლე სტრიქონები და OCR-შეცდომიანი ნამდვილი პუნქტი — არა."""
     from hrsorter.textcompare import mark_placeholders
     tpl = ("12.1. მხარეები თანხმდებიან, რომ წინამდებარე ხელშეკრულება შედგენილია ორ თანაბარი იურიდიული ძალის მქონე "
-           "ეგზემპლარად, თითო მხარისთვის.\nდამსაქმებელი დასაქმებული\nშპს არბო ${name}\nს/ნ 200000001 პ/ნ ${pn}\n"
+           "ეგზემპლარად, თითო მხარისთვის.\nდამსაქმებელი დასაქმებული\nშპს ალფა ${name}\nს/ნ 200000001 პ/ნ ${pn}\n"
            "ტელ ${phone}\nდირექტორი დავით გელაშვილი")
     ok = ("12.1. მხარეები თანხმდებიან, რომ წიწამდებარე ხელშეკრულება შედგენილია ორ თანაბარი იურიდიული ძალის მქოწე "
-          "ეგზემპლარად, თითო მხარისთვის.\nდამსაქმებელი დასაქმებული\nშპს არბო მარინა პეტროვი\nს/ნ 200000001 პ/ნ 01001000202\n"
+          "ეგზემპლარად, თითო მხარისთვის.\nდამსაქმებელი დასაქმებული\nშპს ალფა მარინა პეტროვი\nს/ნ 200000001 პ/ნ 01001000202\n"
           "ტელ 555000111\nდირექტორი დავით გელაშვილი")
     known = ["მარინა", "პეტროვი", "01001000202"]
 
@@ -380,9 +380,9 @@ def test_pure_insertion_of_known_company_tokens_is_stamp_noise():
     orig = ["7.1 შორის მიღწეული ორმხრივი შეთანხმების საფუძველზე წინამდებარე ხელშეკრულება წყდება.\n7.2 სხვა პირობა.\n7.3 კიდევ ერთი.\n7.4 ბოლო."]
     scan = ["7.1 შორის მიღწეული ორმხრივი 2009 7.2 7.3 7.4 შეთანხმების საფუძველზე წინამდებარე ხელშეკრულება წყდება.\n7.2 სხვა პირობა.\n7.3 კიდევ ერთი.\n7.4 ბოლო."]
     labels = {"7.1", "7.2", "7.3", "7.4"}
-    known = ["შპს", "არბო", "2009", "200000001"]
+    known = ["შპს", "ალფა", "2009", "200000001"]
     assert not [d for d in compare_texts(orig, scan, cfg, original_paginated=False, labels=labels, known=known) if d.significant]
-    bad = [d for d in compare_texts(orig, scan, cfg, original_paginated=False, labels=labels, known=["არბო"]) if d.significant]
+    bad = [d for d in compare_texts(orig, scan, cfg, original_paginated=False, labels=labels, known=["ალფა"]) if d.significant]
     assert bad and "ციფრები" in bad[0].reason
     scan2 = [scan[0].replace("2009", "2500")]
     assert [d for d in compare_texts(orig, scan2, cfg, original_paginated=False, labels=labels, known=known) if d.significant]
@@ -402,7 +402,7 @@ def test_last_page_line_matches_compact_window_when_phrase_repeats():
     """„ქ. თბილისი, პეკინის ქ." შაბლონში პრეამბულაშიც არის და რეკვიზიტებშიც: SequenceMatcher-ის ბლოკები იფანტება და
     რეალური სკანის რეკვიზიტების სტრიქონი „ჩამატებულად" ჩანდა. კომპაქტური ფანჯარა ასწორებს."""
     from hrsorter.textcompare import unmatched_long_lines
-    template = ("შპს არბო ქ თბილისი პეკინის ქ 17 წარმოდგენილი დირექტორის მიერ " + "სიტყვა " * 300 +
+    template = ("შპს ალფა ქ თბილისი პეკინის ქ 17 წარმოდგენილი დირექტორის მიერ " + "სიტყვა " * 300 +
                 "მისამართი ქ თბილისი პეკინის ქ 17 მისამართი ვარკეთილი ზემო უბნის 5").split()
     line = "მისამართი: თბილისი, პეკინის ქ., #%17 მისამართი: ვარკეთილი. ზემო უბნის 5,"
     assert unmatched_long_lines(template, line) == []
@@ -416,8 +416,8 @@ def test_last_page_signature_block_reordered_is_noise():
     from hrsorter.config import make_config
     from hrsorter.textcompare import compare_texts
     cfg = make_config()
-    orig = ["11.1 რეკვიზიტები\nშპს არბო 2009 ეკა ჯავახიშვილი\nდირექტორი ტელ: 555000222\nდავით გელაშვილი ბანკი: TBC\nა/ა GE00TB0000000000000000\nდამსაქმებელი სტაჟიორი"]
-    scan = ["11.1 რეკვიზიტები\nშპს არბო 2009 ეკა ჯავახიშვილი\nტელ: 555000222\nბანკი: TBC\nა/ა GE00TB0000000000000000 დირექტორი დავით გელაშვილი i ალლი დამსაქმებელი\nსტაჟიორი"]
+    orig = ["11.1 რეკვიზიტები\nშპს ალფა 2009 ეკა ჯავახიშვილი\nდირექტორი ტელ: 555000222\nდავით გელაშვილი ბანკი: TBC\nა/ა GE00TB0000000000000000\nდამსაქმებელი სტაჟიორი"]
+    scan = ["11.1 რეკვიზიტები\nშპს ალფა 2009 ეკა ჯავახიშვილი\nტელ: 555000222\nბანკი: TBC\nა/ა GE00TB0000000000000000 დირექტორი დავით გელაშვილი i ალლი დამსაქმებელი\nსტაჟიორი"]
     assert not [d for d in compare_texts(orig, scan, cfg, original_paginated=False, labels={"11.1"}) if d.significant]
     scan2 = [scan[0].replace("დირექტორი დავით გელაშვილი i ალლი", "სტაჟიორი ვალდებულია აანაზღაუროს ზიანი სრულად")]
     assert [d for d in compare_texts(orig, scan2, cfg, original_paginated=False, labels={"11.1"}) if d.significant]
@@ -518,9 +518,9 @@ def test_one_digit_of_a_long_number_is_significant(old, new):
 
 def test_last_page_columns_with_number_glued_to_a_name_are_noise():
     orig = ("10.4 სტაჟიორი მარიამბერიძე პ/ნ:01001000202 ადასტურებს რომ გაეცნო ინსტრუქციას\nხელმოწერები\nდამსაქმებელი სტაჟიორი\n"
-            "შპს არბო 2009 მარიამ ბერიძე\nს/ნ 200000001 პ/ნ 01001000202\nელ ფოსტა m@example.com\nელ ფოსტა info@example.ge\n")
+            "შპს ალფა 2009 მარიამ ბერიძე\nს/ნ 200000001 პ/ნ 01001000202\nელ ფოსტა m@example.com\nელ ფოსტა info@example.ge\n")
     scan = ("10.4 სტაჟიორი მარიამბერიძეპ/ნ:01001000202 ადასტურებს რომ გაეცნო ინსტრუქციას\nხელმოწერები\nდამსაქმებელი\n"
-            "შპს არბო 2009\nს/ნ 200000001\nელ ფოსტა info@example.ge\nსტაჟიორი\nმარიამ ბერიძე\nპ/ნ 01001000202\nელ ფოსტა m@example.com\n")
+            "შპს ალფა 2009\nს/ნ 200000001\nელ ფოსტა info@example.ge\nსტაჟიორი\nმარიამ ბერიძე\nპ/ნ 01001000202\nელ ფოსტა m@example.com\n")
     diffs = compare_texts([orig], [scan], make_config(), original_paginated=False, labels=set(), known=["მარიამ", "ბერიძე"], trusted_pages={1})
     assert sig(diffs) == []
     changed = scan.replace("პ/ნ 01001000202", "პ/ნ 01001000203")

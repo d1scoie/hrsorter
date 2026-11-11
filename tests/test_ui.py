@@ -164,15 +164,15 @@ def test_review_and_doc_pages_render(client):
 def test_company_rows_form_creates_companies_and_default(client):
     c, cfg_path = client
     types_json = EXAMPLE_TYPES_PATH.read_text(encoding="utf-8")
-    form = {"company.0.name": "შპს „არბო 2009“", "company.0.aliases": "არბო 2009, არბო", "company.0.id": "", "company.0.folder": "",
+    form = {"company.0.name": "შპს „ალფა 2009“", "company.0.aliases": "ალფა 2009, ალფა", "company.0.id": "", "company.0.folder": "",
             "company.1.name": "", "company.1.aliases": "", "company.1.id": "", "company.1.folder": "",
             "types_json": types_json, "processing.trial_mode": "1"}
     r = c.post("/settings", data=form, headers={"origin": LOCAL}, follow_redirects=False)
     assert "err=" not in r.headers["location"]
     cfg = load_config(cfg_path)
-    assert [x.name for x in cfg.companies if x.id != cfg.default_company.id] == ["შპს „არბო 2009“"]
+    assert [x.name for x in cfg.companies if x.id != cfg.default_company.id] == ["შპს „ალფა 2009“"]
     co = cfg.data["companies"][0]
-    assert co["aliases"] == ["არბო 2009", "არბო"] and co["folder"] and "„" not in co["folder"]
+    assert co["aliases"] == ["ალფა 2009", "ალფა"] and co["folder"] and "„" not in co["folder"]
     form.update({"company.0.id": co["id"], "company.0.folder": co["folder"], "default_company_choice": co["id"]})
     c.post("/settings", data=form, headers={"origin": LOCAL})
     assert load_config(cfg_path).default_company.id == co["id"]

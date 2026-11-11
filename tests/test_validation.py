@@ -395,7 +395,7 @@ def _t(text: str) -> str:
 
 def test_docx_text_body_order_table_header_footer():
     body = (_p(_t("ხელშეკრულება "), _t("სტაჟირების შესახებ")) + _p(_t("ა"), "<w:tab/>", _t("ბ"), "<w:br/>", _t("გ"))
-            + "<w:tbl><w:tr><w:tc>" + _p(_t("დამსაქმებელი")) + _p(_t("შპს არბო")) + "</w:tc><w:tc>"
+            + "<w:tbl><w:tr><w:tc>" + _p(_t("დამსაქმებელი")) + _p(_t("შპს ალფა")) + "</w:tc><w:tc>"
             + _p(_t("სტაჟიორი")) + "</w:tc></w:tr><w:tr><w:tc>" + _p(_t("ხელფასი")) + "</w:tc><w:tc>"
             + _p(_t("900 ლარი")) + "</w:tc></w:tr></w:tbl>" + _p("<w:delText>წაშლილი</w:delText>", _t("ბოლო")))
     data = _zip({"[Content_Types].xml": "<Types/>",
@@ -403,7 +403,7 @@ def test_docx_text_body_order_table_header_footer():
                  "word/header1.xml": f"<w:hdr {W_NS}>{_p(_t('ქ. თბილისი 2026-09-16'))}</w:hdr>",
                  "word/footer2.xml": f"<w:ftr {W_NS}>{_p(_t('დამსაქმებელი'), '<w:tab/>', _t('სტაჟიორი'))}</w:ftr>"})
     text, extra = docx_text(data)
-    assert text.split("\n") == ["ხელშეკრულება სტაჟირების შესახებ", "ა ბ", "გ", "დამსაქმებელი სტაჟიორი", "შპს არბო",
+    assert text.split("\n") == ["ხელშეკრულება სტაჟირების შესახებ", "ა ბ", "გ", "დამსაქმებელი სტაჟიორი", "შპს ალფა",
                                 "ხელფასი 900 ლარი", "ბოლო"]
     assert extra == ["ქ. თბილისი 2026-09-16", "დამსაქმებელი სტაჟიორი"]   # header/footer — ცალკე, არა სხეულში
     assert docx_text(b"%PDF-1.4") is None and docx_text(_zip({"a.txt": "x"})) is None
@@ -846,7 +846,7 @@ def test_recheck_skipped_when_disabled_or_offline_or_failing(repo, cfg, monkeypa
 
 
 def test_clean_recheck_text_drops_model_markers():
-    t = "მუხლი 5\n[ბეჭედი: შპს არბო 2009, 200000001]\nხელფასი 1300 [?] ლარი [ხელნაწერი: ა. მ.]"
+    t = "მუხლი 5\n[ბეჭედი: შპს ალფა 2009, 200000001]\nხელფასი 1300 [?] ლარი [ხელნაწერი: ა. მ.]"
     assert validation._clean_recheck_text(t).split() == ["მუხლი", "5", "ხელფასი", "1300", "ლარი"]
 
 

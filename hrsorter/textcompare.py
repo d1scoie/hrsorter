@@ -685,7 +685,7 @@ def _is_page_number(norm: str, page: int) -> bool:
     return bool(m) and int(m.group(1)) == page
 
 
-HEADER_JUNK_MAX_TOKENS = 3    # გამჭოლი სათაურის წინ ამდენამდე წვრილი ტოკენი — ლოგოს ასოებია („მადარგ ი დავით … მიერ")
+HEADER_JUNK_MAX_TOKENS = 3    # გამჭოლი სათაურის წინ ამდენამდე წვრილი ტოკენი — ლოგოს ასოებია („კამარგ ი დავით … მიერ")
 HEADER_JUNK_MAX_CHARS = 10
 HEADER_MIN_CHARS = 12         # ამაზე მოკლე ხაზი სათაურად არ ითვლება
 HEADER_LOGO_MAX_LINES = 2     # სათაურის ზემოთ ამდენამდე ხაზი (სულ HEADER_JUNK_MAX_TOKENS სიტყვამდე) — სიტყვებად წაკითხული ლოგო
