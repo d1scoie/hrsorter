@@ -244,7 +244,7 @@ def find_names(text: str) -> list[NameHit]:
     return out
 
 
-_ADDRESS_CUE = re.compile(r"ქუჩ|გამზირ|ჩიხ|შესახვევ|მისამართ|ადგილ|ბინა|კორპუს|სართულ")   # „პეკინის ქუჩა #17" — ნომერი არაა
+_ADDRESS_CUE = re.compile(r"ქუჩ|გამზირ|ჩიხ|შესახვევ|მისამართ|ადგილ|ბინა|კორპუს|სართულ")   # „ვარდების ქუჩა #17" — ნომერი არაა
 
 
 def find_doc_number(text: str) -> tuple[str, str] | None:

@@ -461,9 +461,9 @@ def test_real_contract_salary_and_term_from_duration(cfg):
 
 
 def test_doc_number_ignores_street_number_in_address():
-    """რეალური სკანი: „1.6 სტაჟირების ადგილია ქ. თბილისი, პეკინის ქუჩა #17" — „17" ქუჩის ნომერია, არა დოკუმენტის."""
+    """რეალური სკანი: „1.6 სტაჟირების ადგილია ქ. თბილისი, ვარდების ქუჩა #17" — „17" ქუჩის ნომერია, არა დოკუმენტის."""
     from hrsorter.features import find_doc_number
-    assert find_doc_number("1.6 სტაჟიორის სტაჟირების ადგილია ქ. თბილისი, პეკინის ქუჩა #17\nსხვა ტექსტი") is None
+    assert find_doc_number("1.6 სტაჟიორის სტაჟირების ადგილია ქ. თბილისი, ვარდების ქუჩა #17\nსხვა ტექსტი") is None
     assert find_doc_number("სტაჟირების ადგილი: ქ. თბილისი, დ. ბაქრაძის #22") is None
     assert find_doc_number("ბრძანება № 34-კ\nმისამართი: ქუჩა #5")[0] == "34-კ"
-    assert find_doc_number("ხელშეკრულება № 17\nპეკინის ქუჩა #22")[0] == "17"
+    assert find_doc_number("ხელშეკრულება № 17\nვარდების ქუჩა #22")[0] == "17"

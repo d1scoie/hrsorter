@@ -356,7 +356,7 @@ def unmatched_long_lines(template: list[str], page_text: str, labels: set[str] |
 
 def _best_match(t: list[str], toks: list[str]) -> tuple[int, int]:
     """(დამთხვეული სიტყვები, მონაკვეთის სიგრძე შაბლონში). SequenceMatcher-ის ბლოკები შეიძლება გაიფანტოს (ფრაზა შაბლონში
-    ორჯერ გვხვდება — „ქ. თბილისი, პეკინის ქ." პრეამბულაშიც და რეკვიზიტებშიც): მაშინ ყველაზე გრძელი ბლოკის გარშემო
+    ორჯერ გვხვდება — „ქ. თბილისი, ვარდების ქ." პრეამბულაშიც და რეკვიზიტებშიც): მაშინ ყველაზე გრძელი ბლოკის გარშემო
     კომპაქტურ ფანჯარაში ხელახლა ითვლება."""
     blocks = [b for b in SequenceMatcher(None, t, toks, autojunk=False).get_matching_blocks() if b.size]
     if not blocks:
@@ -685,7 +685,7 @@ def _is_page_number(norm: str, page: int) -> bool:
     return bool(m) and int(m.group(1)) == page
 
 
-HEADER_JUNK_MAX_TOKENS = 3    # გამჭოლი სათაურის წინ ამდენამდე წვრილი ტოკენი — ლოგოს ასოებია („მადარგ ი დავით … მიერ")
+HEADER_JUNK_MAX_TOKENS = 3    # გამჭოლი სათაურის წინ ამდენამდე წვრილი ტოკენი — ლოგოს ასოებია („კამარგ ი დავით … მიერ")
 HEADER_JUNK_MAX_CHARS = 10
 HEADER_MIN_CHARS = 12         # ამაზე მოკლე ხაზი სათაურად არ ითვლება
 HEADER_LOGO_MAX_LINES = 2     # სათაურის ზემოთ ამდენამდე ხაზი (სულ HEADER_JUNK_MAX_TOKENS სიტყვამდე) — სიტყვებად წაკითხული ლოგო

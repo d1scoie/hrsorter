@@ -17,15 +17,15 @@ from hrsorter.mhr_client import MAX_UPLOAD_BYTES, HttpMhr, MhrUploadUncertain, M
 from hrsorter.mhr_models import MhrDocRef, MhrError, MhrUnavailable
 
 DOCX_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-ARBO = {"id": "1", "name": "შპს არბო 2009", "tax_id": "200000001"}
+ALFA = {"id": "1", "name": "შპს ალფა 2009", "tax_id": "200000001"}
 EMP = {"id": "4521", "personal_number": "01001000001", "first_name": "ნინო", "last_name": "ბერიძე",
-       "company": ARBO, "branch": "ვაზისუბანი", "position": "ბუღალტერი",
+       "company": ALFA, "branch": "ვაზისუბანი", "position": "ბუღალტერი",
        "salary": {"amount": "2500.00", "currency": "GEL"}, "contract_start": "2024-06-04",
        "contract_end": "2026-06-04", "status": "active", "dismissed_at": None,
        "employments": [
-           {"company": ARBO, "branch": "ვაზისუბანი", "position": "ბუღალტერი",
+           {"company": ALFA, "branch": "ვაზისუბანი", "position": "ბუღალტერი",
             "salary": {"amount": "2500.00", "currency": "GEL"}, "start": "2024-06-04", "end": "2026-06-04", "active": True},
-           {"company": ARBO, "branch": "ვაზისუბანი", "position": "ბუღალტრის ასისტენტი",
+           {"company": ALFA, "branch": "ვაზისუბანი", "position": "ბუღალტრის ასისტენტი",
             "salary": {"amount": "1800.00", "currency": "GEL"}, "start": "2022-06-04", "end": "2024-06-03", "active": False}]}
 DOC_UPLOADED = {"id": "9310", "employee_id": "4521", "category": "contract", "title": "შრომითი ხელშეკრულება (ხელმოწერილი)",
                 "document_number": "0783", "document_date": "2024-06-04", "created_at": "2026-10-28T13:40:00Z",
