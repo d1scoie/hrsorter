@@ -356,7 +356,7 @@ def unmatched_long_lines(template: list[str], page_text: str, labels: set[str] |
 
 def _best_match(t: list[str], toks: list[str]) -> tuple[int, int]:
     """(დამთხვეული სიტყვები, მონაკვეთის სიგრძე შაბლონში). SequenceMatcher-ის ბლოკები შეიძლება გაიფანტოს (ფრაზა შაბლონში
-    ორჯერ გვხვდება — „ქ. თბილისი, პეკინის ქ." პრეამბულაშიც და რეკვიზიტებშიც): მაშინ ყველაზე გრძელი ბლოკის გარშემო
+    ორჯერ გვხვდება — „ქ. თბილისი, ვარდების ქ." პრეამბულაშიც და რეკვიზიტებშიც): მაშინ ყველაზე გრძელი ბლოკის გარშემო
     კომპაქტურ ფანჯარაში ხელახლა ითვლება."""
     blocks = [b for b in SequenceMatcher(None, t, toks, autojunk=False).get_matching_blocks() if b.size]
     if not blocks:
