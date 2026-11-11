@@ -38,6 +38,11 @@ def test_build_prompt_contains_data_and_truncates():
               "დასაქმებული — აკლია", "ხელნაწერის ეჭვი", "მეორე გვერდი", "იგნორირება", '"verdict"'):
         assert s in p, s
     assert '"raw"' not in p and "შემოკლებულია" not in p
+    # Claude-ით წაკითხულ გვერდზე შენახული ნიშანი ნიღბის გარეშეა გამოთვლილი: მხოლოდ ხელმოწერა → „ხელნაწერის ეჭვი“ არ იწერება
+    online = [{"text": "პირველი [ხელნაწერი: ხელმოწერა]", "text_source": "ocr:online:claude_code", "handwriting_suspected": True}]
+    assert "ხელნაწერის ეჭვი" not in ar.build_prompt(doc, val, online)
+    online[0]["text"] = "პირველი [ხელნაწერი: 1800 ლარი]"
+    assert "ხელნაწერის ეჭვი" in ar.build_prompt(doc, val, online)
     empty = {"page": 3, "kind": "signature", "original": "", "scanned": "", "significant": False, "reason": "ხელმოწერის ადგილი ამ გვერდზე არ არის"}
     p2 = ar.build_prompt(doc, {**val, "diffs": [*val["diffs"], empty]}, pages)
     assert "- გვ. 3: ხელმოწერის ადგილი ამ გვერდზე არ არის" in p2 and "«» → «»" not in p2   # ცარიელ ჩანაწერს AI ეჭვით უყურებდა

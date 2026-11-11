@@ -958,3 +958,112 @@ def test_recheck_budget_reads_significant_pages_before_suspect_ones(repo, cfg, m
     pages = (OCR_P1.replace("მენეჯერის ", ""), OCR_P2.replace("ვალდებულნი არიან", "ვალდებულნი არ არიან"))
     validate_document(repo, cfg, add_doc(repo, pages=pages), original_client())
     assert prov.calls == [(1, 0)]
+
+
+# --- გვერდი თავიდანვე Claude-მა წაიკითხა (ocr.path = online): სიტყვების კოორდინატები არ არის ------------------------
+ONLINE = {"text_source": "ocr:online:claude_code", "handwriting_suspected": True, "signature_hint": "present",
+          "signature_parties": {"employer": True, "employee": True}}
+CLEAN_P1, CLEAN_P2 = "\n".join(CONTRACT_P1), "\n".join(CONTRACT_P2)
+SIGNS = "\nდამსაქმებელი [ხელნაწერი: ხელმოწერა] [ბეჭედი: შპს ალფა 2009, 200000008] დასაქმებული [ხელნაწერი: ხელმოწერა]"
+
+
+@needs_font
+def test_page_read_by_claude_is_not_stopped_by_the_stale_handwriting_flag(repo, cfg):
+    """ნამდვილი ხელშეკრულებები: Claude-ით წაკითხულ გვერდს ტექსტის ნიღაბი არ აქვს, ამიტომ გამოსახულების ანალიზი ყოველ გვერდზე
+    „ხელნაწერის ეჭვს“ წერდა და არცერთი ხელშეკრულება „მზადაა“-მდე არ მიდიოდა. ხელმოწერა, ბეჭედი და ხელმომწერის საკუთარი სახელი
+    მიწერა არ არის — შენახული (ძველი) ნიშანი ასეთ გვერდზე აღარ ითვლება, ხელახალი წაკითხვის გარეშე."""
+    doc = add_doc(repo, pages=(CLEAN_P1 + SIGNS, CLEAN_P2 + SIGNS + "\n[ხელნაწერი: ნინო კაპანაძე] [ხელნაწერი: ნ. კაპანაძე]"),
+                  page_flags={0: ONLINE, 1: ONLINE})
+    r = validate_document(repo, cfg, doc, original_client())
+    assert r.status == "passed", r.summary
+    assert not [d for d in r.diffs if d.kind == "handwriting"]
+
+
+@needs_font
+def test_text_written_by_hand_on_a_page_read_by_claude_stops_and_is_shown(repo, cfg):
+    """ხელით მიწერილი თანხა ნიშანშია, ამიტომ ტექსტის შედარებაში არ ჩანს — ის ხელნაწერის შემოწმებამ უნდა დაიჭიროს და აჩვენოს."""
+    doc = add_doc(repo, pages=(CLEAN_P1 + "\n[ხელნაწერი: ხელფასი 1800 ლარი]" + SIGNS, CLEAN_P2 + SIGNS), page_flags={0: ONLINE, 1: ONLINE})
+    r = validate_document(repo, cfg, doc, original_client())
+    hw = [(d.page, d.reason, d.scanned) for d in r.significant_diffs if d.kind == "handwriting"]
+    assert r.status == "failed" and hw == [(1, validation.HANDWRITTEN_NOTE, "ხელფასი 1800 ლარი")]
+    assert any("გვერდი 1: ხელით მიწერილი ტექსტი" in s for s in r.summary)
+    other = add_doc(repo, doc_id="doc_other", pages=(CLEAN_P1 + SIGNS, CLEAN_P2 + SIGNS + "\n[ხელნაწერი: გიორგი მაისურაძე]"),
+                    page_flags={0: ONLINE, 1: ONLINE})                      # სხვისი სახელი — არა ხელმომწერის
+    r2 = validate_document(repo, cfg, other, original_client())
+    assert r2.status == "failed" and [d.page for d in r2.significant_diffs if d.kind == "handwriting"] == [2]
+
+
+class FakeLocal:
+    name, is_online = "tesseract", False
+
+    def __init__(self, texts: dict[int, str], ok: bool = True):
+        self.texts, self.ok, self.calls = texts, ok, []
+
+    def available(self) -> bool:
+        return self.ok
+
+
+def _with_local(monkeypatch, provider: FakeLocal):
+    monkeypatch.setattr(validation, "build_ocr_chain", lambda cfg: type("C", (), {"online": None, "local": provider})())
+
+    def fake_page_text(cfg, prov, output_path, page_index, rotation):
+        prov.calls.append((page_index, rotation))
+        return prov.texts[page_index]
+    monkeypatch.setattr(validation, "_local_page_text", fake_page_text)
+
+
+@needs_font
+def test_word_misread_by_claude_on_first_reading_is_checked_with_tesseract(repo, cfg, monkeypatch):
+    """ნამდვილი ხელშეკრულებები: Claude 14 გვერდზე დაახლოებით ერთ სიტყვას მსგავსი მნიშვნელობის სხვა სიტყვით კითხულობს
+    („დაეკისრება“ → „დაექვემდებარება“), ქაღალდზე კი ორიგინალი წერია. იმავე გვერდს ადგილობრივი Tesseract კითხულობს: ეს ადგილი
+    ორიგინალივით წაიკითხა → ფაილი არ ჩერდება, გაფრთხილება ჩანს; მისი ტექსტი ინახება და მეორედ აღარ იკითხება."""
+    claude = CLEAN_P1.replace("იღებს", "აძლევს")
+    local = FakeLocal({0: OCR_P1})                 # Tesseract-ის ხმაური სხვა სიტყვებშია, ეს სიტყვა ზუსტია
+    _with_local(monkeypatch, local)
+    doc = add_doc(repo, pages=(claude + SIGNS, CLEAN_P2 + SIGNS), page_flags={0: ONLINE, 1: ONLINE})
+    for _again in range(2):
+        r = validate_document(repo, cfg, doc, original_client())
+        assert local.calls == [(0, 0)] and r.status == "passed", r.summary
+        d = next(d for d in r.diffs if d.suspect)
+        assert "აძლევს" in d.scanned and validation.RECHECK_DISAGREE in d.reason
+        assert any("ორმა მკითხველმა" in s and "გვერდი 1" in s for s in r.summary) and not any("ვერ გადამოწმდა" in s for s in r.summary)
+    saved = repo.load_page_texts("job_1")[3]
+    assert saved["local_text"] == OCR_P1 and saved["text"] == claude + SIGNS and saved["text_source"] == "ocr:online:claude_code"
+    assert PageText.from_dict(saved).local_text == OCR_P1          # შენახული გვერდი ისევ იკითხება (დამუშავების გაგრძელება)
+
+
+@needs_font
+def test_word_that_tesseract_also_reads_differently_still_stops(repo, cfg, monkeypatch):
+    claude = CLEAN_P1.replace("იღებს", "აძლევს")
+    local = FakeLocal({0: OCR_P1.replace("იღებს", "აძლევს")})
+    _with_local(monkeypatch, local)
+    r = validate_document(repo, cfg, add_doc(repo, pages=(claude + SIGNS, CLEAN_P2 + SIGNS), page_flags={0: ONLINE, 1: ONLINE}), original_client())
+    assert r.status == "failed" and local.calls == [(0, 0)]
+    assert [d.reason for d in r.significant_diffs] == ["სიტყვა შეცვლილია"]         # Tesseract-მაც ასე ნახა: შენიშვნა არ ემატება
+
+
+@needs_font
+def test_number_read_differently_by_claude_stops_without_a_second_reading(repo, cfg, monkeypatch):
+    """რიცხვი და „არ“ ყოველთვის აჩერებს, ამიტომ მათთვის მეორე მკითხველი არც ეშვება; მიუწვდომელი Tesseract-იც არაფერს ცვლის."""
+    local = FakeLocal({0: OCR_P1, 1: OCR_P2})
+    _with_local(monkeypatch, local)
+    pages = (CLEAN_P1.replace("შეადგენს 1500 ლარს", "შეადგენს 1800 ლარს") + SIGNS, CLEAN_P2 + SIGNS)
+    r = validate_document(repo, cfg, add_doc(repo, pages=pages, page_flags={0: ONLINE, 1: ONLINE}), original_client())
+    assert r.status == "failed" and local.calls == [] and "1800" in r.significant_diffs[0].scanned
+    local.ok = False
+    word = add_doc(repo, doc_id="doc_word", pages=(CLEAN_P1.replace("იღებს", "აძლევს") + SIGNS, CLEAN_P2 + SIGNS), page_flags={0: ONLINE, 1: ONLINE})
+    r2 = validate_document(repo, cfg, word, original_client())
+    assert r2.status == "failed" and local.calls == [] and "local_text" not in {k for k, v in repo.load_page_texts("job_1")[3].items() if v}
+
+
+def test_same_word_misread_on_another_page_does_not_keep_the_doubt():
+    """ნამდვილი ხელშეკრულება: „ყოველი“ მე-13 გვერდზე Claude-მა „ყველა“ წაიკითხა (Tesseract-მა — „ყოველი“), მე-8 გვერდზე კი იგივე
+    სიტყვა ერთი ასოთი შეცდა. შორი გვერდის სხვაობა ამ ადგილზე არაფერს ამბობს; მეზობელი გვერდისა — ამბობს (გვერდის საზღვარი)."""
+    from hrsorter.mhr_models import TextDiff
+
+    def diff(page: int, orig: str, scan: str) -> TextDiff:
+        return TextDiff(page, "changed", orig, scan, True, "სიტყვა შეცვლილია", orig_parts=["წინ", orig, "შემდეგ"], scan_parts=["წინ", scan, "შემდეგ"])
+    d = diff(13, "ყოველი", "ყველა")
+    assert validation._only_claude_differs(d, [diff(8, "ყოველი", "ყველი")])
+    assert not validation._only_claude_differs(d, [diff(13, "ყოველი", "ყველა")])
+    assert not validation._only_claude_differs(d, [diff(14, "ყოველი", "")])

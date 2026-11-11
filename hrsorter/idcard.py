@@ -57,7 +57,9 @@ def transliterate(name: str) -> str:
 
 
 def _latin_key(s: str | None) -> str:
-    return re.sub(r"[^A-Z]", "", (s or "").upper())
+    """შესადარებელი ლათინური სახელი. „ყ“ ბარათზე ორნაირად გვხვდება: ეროვნული სისტემით „Q“, ნამდვილ ბარათებზე კი ხშირად „K“
+    („ყაზბეგი“ → „KAZBEGI“) — ორივე ერთია. შემოწმება ამით არ სუსტდება: „კ“ და „ქ“ ისედაც ორივე „K“-ა."""
+    return re.sub(r"[^A-Z]", "", (s or "").upper()).replace("Q", "K")
 
 
 def _value_after(lines: list[str], i: int, label: re.Pattern[str], georgian: bool) -> str | None:

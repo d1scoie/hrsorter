@@ -18,7 +18,8 @@
     `not_applicable` — ცარიელი გვერდი; სხვა შემთხვევაში `uncertain`.
   * `handwriting_suspected` — სუსტი ევრისტიკა: ჩანაწერისმაგვარი ლაქა ლეიბლის („პ/ნ", „თარიღი") მარჯვნივ,
     ≥3 ასეთი ლაქა ტექსტის ზონაში, ან OCR-ის სიტყვების ≥40% ძალიან დაბალი სანდოობით ნიშნებიან გვერდზე.
-    ხელნაწერის კითხვას არ ცდილობს.
+    ხელნაწერის კითხვას არ ცდილობს. ონლაინ მკითხველით წაკითხულ გვერდზე (სიტყვების კოორდინატები არ არის, ე.ი. ნიღაბიც) ეს
+    ევრისტიკა არ მუშაობს: იქ ხელნაწერი ის არის, რაც მკითხველმა „[ხელნაწერი: …]“ ნიშნით მონიშნა (`readermarks`).
 
 ცნობილი შეზღუდვები: ლოგო/სურათი ლაქად ჩანს (→ has_marks, signature uncertain); ტექსტის გარეშე გვერდზე
 (OCR არ არის) ბეჭდური ტექსტი ნიშნებისგან მხოლოდ ფორმით გაირჩევა — თუ მელანი ≥1% არის ან ≥2 განიერი
@@ -36,7 +37,7 @@ import numpy as np
 import pypdfium2 as pdfium
 from PIL import Image
 
-from . import textquality
+from . import readermarks, textquality
 from .config import Config
 from .models import PageText, SignatureStatus
 from .ocr.chain import OcrChain
@@ -512,6 +513,7 @@ def analyze_page(doc: PdfDocument, index: int, cfg: Config, chain: OcrChain | No
     ocr_words: list[dict[str, Any]] = []
     word_boxes: list[tuple[str, tuple[int, int, int, int], float]] = []   # OCR სიტყვები ანალიზის პიქსელებში + სანდოობა
     reader_parties: dict[str, bool] = {}   # ონლაინ მკითხველის პასუხი „ვინ მოაწერა ხელი“ (კოორდინატები მას არ აქვს)
+    reader_only = False                    # ტექსტი OCR-ისაა, სიტყვების კოორდინატები კი არ არის (ონლაინ მკითხველი)
     mask_available = False
 
     if layer_q >= float(th.get("text_layer_min_quality", 0.6)):
@@ -557,6 +559,7 @@ def analyze_page(doc: PdfDocument, index: int, cfg: Config, chain: OcrChain | No
                 model_version = res.provider.model_version
                 reader_parties = getattr(res.result, "signature_parties", None) or {}
                 ocr_words = res.result.words
+                reader_only = not ocr_words and bool(getattr(res.provider, "is_online", False))
                 s = analysis_dpi / dpi
                 text_boxes_px = [(int(l * s), int(t * s), int(np.ceil(r * s)), int(np.ceil(b * s)))
                                  for (l, t, r, b) in (w["bbox"] for w in ocr_words)]
@@ -619,7 +622,11 @@ def analyze_page(doc: PdfDocument, index: int, cfg: Config, chain: OcrChain | No
                else SignatureStatus.UNCERTAIN)
 
     handwriting = False
-    if has_marks and has_text and mask_available:
+    if reader_only:
+        # ონლაინ მკითხველმა კოორდინატები არ მოგვცა → ნიღაბი ცარიელია და ნაბეჭდი სტრიქონებიც „ლაქებია": ქვემოთა ევრისტიკა ნამდვილ
+        # სკანებზე თითქმის ყოველ გვერდზე ირთვებოდა. ხელნაწერი აქ ის არის, რაც თვითონ მკითხველმა მონიშნა (ხელმოწერის გარდა)
+        handwriting = bool(readermarks.handwritten(text))
+    elif has_marks and has_text and mask_available:
         entries = [b for b in marks if _entry_like(b, analysis_dpi)]
         if any(_right_of_cue(b, c, analysis_dpi, text_boxes_px or []) for b in entries for c in hand_cues):
             handwriting = True   # ლეიბლის („პ/ნ:", „თარიღი:") გვერდით ხელით ჩაწერილი ველი

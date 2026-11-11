@@ -139,6 +139,9 @@ class PageText:
     words: list[list[Any]] = field(default_factory=list)
     marks: list[list[int]] = field(default_factory=list)
     signature_boxes: dict[str, list[int]] = field(default_factory=dict)
+    # იმავე გვერდის ადგილობრივი (Tesseract) წაკითხვა: მეორე აზრი, როცა გვერდი ონლაინ მკითხველმა წაიკითხა და MHR-ის ორიგინალთან
+    # შედარებამ შეცვლილი სიტყვა იპოვა (validation._local_second_reading). ცარიელი — არ დასჭირვებია
+    local_text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

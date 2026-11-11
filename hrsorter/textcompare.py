@@ -338,14 +338,19 @@ def _confused(w: str) -> str:
     return w.translate(_OCR_CONFUSION)
 
 
-def unmatched_long_lines(template: list[str], page_text: str, labels: set[str] | None = None) -> list[str]:
+def unmatched_long_lines(template: list[str], page_text: str, labels: set[str] | None = None,
+                         stamp: list[str] | None = None) -> list[str]:
     """ბოლო გვერდის დაცვა: რეკვიზიტების ცხრილის გამო იქ ჯგუფები რბილად ფასდება, ამიტომ ყოველი გრძელი სტრიქონი
     (≥7 სიტყვა) შაბლონის ერთ კომპაქტურ მონაკვეთს უნდა ემთხვეოდეს (OCR-ის ჩვეული შეცდომებით). ჩამატებული
-    პუნქტი/წინადადება ასეთ მონაკვეთს ვერ პოულობს. ცხრილის მოკლე სტრიქონები (ტელ, ფოსტა…) არ მოწმდება."""
+    პუნქტი/წინადადება ასეთ მონაკვეთს ვერ პოულობს. ცხრილის მოკლე სტრიქონები (ტელ, ფოსტა…) არ მოწმდება. `stamp` — ამ სკანის
+    ბეჭდის სიტყვები: სტრიქონის შუაში წაკითხული ბეჭედი სტრიქონს „ჩამატებულად“ არ აქცევს."""
     t = [_confused(w) for w in template]
+    in_template = set(template)
     out = []
     for line in page_text.splitlines():
-        toks = [_confused(x.word) for x in _tokens(line, 0) if not labels or x.word not in labels]   # ნუმერაცია არ ითვლება
+        toks = [_confused(x.word) for x in _tokens(line, 0)
+                if (not labels or x.word not in labels)    # ნუმერაცია არ ითვლება
+                and not (stamp and x.word not in in_template and _stamp_word(x.word, stamp))]
         if len(toks) < LAST_PAGE_LINE_MIN:
             continue
         matched, span = _best_match(t, toks)
@@ -581,11 +586,27 @@ def _a_index_at(groups: list[tuple[int, int, int, int]], j: int) -> int:
     return i_end + (j - j_end)
 
 
+STAMP_NUMBER_MIN_DIGITS = 8   # ბეჭდის გრძელი ნომერი (საიდენტიფიკაციო კოდი)
+
+
+def _stamp_word(w: str, stamp: list[str]) -> bool:
+    """სიტყვა ამ სკანის ბეჭდის ტექსტიდანაა (`stamp` — რაც მკითხველმა სხვა გვერდებზე ბეჭდის ნიშანში ჩაწერა). ბეჭდის გრძელ ნომერში
+    ერთი ციფრის სხვაობა დასაშვებია: მკრთალ ბეჭედზე მკითხველი კოდის ბოლო ციფრს გვერდიდან გვერდზე სხვადასხვანაირად კითხულობს
+    (ნამდვილ სკანზე ერთი და იგივე ბეჭდის კოდი 14 გვერდზე სამნაირად წაიკითხა). მოკლე რიცხვი (წელი, თანხა) ზუსტად უნდა ემთხვეოდეს."""
+    if _found(w, stamp, KEPT_SIMILARITY):
+        return True
+    return (w.isdigit() and len(w) >= STAMP_NUMBER_MIN_DIGITS
+            and any(x.isdigit() and len(x) == len(w) and sum(c != d for c, d in zip(w, x)) <= 1 for x in stamp))
+
+
 def _diff_tokens(a: list[_Tok], b: list[_Tok], default_page: int, labels: set[str] | None = None,
-                 known: list[str] | None = None, trusted_pages: set[int] | None = None) -> list[TextDiff]:
+                 known: list[str] | None = None, trusted_pages: set[int] | None = None,
+                 stamp: list[str] | None = None) -> list[TextDiff]:
     out: list[TextDiff] = []
     if [t.word for t in a] == [t.word for t in b]:
         return out
+    stamp = stamp or []
+    familiar = [*(known or []), *stamp]   # MHR-ის მონაცემი ან ბეჭდის სიტყვა: ჩამატებულ სიტყვად არ ითვლება
     a_bag = [t.word for t in a]
     last_page = b[-1].page if b else 0
     groups = _groups(a, b)
@@ -618,7 +639,7 @@ def _diff_tokens(a: list[_Tok], b: list[_Tok], default_page: int, labels: set[st
                 and _table_noise(aw, bw, a_bag, [t.word for t in b if t.page == page], known or []) \
                 and (PLACEHOLDER in a_bag or _table_counts_kept(aw, bw, a_last, b_last, known or [])):   # შაბლონში მნიშვნელობები არ წერია
             reason = None
-        if reason and not aw and known and b_real and all(_found(w, known, 0.8) for w in b_real):
+        if reason and not aw and b_real and all(_found(w, known or [], 0.8) or _stamp_word(w, stamp) for w in b_real):
             reason = None      # სუფთა ჩამატება მხოლოდ ცნობილი ტოკენებით („2009" — ბეჭდის/კომპანიის სახელის ციფრი, ს/კ) — ბეჭედია
         suspect = False
         if reason is None and PLACEHOLDER not in aw:
@@ -627,7 +648,7 @@ def _diff_tokens(a: list[_Tok], b: list[_Tok], default_page: int, labels: set[st
             reason = _negation_change(a_text, b_text)
             if reason is None and PLACEHOLDER not in a_bag:
                 trusted = page in (trusted_pages or ())
-                change = _word_change(a_text, b_text, known or [], trusted)
+                change = _word_change(a_text, b_text, familiar, trusted)
                 moved = (labels is not None and page == last_page and not change.far   # ცხრილის სვეტები სხვა რიგით
                          and all(_kept(w, a_last, b_last) for w in change.removed)
                          and all(_kept(w, b_last, [*a_last, *(known or [])]) for w in change.added))
@@ -757,7 +778,7 @@ _GLUED_HEADER = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2})+\.?)\s+(\S.*)$")
 def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg, original_paginated: bool = True,
                   strip_lines: list[str] | None = None, labels: set[str] | None = None,
                   known: list[str] | None = None, trusted_pages: set[int] | None = None,
-                  header_picture: bool = False) -> list[TextDiff]:
+                  header_picture: bool = False, stamp: list[str] | None = None) -> list[TextDiff]:
     """ორიგინალის და დასკანერებულის ტექსტები → განსხვავებები (significant = შინაარსობრივი).
 
     `original_paginated=False` — ორიგინალს გვერდები არ აქვს (docx): მთელი დოკუმენტის შედარება page_count-ის
@@ -765,18 +786,20 @@ def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg, orig
     (docx-ის header/footer). `labels` — შაბლონის პუნქტების ავტო-ნომრები (ნუმერაცია შინაარსად არ ითვლება); `known` —
     MHR-ის თანამშრომლის მონაცემების სიტყვები (რეკვიზიტების ცხრილში ცვლადების მნიშვნელობები). `trusted_pages` — დასკანერებულის
     გვერდები (1-დან), რომელთა ტექსტი Tesseract-ის არ არის (Claude, ტექსტური ფენა). `header_picture` — docx-ის header-ში სურათია
-    (ბლანკის ლოგო): გვერდის თავში სათაურის ზემოთ წაკითხული ერთი-ორი სიტყვა ლოგოა, არა ჩამატებული ტექსტი. `cfg` ინტერფეისისთვისაა
-    (ზღურბლები აქ მუდმივებია)."""
+    (ბლანკის ლოგო): გვერდის თავში სათაურის ზემოთ წაკითხული ერთი-ორი სიტყვა ლოგოა, არა ჩამატებული ტექსტი. `stamp` — ამ სკანის
+    ბეჭდის სიტყვები (`readermarks.stamp_words`): მხოლოდ მათგან შემდგარი ჩამატება წინადადების შუაში წაკითხული ბეჭედია. `cfg`
+    ინტერფეისისთვისაა (ზღურბლები აქ მუდმივებია)."""
     strip = [x for x in (_norm_line(s) for s in strip_lines or []) if len(x) >= RUNNING_MIN_CHARS]
     if not original_paginated:
         strip += running_lines(scanned_pages)
         a = _tokens(_strip("\n".join(original_pages), strip), 0)
         b = [t for i, p in enumerate(scanned_pages) for t in _tokens(_strip(p, strip, page=i + 1, logo=header_picture), i + 1)]
-        diffs = _diff_tokens(a, b, 1, labels, known, trusted_pages)
+        diffs = _diff_tokens(a, b, 1, labels, known, trusted_pages, stamp)
         if labels is not None and b:
             last = b[-1].page
             seen = " ".join(d.scanned for d in diffs if d.significant and d.page == last)
-            for line in unmatched_long_lines([t.word for t in a], _strip(scanned_pages[last - 1], strip, page=last, logo=header_picture), labels):
+            for line in unmatched_long_lines([t.word for t in a], _strip(scanned_pages[last - 1], strip, page=last, logo=header_picture),
+                                             labels, stamp):
                 if sum(1 for w in line.split() if w in seen) < 3:
                     diffs.append(TextDiff(page=last, kind="added", original="", scanned=line, significant=True,
                                           reason="ჩამატებული ტექსტი (ბოლო გვერდი)"))

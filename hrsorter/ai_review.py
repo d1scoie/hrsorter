@@ -20,6 +20,7 @@ import subprocess
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
+from . import readermarks
 from .config import Config
 from .db import now_iso
 from .ocr.claude_code_vision import SAFE_MODE, run_safe_mode
@@ -99,7 +100,7 @@ def _pages_text(pages: list[dict[str, Any]], max_chars: int) -> str:
         sp = pt.get("signature_parties") or {}
         if sp:
             marks.append("ხელმოწერები: " + ", ".join(f"{k} — {'არის' if v else 'აკლია'}" for k, v in sp.items()))
-        if pt.get("handwriting_suspected"):
+        if readermarks.handwriting_suspected(pt):
             marks.append("ხელნაწერის ეჭვი")
         if pt.get("ocr_quality") is not None:
             marks.append(f"წაკითხვის ხარისხი {float(pt.get('ocr_quality') or 0):.2f}")

@@ -43,7 +43,7 @@ class Status:
 
 def read_status(repo: Repository, now: float | None = None) -> Status:
     hb = repo.get_control("worker_heartbeat")
-    jobs = {x["status"]: x["n"] for x in repo.q("SELECT status, COUNT(*) n FROM jobs GROUP BY status")}
+    jobs = repo.job_counts()
     cur = repo.one("SELECT j.progress_done, j.progress_total, s.first_path FROM jobs j JOIN sources s ON s.id=j.source_id"
                    " WHERE j.status='running' ORDER BY j.updated_at DESC LIMIT 1")
     return Status(

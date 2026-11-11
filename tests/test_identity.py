@@ -44,6 +44,15 @@ def test_misread_georgian_name_is_caught_by_the_latin_line():
     assert any("გვარი" in p and "BERIDZE" in p for p in card.problems)
 
 
+def test_letter_q_is_written_as_k_on_real_cards():
+    """ნამდვილი ბარათი: გვარში „ყ“ ლათინურად „K“-თი წერია, ეროვნული სისტემით კი „Q“ — ორივე სწორი წაკითხვაა."""
+    for latin in ("KIPIANI", "QIPIANI"):
+        assert parse_id_card(id_text(last="ყიფიანი", latin_last=latin)).problems == []
+    assert parse_id_card(id_text(last="ბაყაყაძე", latin_last="BAKAKADZE")).problems == []
+    assert any("გვარი" in p for p in parse_id_card(id_text(last="ყიფიანი", latin_last="KIPSHIDZE")).problems)   # სხვა გვარი ისევ ჩანს
+    assert any("გვარი" in p for p in parse_id_card(id_text(last="ყიფიანი", latin_last="GIPIANI")).problems)
+
+
 def test_same_name_is_exact():
     assert same_name("ნინო ", "ნინო") and same_name("ბერიძე-კაპანაძე", "ბერიძე - კაპანაძე")
     assert not same_name("ნინა", "ნინო") and not same_name(None, "ნინო")
