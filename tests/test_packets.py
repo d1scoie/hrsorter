@@ -23,7 +23,8 @@ from hrsorter.models import PageText
 from hrsorter.output import part_document_id, retire_previous
 from hrsorter.pipeline import _goes_to_mhr
 from hrsorter.ui.app import create_app
-from hrsorter.validation import PAGE_OWNER_MIN_OVERLAP, _Numbering, last_page_signature_diffs, plan_pages, signature_diffs
+from hrsorter.validation import (PAGE_OWNER_MIN_OVERLAP, PAGE_OWNER_TIE_WORDS, _content_tokens, _Numbering, last_page_signature_diffs,
+                                 plan_pages, signature_diffs)
 
 PN = "01001000001"
 LOCAL = "http://127.0.0.1:8765"
@@ -45,12 +46,14 @@ FILES = {"G1": ("მენეჯერი - ხელშეკრულება
          "G3": ("ლიფტის წესები.docx.docx", RULES)}
 
 
-def make_docx(pages: list[str]) -> bytes:
+def make_docx(pages: list[str], header: str | None = None) -> bytes:
     w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
     paras = "".join(f"<w:p><w:r><w:t>{line}</w:t></w:r></w:p>" for p in pages for line in p.split("\n"))
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("word/document.xml", f"<w:document {w}><w:body>{paras}</w:body></w:document>")
+        if header:   # ყოველ გვერდზე დაბეჭდილი ხაზი
+            zf.writestr("word/header1.xml", f"<w:hdr {w}><w:p><w:r><w:t>{header}</w:t></w:r></w:p></w:hdr>")
     return buf.getvalue()
 
 
@@ -121,12 +124,12 @@ def validation(w, doc_id):
 
 # --- გვერდების მიკუთვნება ----------------------------------------------------------------------------------
 class Downloads:
-    def __init__(self, files: dict[str, list[str]]):
-        self.files, self.calls = files, []
+    def __init__(self, files: dict[str, list[str]], headers: dict[str, str] | None = None):
+        self.files, self.headers, self.calls = files, headers or {}, []
 
     def download(self, ref):
         self.calls.append(ref.doc_id)
-        return make_docx(self.files[ref.doc_id])
+        return make_docx(self.files[ref.doc_id], self.headers.get(ref.doc_id))
 
 
 def refs(*ids):
@@ -176,6 +179,73 @@ def test_plan_skips_files_missing_on_server(world):
     plan = plan_pages(client, world.cfg, ref, list(CONTRACT))
     assert client.calls == ["G1"] and plan.owner == ["G1", "G1"]
     assert 0.5 < PAGE_OWNER_MIN_OVERLAP < 0.79   # ნამდვილ სკანებზე სწორი ფაილი ≥0.79, სხვა ≤0.74
+
+
+# --- ხელმოწერების გვერდი თავის ფაილთან რჩება ----------------------------------------------------------------
+# ბოლო გვერდზე მხოლოდ მხარეთა რეკვიზიტები და ხელმოწერებია: ეს სიტყვები თანამშრომლის ყველა ფაილშია, დიდ ხელშეკრულებაში კი
+# ერთი-ორი სხვაც მოიძებნება. ასეთი გვერდი ხელშეკრულებას არ უნდა მიეწეროს, თორემ ინსტრუქცია უხელმოწეროდ რჩება.
+REQUISITES = ("მხარეთა რეკვიზიტები და ხელმოწერები\n"
+              "დამსაქმებელი შპს ალფა ს/კ 400000001 მისამართი ქალაქი თბილისი ვაკის ქუჩა 10 ფოსტა info@alfa.example\n"
+              "დასაქმებული ნინო ბერიძე პ/ნ 01001000001 მისამართი ქალაქი ბათუმი ზღვის ქუჩა 5 ფოსტა nino@alfa.example")
+APPROVED = "დამტკიცებულია შპს ალფას დირექტორის გიორგი მაისურაძის მიერ"   # ინსტრუქციის header
+SIGNER = "დამსაქმებლის სახელით ხელს აწერს გიორგი მაისურაძე ხელმოწერა ბეჭედი"
+CONTRACT_END = f"{REQUISITES}\n{SIGNER}"
+WITH_SIGN = {"G1": [*CONTRACT, CONTRACT_END], "G2": [*INSTRUCTION, REQUISITES]}
+
+
+def test_plan_short_signature_page_stays_with_previous_file(world):
+    """სკანზე ხელმოწერის ადგილას „ხელმოწერა ბეჭედი" იკითხება — ორივე სიტყვა მხოლოდ ხელშეკრულებაშია. ორი სიტყვის უპირატესობა
+    მოკლე გვერდზე 5%-ზე მეტია, მაგრამ ფაილს არ ცვლის."""
+    client = Downloads(WITH_SIGN)
+    sign = f"{REQUISITES}\nხელმოწერა ბეჭედი"
+    plan = plan_pages(client, world.cfg, refs("G1", "G2"), [*INSTRUCTION, sign])
+    assert plan.owner == ["G2", "G2", "G2"] and not plan.needs_split
+    page = _content_tokens(sign)
+    share = {k: len(page & _content_tokens("\n".join(v))) / len(page) for k, v in WITH_SIGN.items()}
+    assert share["G1"] - share["G2"] > 0.05 and share["G2"] >= PAGE_OWNER_MIN_OVERLAP   # ძველი წესით გვერდი ხელშეკრულებას მიეწერებოდა
+    assert plan.best[2] == ("G2", share["G2"])   # „რატომ" იმ ფაილის წილს აჩვენებს, რომელშიც გვერდი დარჩა
+    # შემდეგი ფაილის პირველი გვერდი ისევ თავის ფაილს მიდის, მისი ხელმოწერების გვერდიც
+    packet = plan_pages(client, world.cfg, refs("G1", "G2"), [*INSTRUCTION, sign, *CONTRACT, CONTRACT_END])
+    assert packet.owner == ["G2", "G2", "G2", "G1", "G1", "G1"]
+
+
+def test_plan_real_lead_on_short_page_still_moves_it(world):
+    """ხელშეკრულების ბოლო გვერდი ინსტრუქციის გვერდების შემდეგ: ინსტრუქციაც ხსნის სიტყვების 70%-ზე მეტს, მაგრამ ხელშეკრულება
+    ბევრი სიტყვით იგებს — გვერდი მისია."""
+    page, instruction = _content_tokens(CONTRACT_END), _content_tokens("\n".join(WITH_SIGN["G2"]))
+    assert len(page & instruction) / len(page) >= PAGE_OWNER_MIN_OVERLAP and len(page - instruction) > PAGE_OWNER_TIE_WORDS
+    plan = plan_pages(Downloads(WITH_SIGN), world.cfg, refs("G1", "G2"), [*INSTRUCTION, CONTRACT_END])
+    assert plan.owner == ["G2", "G2", "G1"]
+    assert plan_pages(Downloads({**WITH_SIGN, "G3": RULES}), world.cfg, refs("G1", "G2", "G3"),
+                      [*INSTRUCTION, REQUISITES, *RULES]).owner == ["G2", "G2", "G2", "G3"]
+
+
+def test_plan_counts_header_words_for_the_file(world):
+    """ინსტრუქციის ყოველ გვერდზე მისი header იბეჭდება; ხელშეკრულებაში ამ სიტყვებიდან რამდენიმე სხვა ადგილასაა. header-ის გარეშე
+    გვერდი ხელშეკრულებას უფრო ჰგავს, header-ით — თავის ფაილს, თუნდაც სკანი ამ გვერდით იწყებოდეს."""
+    files = {"G1": [*CONTRACT, f"{REQUISITES}\nხელს აწერს დირექტორის მოადგილე გიორგი მაისურაძის მინდობილობით"], "G2": WITH_SIGN["G2"]}
+    page = f"{APPROVED}\n{REQUISITES}"
+    plain = plan_pages(Downloads(files), world.cfg, refs("G1", "G2"), [page])
+    assert plain.best[0][0] == "G1"
+    plan = plan_pages(Downloads(files, {"G2": APPROVED}), world.cfg, refs("G1", "G2"), [page])
+    assert plan.owner == ["G2"] and plan.best[0] == ("G2", 1.0)
+    whole = plan_pages(Downloads(files, {"G2": APPROVED}), world.cfg, refs("G1", "G2"), [*INSTRUCTION, page])
+    assert whole.owner == ["G2", "G2", "G2"] and not whole.needs_split
+
+
+def test_instruction_with_signature_page_is_one_file_and_ready(world):
+    """ნამდვილი შემთხვევა: ინსტრუქციის სკანის ბოლო გვერდი ცალკე „ხელშეკრულებად" გამოიყო და ინსტრუქციაზე გაჩნდა ცრუ
+    „ბოლო გვერდზე ხელმოწერა აკლია". ახლა სკანი ერთი ფაილია და მისი ბოლო გვერდის ხელმოწერები ითვლება."""
+    files = world.dir / "files"
+    (files / FILES["G1"][0]).write_bytes(make_docx([*CONTRACT, f"{REQUISITES}\nხელს აწერს დირექტორის მოადგილე გიორგი მაისურაძის მინდობილობით"]))
+    (files / FILES["G2"][0]).write_bytes(make_docx(WITH_SIGN["G2"], APPROVED))
+    unsigned = {"signature_hint": "not_detected"}
+    add_scan(world, [(INSTRUCTION[0], unsigned), (INSTRUCTION[1], unsigned), (f"{APPROVED}\n{REQUISITES}", SIGNED)], type_id="job_description")
+    sweep(world)
+    v = validation(world, "doc_scan")
+    assert world.repo.get_document("doc_scan")["status"] != "split" and not v.get("parts")
+    assert world.repo.mhr_get("doc_scan")["status"] == "ready", v["summary"]
+    assert v["original"]["doc_id"] == "G2" and not any("ხელმოწერა" in x for x in v["summary"])
 
 
 # --- დაყოფა და ცალ-ცალკე შეფასება ---------------------------------------------------------------------------

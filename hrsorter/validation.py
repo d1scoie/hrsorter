@@ -590,7 +590,10 @@ class PagePlan:
 def plan_pages(client, cfg: Config, cands: list[MhrDocRef], scanned_texts: list[str]) -> PagePlan:
     """HR ხშირად ხელშეკრულებას, ინსტრუქციას, წესებსა და დანართებს ერთად ბეჭდავს და ერთ ფაილად ასკანერებს: ყოველი გვერდი მიეკუთვნება
     იმ დაგენერირებულ ფაილს, რომლის სიტყვებსაც ყველაზე მეტად შეიცავს. ერთი ფაილის გვერდები მიმდევრობითაა (სპეც. §2), ამიტომ
-    ცუდად წაკითხული ან შეცვლილი გვერდი მეზობელთან რჩება და შედარება სხვაობას პირდაპირ აჩვენებს."""
+    ცუდად წაკითხული ან შეცვლილი გვერდი მეზობელთან რჩება და შედარება სხვაობას პირდაპირ აჩვენებს.
+
+    ფაილის სიტყვებში მისი header/footer-იც ითვლება — ის ყოველ გვერდზე იბეჭდება. მოკლე გვერდი (ხელმოწერები და რეკვიზიტები)
+    თითქმის ყველა ფაილს ჰგავს, დიდი ფაილი კი ერთი-ორი სიტყვით ყოველთვის იგებს: ასეთი გვერდი წინა გვერდის ფაილთან რჩება."""
     plan = PagePlan(owner=[None] * len(scanned_texts), best=[None] * len(scanned_texts))
     for ref in cands[:ORIGINAL_CANDIDATES_MAX]:
         if "sha256" in (ref.raw or {}) and not ref.raw.get("sha256"):   # API: ჩანაწერი არის, ფაილი სერვერზე — არა
@@ -601,7 +604,7 @@ def plan_pages(client, cfg: Config, cands: list[MhrDocRef], scanned_texts: list[
             continue
         orig = original_pages(data, cfg)
         if orig is not None:
-            plan.files[ref.doc_id] = OriginalFile(ref, data, orig, _content_tokens("\n".join(orig.pages)))
+            plan.files[ref.doc_id] = OriginalFile(ref, data, orig, _content_tokens("\n".join([*orig.pages, *orig.strip_lines])))
     if not plan.files:
         return plan
     owner, thin, weak, prev = plan.owner, set(), {}, None
@@ -619,8 +622,12 @@ def plan_pages(client, cfg: Config, cands: list[MhrDocRef], scanned_texts: list[
                 weak[i] = best
             prev = None
             continue
-        if prev in score and score[prev] >= score[best] - PAGE_OWNER_TIE:
+        tie = PAGE_OWNER_TIE
+        if score.get(prev, 0.0) >= PAGE_OWNER_MIN_OVERLAP:   # წინა ფაილიც კარგად ხსნის გვერდს: მოკლე გვერდზე წილი რამდენიმე სიტყვაა
+            tie = max(tie, PAGE_OWNER_TIE_WORDS / len(toks))
+        if prev in score and score[prev] >= score[best] - tie:
             best = prev
+            plan.best[i] = (best, score[best])   # გვერდი წინა ფაილში დარჩა — „რატომ" მისსავე წილს აჩვენებს
         owner[i] = prev = best
     for i, o in enumerate(owner):
         if o is None:
@@ -928,6 +935,7 @@ PAGE_OWNER_MIN_OVERLAP = 0.7           # გვერდის სიტყვ�
 PAGE_OWNER_WEAK = 0.6                  # ამაზე მეტი და მეზობელი გვერდიც ამ ფაილისაა → მისია (ცუდად წაკითხული ან ჩამატებული ტექსტის მქონე გვერდი)
 PAGE_OWNER_GAP = 2                     # ორ იმავე ფაილის გვერდს შორის ამდენამდე გვერდი იმ ფაილისაა; მეტი — სხვა დოკუმენტია
 PAGE_OWNER_TIE = 0.05                  # ამაზე ახლო დამთხვევისას წინა გვერდის ფაილი რჩება (ერთი ფაილის გვერდები მიმდევრობითაა)
+PAGE_OWNER_TIE_WORDS = 5               # მოკლე გვერდზე ამდენ სიტყვამდე უპირატესობაც „ახლოა" (ნამდვილ სკანებზე: ცრუ — 2 სიტყვა, ნამდვილი — 10+)
 PAGE_MIN_TOKENS = 8                    # ამაზე ნაკლები სიტყვა (ტექსტის გარეშე გვერდი) — მეზობელ ფაილს მიეწერება
 
 
