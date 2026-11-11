@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from hrsorter import tray
 from hrsorter.config import EXAMPLE_TYPES_PATH, load_config
 from hrsorter.db import Repository
 from hrsorter.ui.app import create_app
@@ -57,6 +58,35 @@ def test_paused_home_does_not_say_the_file_is_being_processed(client):
     c.post("/control/pause", headers={"origin": LOCAL})
     home = c.get("/").text
     assert "დამუშავება შეჩერებულია" in home and "ჩარევა არ სჭირდება" not in home
+    repo.close()
+
+
+def test_failed_attempt_followed_by_a_good_one_is_not_a_stuck_file(client):
+    """ნამდვილი შემთხვევა: 5 სკანი ორ-ორჯერ ჩავარდა, მესამე ცდაზე დამუშავდა — მთავარ გვერდზე კი „10 ფაილი ვერ დამუშავდა“ ეწერა,
+    „სად გაიჭედა“ სია კი ცარიელი იყო. რიცხვი და სია ერთსა და იმავეს ითვლის: სკანებს, რომელთა ბოლო ცდა ჩავარდა."""
+    c, cfg_path = client
+    cfg = load_config(cfg_path)
+    repo = Repository(cfg.paths.db)
+
+    def scan(n: int, *attempts: str) -> None:
+        sid = repo.insert_source(sha256=f"{n:x}" * 64, size=1, page_count=1, archive_path=f"{n}.pdf", first_path=f"in/scan-{n}.pdf", profile_id="batch")
+        for i, status in enumerate(attempts):
+            jid = repo.create_job(source_id=sid, profile_id="batch", mode="batch_pdf", config_version=cfg.version, config_snapshot=cfg.snapshot())
+            repo.finish_job(jid, status, error_code="max_attempts" if status == "failed" else None)
+            repo.conn.execute("UPDATE jobs SET created_at=? WHERE id=?", (f"2026-01-0{n}T10:00:0{i}+00:00", jid))
+
+    scan(1, "failed", "failed", "done")
+    scan(2, "failed", "done")
+    assert repo.job_counts() == {"failed": 0, "done": 2}
+    home = c.get("/").text
+    assert "ვერ დამუშავდა" not in home and c.get("/api/status").json()["jobs"]["failed"] == 0
+    assert "არაფერი არ გაჭედილა" in c.get("/stats").text
+
+    scan(3, "done", "failed")                                # ბოლო ცდა ჩავარდა → ეს ერთი ფაილი მართლა გაჭედილია
+    assert repo.job_counts()["failed"] == 1 and tray.read_status(repo).errors == 1
+    assert "1 ფაილი ვერ დამუშავდა" in c.get("/").text
+    stats = c.get("/stats").text
+    assert "scan-3.pdf" in stats.split('id="stuck"')[1] and "არაფერი არ გაჭედილა" not in stats
     repo.close()
 
 
@@ -613,6 +643,17 @@ def test_card_says_honestly_what_the_readers_saw():
     assert "ერთ-ერთი ცდება" in text and "არ აჩერებს" in text and "არ აიხსნება" not in text
     assert "მაინც აჩერებს" in _why_diff({"kind": "changed", "reason": f"ციფრები განსხვავდება — {RECHECK_DISAGREE}", "significant": True}, {})
     assert _clean_reason(one) == "სიტყვა შეცვლილია" and _clean_reason(both) == "სიტყვა შეცვლილია"
+
+
+def test_handwritten_note_card_shows_what_is_written():
+    """Claude-ით წაკითხულ გვერდზე ხელით მიწერილი ტექსტი: ბარათზე ჩანს, რა წერია — „MHR-ის ფაილში წერია —“ აქ უაზროა."""
+    from hrsorter.ui.app import _problem_card, _why_diff
+    note = {"page": 1, "kind": "handwriting", "original": "", "scanned": "ხელფასი 1800 ლარი", "significant": True, "reason": "ხელით მიწერილი ტექსტი"}
+    card = _problem_card("doc_x", note, [{}], "ატვირთე მაინც")
+    assert "ხელით წერია" in card and "ხელფასი 1800 ლარი" in card and "MHR-ის ფაილში წერია" not in card
+    assert "ამიტომ აჩერებს" in _why_diff(note, {}) and "არ აჩერებს" in _why_diff({**note, "significant": False}, {})
+    old = {"page": 1, "kind": "handwriting", "original": "", "scanned": "", "significant": True, "reason": "ხელნაწერის ეჭვი"}
+    assert "ნიშანია" in _why_diff(old, {}) and "ხელით წერია" not in _problem_card("doc_x", old, [{}], "ატვირთე მაინც")
 
 
 def test_page_after_approval_stops_asking_to_upload(client):

@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from . import hrdates, textquality
+from . import hrdates, readermarks, textquality
 from .config import Config
 from .db import Repository, now_iso
 from .employee_api import _get_path
@@ -928,11 +928,24 @@ def _pdf_pages(pdf_bytes: bytes, cfg: Config, dpi: int | None = None, local_only
 
 
 # --- ხელნაწერი / ნიშნები ------------------------------------------------------------------------------
-def handwriting_diffs(scanned: list[dict[str, Any]]) -> list[TextDiff]:
+HANDWRITTEN_NOTE = "ხელით მიწერილი ტექსტი"
+HANDWRITTEN_SHOWN = 200   # ამდენი სიმბოლო ჩანს ვებ-გვერდზე მიწერილი ტექსტიდან
+
+
+def handwriting_diffs(scanned: list[dict[str, Any]], names: list[str] | None = None) -> list[TextDiff]:
     """page_texts-ის ნიშნებიდან: ხელნაწერის ეჭვი, ან ნიშნები ხელმოწერის ზონის გარეთ. მხოლოდ-ხელმოწერის გვერდი
-    (marks_only, ან signature_hint=present) მოსალოდნელია და ცვლილება არ არის."""
+    (marks_only, ან signature_hint=present) მოსალოდნელია და ცვლილება არ არის.
+
+    ონლაინ მკითხველით (კოორდინატების გარეშე) წაკითხულ გვერდზე გამოსახულების ნიშნები არაფერს ნიშნავს — ნიღბის გარეშე ნაბეჭდი
+    ტექსტიც „ნიშანია“ და ხელშეკრულების ყოველი გვერდი ჩერდებოდა. იქ ხელნაწერი ის არის, რაც მკითხველმა მონიშნა („[ხელნაწერი: …]“),
+    ხელმოწერის, ბეჭდისა და ხელმომწერის სახელის (`names`) გარდა; diff-ში ჩანს, რა წერია."""
     out = []
     for i, pt in enumerate(scanned, start=1):
+        if readermarks.reader_only(pt):
+            notes = readermarks.handwritten(pt.get("text"), names or [])
+            if notes:
+                out.append(TextDiff(i, "handwriting", "", one_line("; ".join(notes))[:HANDWRITTEN_SHOWN], True, HANDWRITTEN_NOTE))
+            continue
         if pt.get("handwriting_suspected"):
             out.append(TextDiff(i, "handwriting", "", "", True, "ხელნაწერის ეჭვი"))
         elif pt.get("has_marks") and not pt.get("marks_only") \
@@ -1109,7 +1122,11 @@ def _summary(result: ValidationResult, compared_original: bool, compared_templat
         lines.append("დოკუმენტში ვერ მოიძებნა (შემოწმება გამოტოვებულია): " + ", ".join(missing))
     if noise:
         lines.append(f"OCR-ის ხმაური: {noise} უმნიშვნელო განსხვავება (იგნორირებულია)")
-    unverified = sorted({d.page for d in result.diffs if d.suspect and not d.significant})
+    disagree = sorted({d.page for d in result.diffs if d.suspect and not d.significant and RECHECK_DISAGREE in d.reason})
+    if disagree:
+        lines.append(f"ყურადღება — გვერდი {', '.join(map(str, disagree))}: ორმა მკითხველმა ერთი ადგილი სხვადასხვანაირად წაიკითხა "
+                     "(Tesseract-მა — როგორც ორიგინალშია), ატვირთვამდე თვალით შეადარე ქაღალდს")
+    unverified = sorted({d.page for d in result.diffs if d.suspect and not d.significant} - set(disagree))
     if unverified:
         lines.append(f"ყურადღება — გვერდი {', '.join(map(str, unverified))}: პატარა სხვაობა Claude-ით ვერ გადამოწმდა, "
                      "ატვირთვამდე თვალით შეადარე ორიგინალს")
@@ -1223,8 +1240,8 @@ def _place_diffs(result: ValidationResult, pages: list[dict[str, Any]]) -> None:
         if d.kind == "signature":
             zones = pt.get("signature_boxes") or {}
             d.boxes = [zones[p] for p, found in (pt.get("signature_parties") or {}).items() if not found and p in zones]
-        elif d.kind == "handwriting":
-            d.boxes = list(pt.get("marks") or [])
+        elif d.kind == "handwriting":   # კოორდინატების გარეშე წაკითხულ გვერდზე „ნიშნები" ნაბეჭდი ტექსტის ბლოკებია — არაფერი მოინიშნება
+            d.boxes = [] if readermarks.reader_only(pt) else list(pt.get("marks") or [])
         elif d.scan_parts:
             d.boxes = locate(pt.get("words") or [], d.scan_parts)
 
@@ -1330,7 +1347,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
                                 note="თანამშრომლის პირადობა დადასტურებულია — MHR-ში სახელი და გვარი სწორია"))
 
     # --- ხელმოწერები (ორიგინალის გარეშეც მოწმდება) ---
-    marked = handwriting_diffs(scanned)
+    marked = handwriting_diffs(scanned, _name_tokens(employee))
     if not is_contract:   # ბეჭედი/ნიშანი ზონის გარეთ („დამტკიცებულია" ბეჭედი) ასეთ ფაილებზე ჩვეულებრივია — შენიშვნა
         for d in marked:
             d.significant, d.reason = False, f"დანართი — {d.reason}"
@@ -1388,11 +1405,12 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
             scanned_texts[p - 1] = ""
         result.diffs.append(TextDiff(p, "changed", "", "", True, "ორიგინალის გვერდი წაუკითხავია — შედარება ვერ მოხერხდა"))
     known = known_tokens(employee)   # ბეჭდის ციფრები („2009", ს/კ) სუფთა ჩამატებად არ ჩაითვალოს
+    stamp = readermarks.stamp_words(p.get("text") for p in scanned)   # ბეჭედი, რომელიც მკითხველმა ზოგ გვერდზე წინადადების შუაში ჩაწერა
 
     def compare(texts: list[str]) -> list[TextDiff]:
         return compare_texts(orig.pages, texts, cfg, original_paginated=orig.paginated, strip_lines=orig.strip_lines,
                              labels=clause_labels(orig.pages), known=known, trusted_pages=trusted_pages(scanned),
-                             header_picture=orig.header_picture)
+                             header_picture=orig.header_picture, stamp=stamp)
     primary = compare(scanned_texts)
     result.diffs.extend(primary)
     _recheck_diffs(result, cfg, repo, row, scanned, scanned_texts, primary, compare)
@@ -1509,10 +1527,13 @@ def _only_claude_differs(d: TextDiff, first: list[TextDiff]) -> bool:
     ნამდვილი გვერდი: ქაღალდზე „თანხმობას“, Claude-მა კი „თანხმდება“. Tesseract ორიგინალს არ იცნობს, ამიტომ ზუსტ დამთხვევას შემთხვევით ვერ მოიგონებს."""
     def words(parts: list[str], whole: str) -> set[str]:
         return set((parts[1] if len(parts) == 3 else whole).split())
+    # მხოლოდ იგივე ადგილი ითვლება: იგივე სიტყვა სხვა გვერდის სხვაობაში (ნამდვილი სკანი: „ყოველი“ მე-13 გვერდზე „ყველა“, მე-8-ზე
+    # „ყველი“) ამ ადგილზე არაფერს ამბობს. მეზობელი გვერდი რჩება — გვერდის ბოლოს ამოღებული ტექსტი შემდეგ გვერდს მიეწერება
+    near = [p for p in first if abs(p.page - d.page) <= 1]
     lost, new = words(d.orig_parts, d.original), words(d.scan_parts, d.scanned)
     if lost:
-        return not any(lost & words(p.orig_parts, p.original) for p in first)
-    return bool(new) and not any(new & words(p.scan_parts, p.scanned) for p in first)
+        return not any(lost & words(p.orig_parts, p.original) for p in near)
+    return bool(new) and not any(new & words(p.scan_parts, p.scanned) for p in near)
 
 
 def _recheck_diffs(result: ValidationResult, cfg: Config, repo: Repository, row, scanned: list[dict[str, Any]],
@@ -1573,24 +1594,80 @@ def _recheck_diffs(result: ValidationResult, cfg: Config, repo: Repository, row,
         old = {id(d) for d in primary}
         result.diffs = [d for d in result.diffs if id(d) not in old]
         result.diffs.extend(current)
+    _local_second_reading(cfg, repo, row, scanned, current, budget)
     _weigh_readers(current, scanned, scanned_texts, compare)
 
 
+LOCAL_TEXT = "local_text"   # page_texts-ის გასაღები: იმავე გვერდის ადგილობრივი (Tesseract) წაკითხვა — მეორე აზრი Claude-ის ტექსტზე
+
+
+def _local_page_text(cfg: Config, provider, output_path: str, page_index: int, rotation: int) -> str:
+    """დოკუმენტის PDF-ის გვერდი → ადგილობრივი OCR (იგივე რენდერი/გაუმჯობესება, რაც ანალიზისას)."""
+    dpi = int(cfg.section("processing").get("dpi", 300))
+    with PdfDocument(output_path) as doc:
+        img = doc.render(page_index, dpi=dpi)
+    if rotation:
+        img = apply_rotation(img, int(rotation))
+    return provider.recognize(enhance(img), cfg.data["ocr"].get("tesseract_lang") or "kat+eng").text
+
+
+def _local_second_reading(cfg: Config, repo: Repository, row, scanned: list[dict[str, Any]], diffs: list[TextDiff], budget: int) -> None:
+    """გვერდი პირველივე ჯერზე Claude-მა წაიკითხა (`ocr.path = online`) და შედარებამ შეცვლილი სიტყვა ან ამოღებული ტექსტი იპოვა.
+    ნამდვილ სკანებზე Claude 14-გვერდიან ხელშეკრულებაში დაახლოებით ერთ სიტყვას მსგავსი მნიშვნელობის სხვა სიტყვით კითხულობს
+    („დაეკისრება“ → „დაექვემდებარება“, „ყოველი“ → „ყველა“) — ქაღალდზე კი ორიგინალი წერია. მეორე აზრისთვის იმავე გვერდს
+    ადგილობრივი Tesseract კითხულობს (უფასოა, კომპიუტერიდან არაფერი გადის); მისი ტექსტი გვერდთან ინახება (`local_text`), რომ
+    „ხელახლა შედარებამ“ თავიდან არ წაიკითხოს. რას ნიშნავს მისი პასუხი — `_weigh_readers`. ≤ `budget` გვერდი ერთ დოკუმენტზე."""
+    pages = sorted({d.page for d in diffs if d.significant and d.kind in RECHECK_KINDS and d.reason in RECHECK_DOUBT_REASONS
+                    and 0 < d.page <= len(scanned) and readermarks.reader_only(scanned[d.page - 1])
+                    and not scanned[d.page - 1].get(LOCAL_TEXT)})[:max(0, budget)]
+    if not pages:
+        return
+    local = getattr(build_ocr_chain(cfg), "local", None)
+    if local is None or not local.available():
+        return
+    for p in pages:
+        pt = scanned[p - 1]
+        try:
+            text = _local_page_text(cfg, local, row["output_path"], _pdf_index(row, int(pt["page_index"])), int(pt.get("rotation_applied") or 0))
+        except (OcrError, OSError, ValueError, KeyError, TypeError, RuntimeError) as e:   # RuntimeError: დაზიანებული PDF (pdfium)
+            log.warning("second reading of page %s of %s failed: %s", p, row["id"], type(e).__name__)
+            continue
+        if not text.strip():
+            continue
+        scanned[p - 1] = dict(pt, **{LOCAL_TEXT: text})
+        repo.save_page_text(row["job_id"], int(pt["page_index"]), scanned[p - 1])
+        log.info("second reading %s: page %s read locally", row["id"], p)
+
+
 def _weigh_readers(diffs: list[TextDiff], scanned: list[dict[str, Any]], scanned_texts: list[str], compare) -> None:
-    """Claude-ით ხელახლა წაკითხულ გვერდზე დარჩენილი სხვაობა: რა ნახა პირველმა მკითხველმა? Tesseract-ის სიტყვები გვერდთან რჩება,
-    ამიტომ „ხელახლა შედარებაც“, როცა ტექსტი უკვე Claude-ისაა, იმავე პასუხს იძლევა."""
-    claude = {n for n, pt in enumerate(scanned, start=1) if (pt.get("text_source") or "").endswith(":recheck")}
-    doubted = [d for d in diffs if d.significant and d.page in claude and d.kind in RECHECK_KINDS]
+    """Claude-ის ტექსტის გვერდზე დარჩენილი სხვაობა: რა ნახა მეორე მკითხველმა (Tesseract)? Tesseract ორიგინალს არ იცნობს, ამიტომ
+    ზუსტ დამთხვევას შემთხვევით ვერ მოიგონებს: თუ მან ეს ადგილი ორიგინალივით წაიკითხა, შეცვლილი სიტყვა ან ამოღებული ტექსტი Claude-ის
+    წაკითხვის შეცდომაა და ფაილს არ აჩერებს (საეჭვოდ რჩება); რიცხვი და „არ“ მაინც აჩერებს.
+
+    ორი შემთხვევა: (1) გვერდი ჯერ Tesseract-მა წაიკითხა, მერე Claude-მა ხელახლა — Tesseract-ის სიტყვები გვერდთან რჩება, ამიტომ
+    „ხელახლა შედარებაც“ იმავე პასუხს იძლევა; (2) გვერდი თავიდანვე Claude-მა წაიკითხა და Tesseract-მა მეორე აზრისთვის
+    (`_local_second_reading`). მეორე შემთხვევაში Tesseract-მაც თუ სხვაობა ნახა (ან ეს სიტყვა ვერ წაიკითხა), არაფერი იცვლება."""
+    reread = {n for n, pt in enumerate(scanned, start=1) if (pt.get("text_source") or "").endswith(":recheck")}
+    local = {n: str(pt[LOCAL_TEXT]) for n, pt in enumerate(scanned, start=1) if n not in reread and pt.get(LOCAL_TEXT)}
+    doubted = [d for d in diffs if d.significant and (d.page in reread or d.page in local) and d.kind in RECHECK_KINDS]
     if not doubted:
         return
-    first = compare([" ".join(str(w[0]) for w in pt["words"]) if n in claude and pt.get("words") else scanned_texts[n - 1]
-                     for n, pt in enumerate(scanned, start=1)])
+    first = compare([local[n] if n in local else " ".join(str(w[0]) for w in pt["words"]) if n in reread and pt.get("words")
+                     else scanned_texts[n - 1] for n, pt in enumerate(scanned, start=1)])
     for d in doubted:
         alone = _only_claude_differs(d, first)
         if alone and d.reason in RECHECK_DOUBT_REASONS:
             d.significant, d.suspect = False, True
+        if d.page in local and not alone:
+            continue
         note = RECHECK_DISAGREE if alone else RECHECK_STILL
         d.reason = f"{d.reason} — {note}" if d.reason else note
+
+
+def _name_tokens(employee: MhrEmployee) -> list[str]:
+    """თანამშრომლის სახელი და გვარი სიტყვებად: ხელმოწერის გვერდით ხელით დაწერილი საკუთარი სახელი მიწერა არ არის. მხოლოდ სახელი —
+    MHR-ის სხვა მონაცემი (ხელფასი, თარიღი) ხელით მიწერილი რომ იყოს, სწორედ ის უნდა გამოჩნდეს."""
+    return [w.strip(_PUNCT) for v in (employee.first_name, employee.last_name) if v for w in normalize(str(v)).split() if w.strip(_PUNCT)]
 
 
 def known_tokens(employee: MhrEmployee) -> list[str]:

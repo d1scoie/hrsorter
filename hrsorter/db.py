@@ -234,6 +234,15 @@ class Repository:
     def one(self, sql: str, args: tuple | dict = ()) -> sqlite3.Row | None:
         return self.conn.execute(sql, args).fetchone()
 
+    def job_counts(self) -> dict[str, int]:
+        """სამუშაოები სტატუსებით (მთავარი გვერდი, უჯრის ხატულა). „failed“ — მხოლოდ ის სკანები, რომელთა **ბოლო** ცდა ჩავარდა:
+        ჩავარდნილი ცდა, რომელსაც მერე წარმატებული მოჰყვა (ხელახლა დამუშავება), გაჭედილი ფაილი აღარ არის. „სად გაიჭედა“ სიაც
+        მხოლოდ ბოლო ცდას აჩვენებს — რიცხვი და სია ერთსა და იმავეს უნდა ითვლიდეს."""
+        counts = {x["status"]: x["n"] for x in self.q("SELECT status, COUNT(*) n FROM jobs GROUP BY status")}
+        counts["failed"] = self.one("SELECT COUNT(*) n FROM jobs j WHERE j.status='failed' AND j.created_at="
+                                    "(SELECT MAX(created_at) FROM jobs WHERE source_id=j.source_id)")["n"]
+        return counts
+
     # --- control (pause/resume) ------------------------------------------------
     def set_control(self, key: str, value: str) -> None:
         self.conn.execute("INSERT INTO control(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",

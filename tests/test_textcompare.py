@@ -388,6 +388,28 @@ def test_pure_insertion_of_known_company_tokens_is_stamp_noise():
     assert [d for d in compare_texts(orig, scan2, cfg, original_paginated=False, labels=labels, known=known) if d.significant]
 
 
+def test_stamp_read_inside_a_sentence_is_not_inserted_text():
+    """ნამდვილი ხელშეკრულება, Claude-ის წაკითხვა: ბეჭდის ტექსტს მკითხველი ჩვეულებრივ ნიშნით წერს („[ბეჭედი: …]“), ორ გვერდზე კი
+    წინადადების შუაში ჩაწერა, ერთხელ — კოდის ბოლო ციფრი და ერთი ასო სხვანაირად. იგივე სკანის ნიშნებიდან აღებული სიტყვებით
+    (`stamp`) ეს ჩამატება ბეჭედია; ნამდვილი ჩამატება, სხვა რიცხვი და უარყოფა ისევ ჩანს."""
+    orig = ["4.1 პრაქტიკულ სამუშაოებს, რომლებიც მიზნად ისახავს სტაჟიორის კვალიფიკაციის ამაღლებას.\n4.2 სტაჟიორს წინამდებარე პუნქტით "
+            "გათვალისწინებული ვალდებულების დარღვევის შემთხვევაში ეკისრება პასუხისმგებლობა."]
+    stamp = ["შპს", "ალფა", "2009", "georgia", "alfa", "ltd", "200000008", "200000009", "alsa"]
+
+    def sig(scan: str, **kw) -> list[str]:
+        return [d.reason for d in compare_texts(orig, [scan], make_config(), original_paginated=False, labels=set(),
+                                                trusted_pages={1}, **kw) if d.significant]
+    one = orig[0].replace("მიზნად ისახავს", "მიზნად ისახავს georgia alsa 2009 ltd 200000003")          # ერთი ციფრი სხვაა
+    two = orig[0].replace("წინამდებარე პუნქტით", "წინამდებარე პუნქტით შპს ალფა 2009 georgia alfa 2009 ltd 200000008")
+    for scan in (one, two):
+        assert sig(scan), scan                              # ბეჭდის სიტყვების გარეშე — ჩამატებული ტექსტი
+        assert sig(scan, stamp=stamp) == [], scan
+    assert sig(orig[0].replace("მიზნად ისახავს", "მიზნად ისახავს ხელფასის გარეშე სამი თვით"), stamp=stamp)   # ნამდვილი ჩამატება
+    assert sig(orig[0].replace("მიზნად ისახავს", "მიზნად ისახავს georgia alfa 2019 ltd"), stamp=stamp)         # მოკლე რიცხვი — ზუსტად
+    assert sig(orig[0].replace("მიზნად ისახავს", "მიზნად ისახავს 200000123"), stamp=stamp)                    # ორი ციფრი სხვაა
+    assert sig(orig[0].replace("მიზნად ისახავს", "მიზნად არ ისახავს"), stamp=[*stamp, "არ"])                  # უარყოფა ბეჭდით არ იმალება
+
+
 def test_table_noise_tolerates_one_short_garbage_token():
     """ბოლო გვერდის რეკვიზიტები: ხელმოწერის ნაკაწრი ქართულ ასოებად („ალლი") ცხრილის გადაადგილებულ სიტყვებს შორის."""
     from hrsorter.textcompare import _table_noise

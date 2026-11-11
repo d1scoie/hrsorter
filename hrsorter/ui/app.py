@@ -377,7 +377,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                         " WHERE j.status='running' ORDER BY j.updated_at DESC LIMIT 1")
             return {
                 "paused": r.is_paused(), "worker_alive": alive,
-                "jobs": {x["status"]: x["n"] for x in r.q("SELECT status, COUNT(*) n FROM jobs GROUP BY status")},
+                "jobs": r.job_counts(),
                 "documents": {x["status"]: x["n"] for x in
                               r.q("SELECT status, COUNT(*) n FROM documents WHERE active=1 GROUP BY status")},
                 "inbox_waiting": r.one("SELECT COUNT(*) n FROM inbox_files WHERE state='pending'")["n"],
@@ -1691,6 +1691,9 @@ def _why_diff(x: dict, pt: dict) -> str:
                 + ("რიცხვი და „არ“ სიტყვა მაინც აჩერებს, ამიტომ შეადარე ქაღალდს." if x.get("significant") else "ფაილს ეს არ აჩერებს, მაგრამ შეადარე ქაღალდს."))
     if kind == "signature":
         return ("ამ ადგილას ხელმოწერის ზომის ნიშანი ვერ მოიძებნა. პროგრამა ადგენს, არის თუ არა ადგილზე ხელმოწერა, მაგრამ ვისი ხელია, ვერ ადგენს.")
+    if kind == "handwriting" and x.get("scanned"):
+        return ("ამ გვერდზე ხელით არის რაღაც დაწერილი, რაც არც ხელმოწერაა და არც თანამშრომლის სახელი. "
+                + ("ხელშეკრულებაში ხელით მიწერილმა ტექსტმა შეიძლება პირობა შეცვალოს, ამიტომ აჩერებს." if x.get("significant") else "ფაილს ეს არ აჩერებს."))
     if kind == "handwriting":
         return "გვერდზე ტექსტის გარდა ნიშანია, რომელიც ხელმოწერის ადგილას არ არის: შეიძლება ხელით მიწერილი იყოს."
     if kind == "page_count":
@@ -1796,6 +1799,8 @@ def _problem_card(doc_id: str, x: dict, pts: list[dict], action: str, purged: bo
     if x.get("orig_parts"):
         lines.append(f'<div><span class="lbl">MHR-ის ფაილში წერია</span><div class="val">{_highlight(x["orig_parts"], "o")}</div></div>')
         lines.append(f'<div><span class="lbl">ქაღალდზე წერია</span><div class="val">{_highlight(x["scan_parts"], "s")}</div></div>')
+    elif x.get("kind") == "handwriting" and x.get("scanned"):
+        lines.append(f'<div><span class="lbl">ხელით წერია</span><div class="val">{e(x["scanned"])}</div></div>')
     elif x.get("original") or x.get("scanned"):
         lines.append(f'<div><span class="lbl">MHR-ის ფაილში წერია</span><div class="val">{e(x.get("original") or "—")}</div></div>')
         lines.append(f'<div><span class="lbl">ქაღალდზე წერია</span><div class="val">{e(x.get("scanned") or "—")}</div></div>')

@@ -134,6 +134,36 @@ def test_image_only_page_with_fake_ocr(sample):
     assert "ocr_unavailable" not in pt.warnings
 
 
+class FakeReader(FakeOcr):
+    """ონლაინ მკითხველი: ტექსტი ნიშნებით, სიტყვების კოორდინატების გარეშე."""
+    name, is_online = "online:fake", True
+
+    def __init__(self, text: str):
+        super().__init__()
+        self.text = text
+
+    def recognize(self, image, lang):
+        return OcrResult(text=self.text, mean_confidence=None, words=[])
+
+
+def test_online_reader_page_takes_handwriting_from_the_reader_marks(sample):
+    """ნამდვილი სკანები: ონლაინ მკითხველი კოორდინატებს არ იძლევა → ტექსტის ნიღაბი ცარიელია, ნაბეჭდი სტრიქონებიც „ლაქებია“ და
+    ხელნაწერის ევრისტიკა 686 გვერდიდან 657-ზე ირთვებოდა (ხელშეკრულება ყოველ გვერდზე ჩერდებოდა). ასეთ გვერდზე ხელნაწერი ის
+    არის, რაც მკითხველმა მონიშნა — ხელმოწერისა და ბეჭდის გარდა."""
+    path, _ = sample
+    cfg = make_config({"processing": {"dpi": 150, "deskew": False}})
+    printed = "ბრძანება დაჯარიმების შესახებ\nგიორგი კაპანაძე ჯარიმა 100 ლარი\nდირექტორი"
+
+    def page(text: str):
+        with PdfDocument(path) as doc:
+            return analyze_page(doc, 5, cfg, OcrChain(None, FakeReader(text), "online", 0.35, "kat+eng"))
+
+    signed = page(printed + " [ხელნაწერი: ხელმოწერა] [ბეჭედი: შპს ალფა 2009]")
+    assert signed.text_source == "ocr:online:fake" and signed.words == [] and signed.has_marks
+    assert signed.handwriting_suspected is False
+    assert page(printed + " [ხელნაწერი: ხელმოწერა]\n[ხელნაწერი: 150 ლარი]").handwriting_suspected is True
+
+
 def test_signature_merged_with_stamp_at_page_bottom_is_present():
     """რეალური სკანი (20 გვ.): ხელმოწერები + ბეჭედი ერთ ლაქად — 2.64×1.84in, გვერდის ქვედა ნაწილში.
     1.6in-ზე მაღალი ლაქა ადრე „გაურკვეველი“ იყო → MHR-ის შედარებაში ცრუ „ნიშნები ხელმოწერის ზონის გარეთ“."""
