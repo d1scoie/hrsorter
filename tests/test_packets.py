@@ -46,14 +46,15 @@ FILES = {"G1": ("მენეჯერი - ხელშეკრულება
          "G3": ("ლიფტის წესები.docx.docx", RULES)}
 
 
-def make_docx(pages: list[str], header: str | None = None) -> bytes:
+def make_docx(pages: list[str], header: str | None = None, logo: bool = False) -> bytes:
     w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
     paras = "".join(f"<w:p><w:r><w:t>{line}</w:t></w:r></w:p>" for p in pages for line in p.split("\n"))
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("word/document.xml", f"<w:document {w}><w:body>{paras}</w:body></w:document>")
-        if header:   # ყოველ გვერდზე დაბეჭდილი ხაზი
-            zf.writestr("word/header1.xml", f"<w:hdr {w}><w:p><w:r><w:t>{header}</w:t></w:r></w:p></w:hdr>")
+        if header:   # ყოველ გვერდზე დაბეჭდილი ხაზი; `logo` — მის გვერდით სურათი (ბლანკის ლოგო)
+            picture = "<w:p><w:r><w:drawing/></w:r></w:p>" if logo else ""
+            zf.writestr("word/header1.xml", f"<w:hdr {w}>{picture}<w:p><w:r><w:t>{header}</w:t></w:r></w:p></w:hdr>")
     return buf.getvalue()
 
 
@@ -246,6 +247,21 @@ def test_instruction_with_signature_page_is_one_file_and_ready(world):
     assert world.repo.get_document("doc_scan")["status"] != "split" and not v.get("parts")
     assert world.repo.mhr_get("doc_scan")["status"] == "ready", v["summary"]
     assert v["original"]["doc_id"] == "G2" and not any("ხელმოწერა" in x for x in v["summary"])
+
+
+@pytest.mark.parametrize("logo", [True, False])
+def test_logo_read_as_words_does_not_stop_the_file(world, logo):
+    """ინსტრუქციის ბლანკზე ლოგოა. ერთ გვერდზე Claude-მა ის სიტყვებად წაიკითხა: თუ MHR-ის ფაილის header-ში სურათია, ეს
+    „ჩამატებული ტექსტი" არ არის და ფაილი მზადაა; სურათის გარეშე header-ზე იგივე სიტყვები ისევ აჩერებს."""
+    (world.dir / "files" / FILES["G2"][0]).write_bytes(make_docx(WITH_SIGN["G2"], APPROVED, logo=logo))
+    read = {"text_source": "ocr:online:claude_code", "signature_hint": "not_detected"}
+    add_scan(world, [(f"{APPROVED}\n{INSTRUCTION[0]}", read), (f"საოჯახო\nალფამარტი\n\n{APPROVED}\n{INSTRUCTION[1]}", read),
+                     (f"{APPROVED}\n{REQUISITES}", {**read, **SIGNED})], type_id="job_description")
+    sweep(world)
+    v = validation(world, "doc_scan")
+    added = [d for d in v["diffs"] if d["significant"] and "ალფამარტი" in d["scanned"]]
+    assert world.repo.mhr_get("doc_scan")["status"] == ("ready" if logo else "failed"), v["summary"]
+    assert bool(added) is not logo and v["original"]["doc_id"] == "G2"
 
 
 # --- დაყოფა და ცალ-ცალკე შეფასება ---------------------------------------------------------------------------

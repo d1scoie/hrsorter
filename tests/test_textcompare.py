@@ -559,6 +559,44 @@ def test_part_of_a_header_on_the_page_edge_is_removed_but_not_inside_the_page():
     assert diffs == []
 
 
+def test_logo_read_as_words_above_the_header_is_removed_only_when_asked():
+    """ბლანკის ლოგო სურათია; Claude მას ხანდახან სიტყვებად კითხულობს სათაურის ზემოთ, ყოველ გვერდზე სხვანაირად. სათაურში სურათის
+    მქონე ფაილზე (`logo`) ეს ერთი-ორი მოკლე ხაზი იშლება; ციფრიანი, გრძელი ან სხვა ადგილას მდგომი ტექსტი რჩება."""
+    from hrsorter.textcompare import _norm_line, _strip
+    header = [_norm_line("დამტკიცებულია შპს ალფას დირექტორის მიერ"), _norm_line("2026-11-05")]
+    page = "დამტკიცებულია შპს ალფას დირექტორის მიერ\n2026-11-05\n2.1 პირველი პუნქტის ტექსტი\n2.2 მეორე პუნქტის ტექსტი"
+    body = "2.1 პირველი პუნქტის ტექსტი\n2.2 მეორე პუნქტის ტექსტი"
+
+    def strip(text, **kw):   # ცარიელი ხაზები შედარებაში არ მონაწილეობს
+        return "\n".join(ln for ln in _strip(text, header, **kw).split("\n") if ln.strip())
+    for logo in ("საოჯახო\nალფამარტი", "საოჯახო ალფამარტი", "ალფამარტი\n", "სახლი\n\nალფამარჯი\n"):
+        assert strip(f"{logo}\n{page}", page=2, logo=True) == body, logo
+        assert strip(f"{logo}\n{page}", page=2).startswith(logo.split("\n")[0])   # სურათის გარეშე სათაურზე — ჩამატებული ტექსტია
+    for kept in ("ასლი 2026", "ეს ხელით მიწერილი გრძელი შენიშვნაა", "პირველი\nმეორე\nმესამე", "ერთი ორი\nსამი ოთხი"):
+        assert strip(f"{kept}\n{page}", page=2, logo=True) == f"{kept}\n{body}", kept
+    assert strip(f"{page}\nსაოჯახო ალფამარტი", page=2, logo=True) == f"{body}\nსაოჯახო ალფამარტი"   # სათაურის ქვემოთ — ტექსტია
+    assert strip(f"საოჯახო ალფამარტი\n{body}", page=2, logo=True) == f"საოჯახო ალფამარტი\n{body}"   # გვერდზე სათაური არ არის
+    assert strip(f"საოჯახო ალფამარტი\n{page}", logo=True) == f"საოჯახო ალფამარტი\n{body}"            # ორიგინალის მხარე უცვლელია
+
+
+def test_logo_words_are_not_inserted_text_when_the_original_header_has_a_picture():
+    orig = ("1.1 პირველი პუნქტის ტექსტი საკმარისად გრძელია\n1.2 მეორე პუნქტის ტექსტი საკმარისად გრძელია\n"
+            "2.1 მესამე პუნქტის ტექსტი საკმარისად გრძელია\n2.2 მეოთხე პუნქტის ტექსტი საკმარისად გრძელია")
+    lines = orig.split("\n")
+    head = "დამტკიცებულია შპს ალფას დირექტორის მიერ\n2026-11-05"
+    scan = [f"{head}\n{lines[0]}\n{lines[1]}", f"საოჯახო\nალფამარტი\n\n{head}\n{lines[2]}\n{lines[3]}"]
+
+    def run(picture, pages=scan):
+        return sig(compare_texts([orig], pages, make_config(), original_paginated=False, strip_lines=head.split("\n"), labels=set(),
+                                 trusted_pages={1, 2}, header_picture=picture))
+    assert run(True) == []
+    plain = run(False)
+    assert [(d.page, d.kind) for d in plain] == [(2, "added")] and "ალფამარტი" in plain[0].scanned
+    # იმავე ადგილას ნამდვილი ჩამატება (ციფრებით) სურათიან სათაურზეც ჩანს
+    stamped = run(True, [scan[0], scan[1].replace("საოჯახო\nალფამარტი", "გაუქმებულია 2026-12-01")])
+    assert [(d.page, d.kind) for d in stamped] == [(2, "added")]
+
+
 def test_header_split_in_two_lines_is_removed_but_line_before_a_footer_stays():
     orig = "შინაარსი პირველი გვერდის ტექსტი მთლიანად\nმარიამ ბერიძე"
     strip = ["ქ. თბილისი 2026-10-29", "საიდენტიფიკაციო კოდი: 200000001; თბილისი"]

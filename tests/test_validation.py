@@ -409,6 +409,24 @@ def test_docx_text_body_order_table_header_footer():
     assert docx_text(b"%PDF-1.4") is None and docx_text(_zip({"a.txt": "x"})) is None
 
 
+def test_docx_header_picture_is_detected_only_in_headers():
+    """ბლანკის ლოგო header-ის სურათია: მხოლოდ ასეთ ფაილზე ითვლება გვერდის თავში წაკითხული ერთი-ორი სიტყვა ლოგოდ."""
+    from hrsorter.validation import docx_header_picture, original_pages
+    doc = f"<w:document {W_NS}><w:body>{_p(_t('ტექსტი'))}</w:body></w:document>"
+    text_header = f"<w:hdr {W_NS}>{_p(_t('ქ. თბილისი 2026-09-16'))}</w:hdr>"
+    ns = f'{W_NS} xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:v="urn:schemas-microsoft-com:vml"'
+    for picture in ("<w:drawing><wp:inline/></w:drawing>", "<w:pict><v:shape><v:imagedata/></v:shape></w:pict>"):
+        data = _zip({"word/document.xml": doc, "word/header1.xml": f"<w:hdr {ns}>{_p(picture)}{_p(_t('ქ. თბილისი 2026-09-16'))}</w:hdr>"})
+        assert docx_header_picture(data), picture
+    plain = _zip({"word/document.xml": doc, "word/header1.xml": text_header})
+    in_footer = _zip({"word/document.xml": doc, "word/header1.xml": text_header,
+                      "word/footer1.xml": f"<w:ftr {W_NS}>{_p('<w:drawing/>')}</w:ftr>"})
+    in_body = _zip({"word/document.xml": f"<w:document {W_NS}><w:body>{_p('<w:drawing/>')}</w:body></w:document>"})
+    assert not docx_header_picture(plain) and not docx_header_picture(in_footer) and not docx_header_picture(in_body)
+    assert not docx_header_picture(b"%PDF-1.4") and not docx_header_picture(b"")
+    assert original_pages(data, None).header_picture and not original_pages(plain, None).header_picture
+
+
 def docx_client(lines=None, header=None, **emp) -> FakeClient:
     raw = {"kind": "generated", "content_type": DOCX_CT, "document_date": "2024-03-12", "document_number": None}
     ref = MhrDocRef("9001", "CONTRACTS", "ხელშეკრულება", "2024-03-12T10:00:00Z", "a8d2.docx", raw=raw)

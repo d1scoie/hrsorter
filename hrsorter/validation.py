@@ -851,12 +851,26 @@ def docx_text(data: bytes) -> tuple[str, list[str]] | None:
     return "\n".join(body), list(dict.fromkeys(extra))
 
 
+_PICTURE = re.compile(rb"<(?:w:drawing|w:pict|v:imagedata)\b")
+
+
+def docx_header_picture(data: bytes) -> bool:
+    """docx-ის header-ში სურათია (ბლანკის ლოგო). სკანზე ლოგო ხანდახან სიტყვებად იკითხება — ორიგინალის ტექსტში ისინი არ არის."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data or b"")) as zf:
+            return any(zf.getinfo(n).file_size <= _DOCX_PART_MAX and _PICTURE.search(zf.read(n)) is not None
+                       for n in zf.namelist() if re.fullmatch(r"word/header\d*\.xml", n))
+    except (zipfile.BadZipFile, ValueError, KeyError, OSError, EOFError):
+        return False
+
+
 @dataclass
 class OriginalText:
     pages: list[str]                    # PDF — გვერდები; docx — ერთი ელემენტი (დაუნომრავი)
     unreadable: list[int] = dc_field(default_factory=list)   # წაუკითხავი PDF გვერდები (1-დან)
     paginated: bool = True
     strip_lines: list[str] = dc_field(default_factory=list)  # docx header/footer — შედარებიდან ორივე მხრიდან იშლება
+    header_picture: bool = False        # docx-ის header-ში სურათია: გვერდის თავში წაკითხული ლოგოს სიტყვები ჩამატებული ტექსტი არ არის
 
 
 def original_pages(data: bytes, cfg: Config) -> OriginalText | None:
@@ -866,7 +880,7 @@ def original_pages(data: bytes, cfg: Config) -> OriginalText | None:
         docx = docx_text(data)
         if docx is None:
             return None
-        return OriginalText([docx[0]], paginated=False, strip_lines=docx[1])
+        return OriginalText([docx[0]], paginated=False, strip_lines=docx[1], header_picture=docx_header_picture(data))
     pdf = _pdf_pages(data, cfg)
     return OriginalText(pdf[0], pdf[1]) if pdf else None
 
@@ -1377,7 +1391,8 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
 
     def compare(texts: list[str]) -> list[TextDiff]:
         return compare_texts(orig.pages, texts, cfg, original_paginated=orig.paginated, strip_lines=orig.strip_lines,
-                             labels=clause_labels(orig.pages), known=known, trusted_pages=trusted_pages(scanned))
+                             labels=clause_labels(orig.pages), known=known, trusted_pages=trusted_pages(scanned),
+                             header_picture=orig.header_picture)
     primary = compare(scanned_texts)
     result.diffs.extend(primary)
     _recheck_diffs(result, cfg, repo, row, scanned, scanned_texts, primary, compare)
@@ -1435,7 +1450,8 @@ def _compare_with_template(result: ValidationResult, cfg: Config, client, employ
 
     def compare(texts: list[str]) -> list[TextDiff]:
         return compare_texts(tpl, texts, cfg, original_paginated=orig.paginated, strip_lines=orig.strip_lines,
-                             labels=clause_labels(orig.pages), known=known_tokens(employee), trusted_pages=trusted_pages(scanned))
+                             labels=clause_labels(orig.pages), known=known_tokens(employee), trusted_pages=trusted_pages(scanned),
+                             header_picture=orig.header_picture)
     scanned_texts = [p.get("text") or "" for p in scanned]
     primary = compare(scanned_texts)
     result.diffs.extend(primary)

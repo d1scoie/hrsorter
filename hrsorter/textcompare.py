@@ -688,6 +688,7 @@ def _is_page_number(norm: str, page: int) -> bool:
 HEADER_JUNK_MAX_TOKENS = 3    # გამჭოლი სათაურის წინ ამდენამდე წვრილი ტოკენი — ლოგოს ასოებია („მადარგ ი დავით … მიერ")
 HEADER_JUNK_MAX_CHARS = 10
 HEADER_MIN_CHARS = 12         # ამაზე მოკლე ხაზი სათაურად არ ითვლება
+HEADER_LOGO_MAX_LINES = 2     # სათაურის ზემოთ ამდენამდე ხაზი (სულ HEADER_JUNK_MAX_TOKENS სიტყვამდე) — სიტყვებად წაკითხული ლოგო
 
 
 def _header_after_junk(norm: str, lines: list[str]) -> bool:
@@ -701,30 +702,53 @@ def _header_after_junk(norm: str, lines: list[str]) -> bool:
     return False
 
 
-def _strip(text: str, lines: list[str], page: int | None = None) -> str:
-    """ტექსტიდან ამოიღებს `lines`-ის მსგავს ხაზებს (და page-ის მითითებისას — გვერდის კიდეზე ამ გვერდის ნომერს)."""
+def _logo_rows(rows: list[tuple[str, str]], filled: list[int], headers: set[int]) -> set[int]:
+    """გვერდის თავში, სათაურის პირველი ხაზის ზემოთ მდგომი ერთი-ორი მოკლე ხაზი: ბლანკის ლოგო სურათია, Claude კი მას ხანდახან
+    სიტყვებად კითხულობს — ყოველ გვერდზე სხვანაირად („საოჯახო / ალფამარტი", „სახლი ალფამარჯი"), ამიტომ გამჭოლ ხაზად ვერ იპოვება.
+    ციფრიანი ან უფრო გრძელი ტექსტი ლოგო არ არის და რჩება."""
+    first = next((i for i in filled if i in headers), None)
+    above = [i for i in filled if first is not None and i < first]
+    words = [w for i in above for w in rows[i][1].split()]
+    if not above or len(above) > HEADER_LOGO_MAX_LINES or len(words) > HEADER_JUNK_MAX_TOKENS \
+            or any(ch.isdigit() for w in words for ch in w):
+        return set()
+    return set(above)
+
+
+def _strip(text: str, lines: list[str], page: int | None = None, logo: bool = False) -> str:
+    """ტექსტიდან ამოიღებს `lines`-ის მსგავს ხაზებს (და page-ის მითითებისას — გვერდის კიდეზე ამ გვერდის ნომერს). `logo` —
+    ორიგინალის სათაურში სურათია: დასკანერებული გვერდის თავში სათაურის ზემოთ წაკითხული ლოგოს სიტყვებიც იშლება."""
     rows = [(ln, _norm_line(ln)) for ln in text.split("\n")]
     filled = [i for i, (_, norm) in enumerate(rows) if norm]
     edge = set(_edges(filled)) if page is not None else set()
     split_header = {k for i, j in zip(filled, filled[1:]) if i in edge and j in edge   # Claude სათაურს ორ ხაზად წერს („ქ. თბილისი" / „2026-10-29")
                     and any(_same_line(f"{rows[i][1]} {rows[j][1]}", x) for x in lines)
                     and not any(_same_line(rows[i][1], x) or _same_line(rows[j][1], x) for x in lines) for k in (i, j)}
-    keep = []
+    keep: dict[int, str] = {}
+    headers = set(split_header)   # სათაურად ამოღებული ხაზები (გვერდის ნომერი და პუნქტს მიწებებული სათაური აქ არ ითვლება)
     for i, (ln, norm) in enumerate(rows):
         if i in split_header:
             continue
-        if norm and (any(_same_line(norm, x) for x in lines) or (i in edge and _is_page_number(norm, page))):
+        if norm and any(_same_line(norm, x) for x in lines):
+            headers.add(i)
+            continue
+        if norm and i in edge and _is_page_number(norm, page):
             continue
         if i in edge and len(norm) >= HEADER_MIN_CHARS and any(f" {norm} " in f" {x} " for x in lines):
+            headers.add(i)
             continue   # კიდეზე სათაურის ნაწილი, მთელი სიტყვებით: Claude სათაურის დასაწყისს ხანდახან ტოვებს („01 იანვრის … დანართი")
         m = _GLUED_HEADER.match(ln)   # „10.6 ქ. თბილისი 2026-11-01": პუნქტის ნომერი + გამჭოლი სათაური ერთ ხაზად — სათაური იშლება
         if m and any(_same_line(_norm_line(m.group(2)), x) for x in lines):
-            keep.append(m.group(1))
+            keep[i] = m.group(1)
             continue
         if norm and _header_after_junk(norm, lines):
+            headers.add(i)
             continue
-        keep.append(ln)
-    return "\n".join(keep)
+        keep[i] = ln
+    if logo and page is not None:
+        for i in _logo_rows(rows, filled, headers):
+            keep.pop(i, None)
+    return "\n".join(keep.values())
 
 
 _GLUED_HEADER = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2})+\.?)\s+(\S.*)$")
@@ -732,24 +756,27 @@ _GLUED_HEADER = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2})+\.?)\s+(\S.*)$")
 
 def compare_texts(original_pages: list[str], scanned_pages: list[str], cfg, original_paginated: bool = True,
                   strip_lines: list[str] | None = None, labels: set[str] | None = None,
-                  known: list[str] | None = None, trusted_pages: set[int] | None = None) -> list[TextDiff]:
+                  known: list[str] | None = None, trusted_pages: set[int] | None = None,
+                  header_picture: bool = False) -> list[TextDiff]:
     """ორიგინალის და დასკანერებულის ტექსტები → განსხვავებები (significant = შინაარსობრივი).
 
     `original_paginated=False` — ორიგინალს გვერდები არ აქვს (docx): მთელი დოკუმენტის შედარება page_count-ის
     გარეშე, გამჭოლი ხაზების და გვერდის ნომრების მოცილებით. `strip_lines` — ორივე მხრიდან ამოსაღები ხაზები
     (docx-ის header/footer). `labels` — შაბლონის პუნქტების ავტო-ნომრები (ნუმერაცია შინაარსად არ ითვლება); `known` —
     MHR-ის თანამშრომლის მონაცემების სიტყვები (რეკვიზიტების ცხრილში ცვლადების მნიშვნელობები). `trusted_pages` — დასკანერებულის
-    გვერდები (1-დან), რომელთა ტექსტი Tesseract-ის არ არის (Claude, ტექსტური ფენა). `cfg` ინტერფეისისთვისაა (ზღურბლები აქ მუდმივებია)."""
+    გვერდები (1-დან), რომელთა ტექსტი Tesseract-ის არ არის (Claude, ტექსტური ფენა). `header_picture` — docx-ის header-ში სურათია
+    (ბლანკის ლოგო): გვერდის თავში სათაურის ზემოთ წაკითხული ერთი-ორი სიტყვა ლოგოა, არა ჩამატებული ტექსტი. `cfg` ინტერფეისისთვისაა
+    (ზღურბლები აქ მუდმივებია)."""
     strip = [x for x in (_norm_line(s) for s in strip_lines or []) if len(x) >= RUNNING_MIN_CHARS]
     if not original_paginated:
         strip += running_lines(scanned_pages)
         a = _tokens(_strip("\n".join(original_pages), strip), 0)
-        b = [t for i, p in enumerate(scanned_pages) for t in _tokens(_strip(p, strip, page=i + 1), i + 1)]
+        b = [t for i, p in enumerate(scanned_pages) for t in _tokens(_strip(p, strip, page=i + 1, logo=header_picture), i + 1)]
         diffs = _diff_tokens(a, b, 1, labels, known, trusted_pages)
         if labels is not None and b:
             last = b[-1].page
             seen = " ".join(d.scanned for d in diffs if d.significant and d.page == last)
-            for line in unmatched_long_lines([t.word for t in a], _strip(scanned_pages[last - 1], strip, page=last), labels):
+            for line in unmatched_long_lines([t.word for t in a], _strip(scanned_pages[last - 1], strip, page=last, logo=header_picture), labels):
                 if sum(1 for w in line.split() if w in seen) < 3:
                     diffs.append(TextDiff(page=last, kind="added", original="", scanned=line, significant=True,
                                           reason="ჩამატებული ტექსტი (ბოლო გვერდი)"))
