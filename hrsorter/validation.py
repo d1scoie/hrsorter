@@ -590,7 +590,10 @@ class PagePlan:
 def plan_pages(client, cfg: Config, cands: list[MhrDocRef], scanned_texts: list[str]) -> PagePlan:
     """HR ხშირად ხელშეკრულებას, ინსტრუქციას, წესებსა და დანართებს ერთად ბეჭდავს და ერთ ფაილად ასკანერებს: ყოველი გვერდი მიეკუთვნება
     იმ დაგენერირებულ ფაილს, რომლის სიტყვებსაც ყველაზე მეტად შეიცავს. ერთი ფაილის გვერდები მიმდევრობითაა (სპეც. §2), ამიტომ
-    ცუდად წაკითხული ან შეცვლილი გვერდი მეზობელთან რჩება და შედარება სხვაობას პირდაპირ აჩვენებს."""
+    ცუდად წაკითხული ან შეცვლილი გვერდი მეზობელთან რჩება და შედარება სხვაობას პირდაპირ აჩვენებს.
+
+    ფაილის სიტყვებში მისი header/footer-იც ითვლება — ის ყოველ გვერდზე იბეჭდება. მოკლე გვერდი (ხელმოწერები და რეკვიზიტები)
+    თითქმის ყველა ფაილს ჰგავს, დიდი ფაილი კი ერთი-ორი სიტყვით ყოველთვის იგებს: ასეთი გვერდი წინა გვერდის ფაილთან რჩება."""
     plan = PagePlan(owner=[None] * len(scanned_texts), best=[None] * len(scanned_texts))
     for ref in cands[:ORIGINAL_CANDIDATES_MAX]:
         if "sha256" in (ref.raw or {}) and not ref.raw.get("sha256"):   # API: ჩანაწერი არის, ფაილი სერვერზე — არა
@@ -601,7 +604,7 @@ def plan_pages(client, cfg: Config, cands: list[MhrDocRef], scanned_texts: list[
             continue
         orig = original_pages(data, cfg)
         if orig is not None:
-            plan.files[ref.doc_id] = OriginalFile(ref, data, orig, _content_tokens("\n".join(orig.pages)))
+            plan.files[ref.doc_id] = OriginalFile(ref, data, orig, _content_tokens("\n".join([*orig.pages, *orig.strip_lines])))
     if not plan.files:
         return plan
     owner, thin, weak, prev = plan.owner, set(), {}, None
@@ -619,8 +622,12 @@ def plan_pages(client, cfg: Config, cands: list[MhrDocRef], scanned_texts: list[
                 weak[i] = best
             prev = None
             continue
-        if prev in score and score[prev] >= score[best] - PAGE_OWNER_TIE:
+        tie = PAGE_OWNER_TIE
+        if score.get(prev, 0.0) >= PAGE_OWNER_MIN_OVERLAP:   # წინა ფაილიც კარგად ხსნის გვერდს: მოკლე გვერდზე წილი რამდენიმე სიტყვაა
+            tie = max(tie, PAGE_OWNER_TIE_WORDS / len(toks))
+        if prev in score and score[prev] >= score[best] - tie:
             best = prev
+            plan.best[i] = (best, score[best])   # გვერდი წინა ფაილში დარჩა — „რატომ" მისსავე წილს აჩვენებს
         owner[i] = prev = best
     for i, o in enumerate(owner):
         if o is None:
@@ -844,12 +851,26 @@ def docx_text(data: bytes) -> tuple[str, list[str]] | None:
     return "\n".join(body), list(dict.fromkeys(extra))
 
 
+_PICTURE = re.compile(rb"<(?:w:drawing|w:pict|v:imagedata)\b")
+
+
+def docx_header_picture(data: bytes) -> bool:
+    """docx-ის header-ში სურათია (ბლანკის ლოგო). სკანზე ლოგო ხანდახან სიტყვებად იკითხება — ორიგინალის ტექსტში ისინი არ არის."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data or b"")) as zf:
+            return any(zf.getinfo(n).file_size <= _DOCX_PART_MAX and _PICTURE.search(zf.read(n)) is not None
+                       for n in zf.namelist() if re.fullmatch(r"word/header\d*\.xml", n))
+    except (zipfile.BadZipFile, ValueError, KeyError, OSError, EOFError):
+        return False
+
+
 @dataclass
 class OriginalText:
     pages: list[str]                    # PDF — გვერდები; docx — ერთი ელემენტი (დაუნომრავი)
     unreadable: list[int] = dc_field(default_factory=list)   # წაუკითხავი PDF გვერდები (1-დან)
     paginated: bool = True
     strip_lines: list[str] = dc_field(default_factory=list)  # docx header/footer — შედარებიდან ორივე მხრიდან იშლება
+    header_picture: bool = False        # docx-ის header-ში სურათია: გვერდის თავში წაკითხული ლოგოს სიტყვები ჩამატებული ტექსტი არ არის
 
 
 def original_pages(data: bytes, cfg: Config) -> OriginalText | None:
@@ -859,7 +880,7 @@ def original_pages(data: bytes, cfg: Config) -> OriginalText | None:
         docx = docx_text(data)
         if docx is None:
             return None
-        return OriginalText([docx[0]], paginated=False, strip_lines=docx[1])
+        return OriginalText([docx[0]], paginated=False, strip_lines=docx[1], header_picture=docx_header_picture(data))
     pdf = _pdf_pages(data, cfg)
     return OriginalText(pdf[0], pdf[1]) if pdf else None
 
@@ -928,6 +949,7 @@ PAGE_OWNER_MIN_OVERLAP = 0.7           # გვერდის სიტყვ�
 PAGE_OWNER_WEAK = 0.6                  # ამაზე მეტი და მეზობელი გვერდიც ამ ფაილისაა → მისია (ცუდად წაკითხული ან ჩამატებული ტექსტის მქონე გვერდი)
 PAGE_OWNER_GAP = 2                     # ორ იმავე ფაილის გვერდს შორის ამდენამდე გვერდი იმ ფაილისაა; მეტი — სხვა დოკუმენტია
 PAGE_OWNER_TIE = 0.05                  # ამაზე ახლო დამთხვევისას წინა გვერდის ფაილი რჩება (ერთი ფაილის გვერდები მიმდევრობითაა)
+PAGE_OWNER_TIE_WORDS = 5               # მოკლე გვერდზე ამდენ სიტყვამდე უპირატესობაც „ახლოა" (ნამდვილ სკანებზე: ცრუ — 2 სიტყვა, ნამდვილი — 10+)
 PAGE_MIN_TOKENS = 8                    # ამაზე ნაკლები სიტყვა (ტექსტის გარეშე გვერდი) — მეზობელ ფაილს მიეწერება
 
 
@@ -1369,7 +1391,8 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
 
     def compare(texts: list[str]) -> list[TextDiff]:
         return compare_texts(orig.pages, texts, cfg, original_paginated=orig.paginated, strip_lines=orig.strip_lines,
-                             labels=clause_labels(orig.pages), known=known, trusted_pages=trusted_pages(scanned))
+                             labels=clause_labels(orig.pages), known=known, trusted_pages=trusted_pages(scanned),
+                             header_picture=orig.header_picture)
     primary = compare(scanned_texts)
     result.diffs.extend(primary)
     _recheck_diffs(result, cfg, repo, row, scanned, scanned_texts, primary, compare)
@@ -1427,7 +1450,8 @@ def _compare_with_template(result: ValidationResult, cfg: Config, client, employ
 
     def compare(texts: list[str]) -> list[TextDiff]:
         return compare_texts(tpl, texts, cfg, original_paginated=orig.paginated, strip_lines=orig.strip_lines,
-                             labels=clause_labels(orig.pages), known=known_tokens(employee), trusted_pages=trusted_pages(scanned))
+                             labels=clause_labels(orig.pages), known=known_tokens(employee), trusted_pages=trusted_pages(scanned),
+                             header_picture=orig.header_picture)
     scanned_texts = [p.get("text") or "" for p in scanned]
     primary = compare(scanned_texts)
     result.diffs.extend(primary)
