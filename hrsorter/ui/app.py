@@ -2066,6 +2066,11 @@ def _checked_block(c: Config, m, d, v: dict, pts: list[dict]) -> str:
     o = v.get("original") or {}
     if o:
         step("ok", "რას შევადარე", f'{o.get("filename") or o.get("title")} · MHR ID {o.get("doc_id")}' + (f' · შექმნილია {str(o.get("created_at"))[:10]}' if o.get("created_at") else ""))
+    elif v.get("statement"):   # განთავისუფლების განცხადება: მიბმა, ტექსტის შედარების გარეშე
+        s = v["statement"]
+        step("ok", "რას მივაბი", f'მენეჯერის ატვირთული განცხადება MHR-ში · MHR ID {s.get("doc_id")}'
+             + (f' · ატვირთულია {str(s.get("created_at"))[:10]}' if s.get("created_at") else "")
+             + " — ეს სკანი მისი ქაღალდის ორიგინალია (ხელნაწერი ტექსტი არ შედარდება)")
     elif _no_compare(v):
         step("bad", "შესადარებელი ფაილი ვერ მოიძებნა", "თანამშრომლის ბარათზე დაგენერირებული ფაილი არ არის, ამიტომ ტექსტი არაფერს შედარებია. "
              "როცა MHR-ში შექმნი, პროგრამა თავად შეამჩნევს და შეადარებს.")

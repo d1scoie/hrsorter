@@ -405,18 +405,29 @@ def _signed_original(row) -> dict[str, Any] | None:
     return None
 
 
+def _statement(row) -> dict[str, Any] | None:
+    """ვალიდაციამ ნაპოვნი MHR-ის განთავისუფლების განცხადება (მენეჯერის ფოტო), იმავე თანამშრომლის — სკანი მისი ქაღალდის ორიგინალია."""
+    v = json.loads(row["validation"] or "{}") if row["validation"] else {}
+    st = v.get("statement") or {}
+    sraw = st.get("raw") or {}
+    if st.get("doc_id") and str(sraw.get("employee_id") or row["employee_id"]) == str(row["employee_id"]):
+        return st
+    return None
+
+
 def _upload_meta(repo, cfg, row, doc, type_id: str, sha: str) -> dict[str, Any]:
     """MHR-ის upload ველები (კონტრაქტის სახელებით): external_id = ჩვენი document_id, sha256 — გასაგზავნი ბაიტების,
-    signed_copy_of — ვალიდაციის ორიგინალი (kind generated, იგივე თანამშრომელი)."""
+    signed_copy_of — ვალიდაციის ორიგინალი (kind generated, იგივე თანამშრომელი) ან განთავისუფლების განცხადება (მენეჯერის ფოტო)."""
     t = cfg.doc_type(type_id)
     v = json.loads(row["validation"] or "{}") if row["validation"] else {}
     orig = _signed_original(row)
-    signed_copy_of = str(orig["doc_id"]) if orig else None
+    statement = None if orig else _statement(row)
+    signed_copy_of = str(orig["doc_id"]) if orig else (str(statement["doc_id"]) if statement else None)
     name = clean_file_title(orig.get("filename")) if orig else ""   # ფაილის სახელი უფრო ზუსტია: „… თანამდებობრივი ინსტრუქცია"
     src = repo.get_source(doc["source_id"])
     date = doc["document_date"] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", doc["document_date"] or "") else None
     number = (doc["doc_number"] or "").strip()
-    title = f"{name or (t.name_ka if t else type_id)} — ხელმოწერილი სკანი"
+    title = f"{name or (t.name_ka if t else type_id)} — {'ქაღალდის ორიგინალი' if statement else 'ხელმოწერილი სკანი'}"
     if t is not None and t.identity:   # სხვა კომპიუტერიც სათაურით ხედავს, რომ პირადობა MHR-ს ემთხვევა (validation.verified_identity)
         from .validation import IDENTITY_TITLE
         verified = any(c.get("field") == "identity" and c.get("status") == "match" for c in v.get("checks", []))
