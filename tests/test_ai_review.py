@@ -131,6 +131,21 @@ def test_review_document_builds_prompt_from_db_and_normalizes(tmp_path):
     repo.close()
 
 
+def test_prompt_shows_signature_marks_only_where_the_rule_checks_them():
+    """რეალური ინსტრუქცია: ბლანკის თავში „… დირექტორის მიერ / /“ ხაზს მკითხველი ხელმოწერის ზონად თვლის და 1-ლ და მე-3
+    გვერდზე „დამსაქმებელი — აკლია“ წერდა. ინსტრუქციაზე ხელმოწერა მხოლოდ ბოლო გვერდზე მოწმდება — AI-მ ეს არ უნდა ნახოს
+    და „დირექტორის ხელმოწერა აკლია“ არ უნდა დაწეროს. ხელშეკრულებაზე ყველა გვერდის ნიშანი ჩანს."""
+    val = {"status": "failed", "employee": {}, "checks": [], "diffs": [], "summary": []}
+    pages = [{"text": "დამტკიცებულია დირექტორის მიერ / /\nპირველი", "signature_parties": {"employer": False}},
+             {"text": "ბოლო\n[ხელნაწერი: ხელმოწერა და ბეჭედი]", "signature_parties": {"employer": True, "employee": True}}]
+    doc = {"type_ka": "თანამდებობრივი ინსტრუქცია", "page_count": 2, "signature_every_page": False}
+    p = ar.build_prompt(doc, val, pages)
+    assert "employer — აკლია" not in p and "employer — არის, employee — არის" in p
+    assert "მხოლოდ ბოლო გვერდზე" in p and "ხელმოწერის ადგილი არ არის" in p
+    assert "employer — აკლია" in ar.build_prompt({**doc, "signature_every_page": True}, val, pages)
+    assert "employer — აკლია" in ar.build_prompt({k: v for k, v in doc.items() if k != "signature_every_page"}, val, pages)
+
+
 def test_findings_are_numbered_in_prompt_and_tied_back_to_each_stop_reason(tmp_path):
     """AI-ის აზრი თითო გაჩერების მიზეზზე: პრომპტში [გ1], [გ2]…, პასუხში ნომერი → იმავე ველის/სხვაობის key.
     უცნობი/გამეორებული ნომერი და ცარიელი ახსნა იგნორირდება — ბარათზე სხვისი ახსნა არ უნდა მოხვდეს."""
