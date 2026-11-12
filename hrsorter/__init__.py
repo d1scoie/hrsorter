@@ -1,4 +1,4 @@
 """HR დოკუმენტების ადგილობრივი გადამრჩევი (HR PDF sorter)."""
 
-PIPELINE_VERSION = "0.1.25"
+PIPELINE_VERSION = "0.1.26"
 SIDECAR_SCHEMA_VERSION = "1.0"
