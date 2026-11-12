@@ -250,6 +250,8 @@ details.pgroup{padding:0;margin:0 0 12px;border-top:1px solid var(--border)}
 .wnum{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font-weight:650;font-size:16px;margin-top:16px}
 .wstep>.card{padding:18px 20px;min-width:0}.wstep h2{margin:0 0 4px;color:var(--text);font-size:18px}
 .wstep .hint{color:var(--text-2);font-size:14px;margin:0 0 14px}.wstep .pgroup,.wstep .card{box-shadow:none}
+.ai-say{padding:8px 12px;border-radius:10px;font-size:14px;color:var(--text)}.ai-say.tone-ok b{color:var(--ok)}
+.ai-say.tone-warn b{color:var(--warn)}.ai-say.tone-bad b{color:var(--bad)}.pgroup>summary .chip{flex:none}
 .wsub{font-size:15px;font-weight:600;color:var(--text-2);margin:18px 0 10px}
 .opts{display:flex;flex-direction:column}
 .opt{display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 0;border-top:1px solid var(--border);margin:0}
@@ -1821,13 +1823,33 @@ def _problem_todo(x: dict, action: str) -> str:
     return _TODO_KIND.get(x.get("kind"), _TODO_TEXT).format(action=action) if action else ""
 
 
+_AI_SAY = {"ok": ("AI: ცრუ განგაშია", "ok"), "warn": ("AI: ქაღალდზე ნახე", "warn"), "bad": ("AI: ნამდვილი პრობლემაა", "bad")}
+
+
+def _ai_finding(findings: list[dict] | None, x: dict) -> dict | None:
+    """AI-ის აზრი სწორედ ამ სხვაობაზე/ველზე (ai_review.finding_key-ით); ძველ ანალიზს findings არ აქვს — None."""
+    if not findings:
+        return None
+    from ..ai_review import finding_key
+    key = finding_key(x)
+    return next((f for f in findings if f.get("key") == key), None)
+
+
+def _ai_say(f: dict | None) -> str:
+    if not f:
+        return ""
+    lbl, tone = _AI_SAY.get(f.get("status"), _AI_SAY["warn"])
+    return f'<div class="ai-say tone-{tone}"><b>{e(lbl)}.</b> {e(f.get("explanation"))}</div>'
+
+
 def _problem_card(doc_id: str, x: dict, pts: list[dict], action: str, purged: bool = False, in_group: bool = False,
-                  shared: bool = False) -> str:
+                  shared: bool = False, findings: list[dict] | None = None) -> str:
     """ერთი პრობლემა. `in_group` — ჯგუფში სათაური უკვე ზემოთაა, ბარათზე მხოლოდ ადგილი ჩანს;
-    `shared` — „რატომ“ და „რა ვქნა“ ჯგუფის ყველა ბარათზე ერთნაირია და ჯგუფის თავში ერთხელ წერია."""
+    `shared` — „რატომ“ და „რა ვქნა“ ჯგუფის ყველა ბარათზე ერთნაირია და ჯგუფის თავში ერთხელ წერია;
+    `findings` — AI-ის აზრი თითო ადგილზე: ბარათის თავშივე ჩანს, რომ ცრუ განგაში ერთი შეხედვით გამოირჩეს."""
     n = int(x.get("page") or 0)
     pt = pts[n - 1] if 0 < n <= len(pts) else {}
-    lines = []
+    lines = [say] if (say := _ai_say(_ai_finding(findings, x))) else []
     if x.get("orig_parts"):
         lines.append(f'<div><span class="lbl">MHR-ის ფაილში წერია</span><div class="val">{_highlight(x["orig_parts"], "o")}</div></div>')
         lines.append(f'<div><span class="lbl">ქაღალდზე წერია</span><div class="val">{_highlight(x["scan_parts"], "s")}</div></div>')
@@ -1870,10 +1892,11 @@ def _field_problems(v: dict, meta: dict, pts: list[dict]) -> dict[int, list[tupl
     return out
 
 
-def _check_card(c: dict, action: str, doc_id: str, meta: dict, pts: list[dict], purged: bool = False) -> str:
+def _check_card(c: dict, action: str, doc_id: str, meta: dict, pts: list[dict], purged: bool = False,
+                findings: list[dict] | None = None) -> str:
     n, boxes = _field_place(c, meta, pts)
     differs = c.get("status") == "mismatch" and c.get("mhr_value") is not None
-    lines = []
+    lines = [say] if (say := _ai_say(_ai_finding(findings, c))) else []
     if differs:
         lines.append(f'<div><span class="lbl">დოკუმენტში წერია</span><div class="val"><mark class="s">{e(c.get("document_value"))}</mark></div></div>')
         lines.append(f'<div><span class="lbl">MHR-ის ჩანაწერში წერია</span><div class="val"><mark class="o">{e(c.get("mhr_value"))}</mark></div></div>')
@@ -2091,10 +2114,12 @@ def _page_view(c: Config, m, d, pts: list[dict], n: int) -> str:
            + (f'<a class="btn sm" href="/mhr/{e(doc_id)}/page/{n + 1}">გვერდი {n + 1}</a>' if n < len(pts) else "") + "</div>")
     action = _action_name(m)
     purged = bool(d["purged_at"])
-    problems = "".join(_problem_card(doc_id, x, pts, action, purged).replace('<div class="prob-b">', '<div>') for x in here if x.get("significant") or x.get("suspect"))
+    findings = (_ai_load(m) or {}).get("findings")
+    problems = "".join(_problem_card(doc_id, x, pts, action, purged, findings=findings).replace('<div class="prob-b">', '<div>')
+                       for x in here if x.get("significant") or x.get("suspect"))
     meta = json.loads(d["metadata"] or "{}")
     fields = _field_problems(v, meta, pts).get(n, [])
-    problems += "".join(_check_card(ch, action, doc_id, meta, pts, purged).replace('<div class="prob-b">', '<div>') for ch, _b in fields)
+    problems += "".join(_check_card(ch, action, doc_id, meta, pts, purged, findings).replace('<div class="prob-b">', '<div>') for ch, _b in fields)
     noise = [x for x in here if not x.get("significant") and not x.get("suspect")]
     noise_html = "".join(f'<div class="row" style="align-items:flex-start"><div class="grow lines"><div><span class="lbl">MHR-ის ფაილში</span><div class="val">{_highlight(x.get("orig_parts") or [], "o") or e(x.get("original"))}</div></div>'
                          f'<div><span class="lbl">წაკითხული</span><div class="val">{_highlight(x.get("scan_parts") or [], "s") or e(x.get("scanned"))}</div></div></div></div>' for x in noise[:80])
@@ -2140,9 +2165,10 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
     action = _action_name(m)
     purged = bool(d is not None and d["purged_at"])
     problems = ""
+    findings = (_ai_load(m) or {}).get("findings")
     if sig_diffs or _blocking_checks(v):
-        problems = ("".join(f'<div class="card list" style="margin-bottom:12px">{_check_card(ch, action, doc_id, meta, pts, purged)}</div>'
-                            for ch in _blocking_checks(v)) + _grouped_problems(doc_id, sig_diffs, pts, action, purged))
+        problems = ("".join(f'<div class="card list" style="margin-bottom:12px">{_check_card(ch, action, doc_id, meta, pts, purged, findings)}</div>'
+                            for ch in _blocking_checks(v)) + _grouped_problems(doc_id, sig_diffs, pts, action, purged, findings))
     suspects = [x for x in v.get("diffs") or [] if x.get("suspect") and not x.get("significant")]
     if suspects:
         problems += ('<h3 class="wsub">კიდევ შეხედე — პატარა სხვაობები, ფაილს არ აჩერებს</h3>'
@@ -2192,7 +2218,21 @@ def _ai_hint(m) -> str:
 _DIFF_PRIORITY = {"changed": 0, "removed": 1, "page_count": 1, "added": 2, "signature": 3, "handwriting": 4}
 
 
-def _grouped_problems(doc_id: str, diffs: list[dict], pts: list[dict], action: str, purged: bool) -> str:
+def _group_ai_chip(xs: list[dict], findings: list[dict] | None) -> str:
+    """დაკეცილი ჯგუფის თავში: AI-ის აზრი ჯამურად (ყველა ცრუ განგაშია / რომელიმე ნამდვილია / ნახე)."""
+    fs = [f for x in xs if (f := _ai_finding(findings, x))]
+    if not fs:
+        return ""
+    st = {f.get("status") for f in fs}
+    if "bad" in st:
+        return chip(_AI_SAY["bad"][0], "bad")
+    if st == {"ok"} and len(fs) == len(xs):
+        return chip(_AI_SAY["ok"][0], "ok")
+    return chip(_AI_SAY["warn"][0], "warn")
+
+
+def _grouped_problems(doc_id: str, diffs: list[dict], pts: list[dict], action: str, purged: bool,
+                      findings: list[dict] | None = None) -> str:
     """ერთნაირი პრობლემები ერთ ჯგუფად: „ხელნაწერის ეჭვი · 13 გვერდი“ ერთი სტრიქონია და არა 13 ბარათი.
     მნიშვნელოვანი (ციფრი, ამოღებული ტექსტი) და პატარა ჯგუფები ღიაა, დიდი და ხშირად ხმაურიანი — დაკეცილი."""
     groups: dict[str, list[dict]] = {}
@@ -2214,10 +2254,11 @@ def _grouped_problems(doc_id: str, diffs: list[dict], pts: list[dict], action: s
             intro = (f'<div class="lines gintro"><div><span class="lbl">{label}</span><div class="val">{e(next(iter(whys)))}</div></div>'
                      + (f'<div><span class="lbl">რა ვქნა</span><div class="val">{e(next(iter(todos)))}</div></div>' if action else "")
                      + "</div>")
-        cards = "".join(_problem_card(doc_id, x, pts, action, purged, in_group=len(xs) > 1, shared=shared) for x in xs)
+        cards = "".join(_problem_card(doc_id, x, pts, action, purged, in_group=len(xs) > 1, shared=shared, findings=findings)
+                        for x in xs)
         out.append(f'<details class="card pgroup"{" open" if important or len(xs) <= 2 else ""}><summary>'
                    f'<span class="ib tone-{tone}">{icon("alert", 18)}</span><span class="grow"><b>{e(title)}</b>'
-                   f'<span class="m">{len(xs)} ადგილი{" · " + e(where) if where else ""}</span></span>'
+                   f'<span class="m">{len(xs)} ადგილი{" · " + e(where) if where else ""}</span></span>{_group_ai_chip(xs, findings)}'
                    f'<span class="chev" aria-hidden="true"></span></summary>{intro}<div class="list">{cards}</div></details>')
     return "".join(out)
 
