@@ -57,6 +57,7 @@ ADDED_WORD_MIN_LETTERS = 4  # Tesseract-ის გვერდზე უფრ�
 INFLECTION_PREFIX_SHARE = 0.6   # ამ წილზე მეტი საერთო დასაწყისი → სიტყვები მხოლოდ დაბოლოებით განსხვავდება („მომზადების"/„მომზადება")
 KEPT_SIMILARITY = 0.8      # ბოლო გვერდზე სიტყვის ასლების დათვლისას
 KEPT_LONG_NUMBER = 6
+KEPT_GLUED_MIN_LETTERS = 5  # ამაზე გრძელი სიტყვა მიწებებულ ტოკენშიც ითვლება („კაპანაძე" ⊂ „ნინოკაპანაძეპ/ნ:…")
 SNIPPET_MAX = 160
 CONTEXT_WORDS = 3
 PARTS_MAX = 400            # ვებ-გვერდზე ნაჩვენები შეცვლილი ტექსტის ზღვარი
@@ -558,9 +559,9 @@ def _kept(w: str, mine: list[str], other: list[str]) -> bool:
     elif digits:
         def same(x: str) -> bool:
             return bool(_digits([x])) and _sim(w, x) >= SIMILARITY_MIN and (_digits_match([w], [x]) or _digits_match([x], [w]))
-    else:
+    else:   # მკითხველი სიტყვას მეზობელს აწებებს („ნინოკაპანაძეპ/ნ:0100…") — მიწებებულშიც ითვლება, ორივე მხარეს თანაბრად
         def same(x: str) -> bool:
-            return _sim(w, x) >= KEPT_SIMILARITY
+            return _sim(w, x) >= KEPT_SIMILARITY or (len(w) >= KEPT_GLUED_MIN_LETTERS and w in x)
     return sum(map(same, other)) >= sum(map(same, mine))
 
 
