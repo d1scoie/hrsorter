@@ -481,7 +481,7 @@ def test_only_an_older_original_on_the_card_is_said_plainly(client):
     repo.mhr_transition(doc, ("pending",), "failed", validation=v, employee_id="E1")
     page = c.get(f"/mhr/{doc}").text
     banner = page.index("MHR-ში ამ ფაილის მხოლოდ ძველი ვერსიაა")
-    assert banner < page.index('class="card decide"') < page.index("<h2>რატომ გაჩერდა")      # ზემოთ, გადაწყვეტილების წინ
+    assert banner < page.index("ნაბიჯი 1 · ნახე") < page.index("id=decide")                   # ზემოთ, ნაბიჯების წინ
     assert "საწყობი - დანართი#2 (სტაჟიორი)" in page and "დააგენერირე ამ თარიღის ფაილი" in page
     assert page.count(note) == 1 and page.index(note) > page.index("<h2>მონაცემების შედარება")   # მხოლოდ ქვედა ცხრილში
     row = c.get("/mhr?tab=failed").text
@@ -694,10 +694,10 @@ def test_page_after_approval_stops_asking_to_upload(client):
     assert "claude exit 1" in broken and "ხელახალი AI ანალიზი" not in broken and "სცადე თავიდან" not in broken
 
     waiting = item("doc_" + "5" * 32, "failed", stopped)      # ვერ გაიარა: ყველაფერი ისევ ადგილზეა
-    for s in ("ფაილი გაჩერდა", "რა ვქნა", "ატვირთვა მაინც", "<h2>რატომ გაჩერდა", "ხელახალი AI ანალიზი", "დააჭირე ატვირთვას"):
+    for s in ("ფაილი გაჩერდა", "რა ვქნა", "ატვირთვა მაინც", "ნაბიჯი 1 · ნახე", "ხელახალი AI ანალიზი", "დააჭირე ატვირთვას"):
         assert s in waiting, s
     assert "მზადაა ატვირთვისთვის" in item("doc_" + "6" * 32, "ready", clean)
-    assert "რა გავაკეთო" not in done and "რა გავაკეთო" in waiting     # ატვირთულზე გადასაწყვეტი აღარაფერია
+    assert "გადაწყვიტე, რა უყო ფაილს" not in done and "გადაწყვიტე, რა უყო ფაილს" in waiting     # ატვირთულზე გადასაწყვეტი აღარაფერია
     repo.close()
 
 
@@ -722,12 +722,13 @@ def test_failed_page_puts_decision_first_and_groups_repeated_problems(client):
     repo.mhr_set_ai_review(doc, {"verdict": "check", "confidence": "medium", "summary": "ხელფასი თვალით შეამოწმე.",
                                  "items": [], "risks": [], "model": "opus"})
     page = c.get(f"/mhr/{doc}").text
-    decide, why = page.index('class="card decide"'), page.index("<h2>რატომ გაჩერდა")
-    assert decide < why and page.index("ატვირთვა მაინც") < why and page.index("ხელახლა შედარება") < why
-    assert 'href="#ai"' in page[decide:why] and "ხელფასი თვალით შეამოწმე." in page[decide:why]
+    look, decide = page.index("ნაბიჯი 1 · ნახე"), page.index("id=decide")                  # ჯერ ნახე, მერე გადაწყვიტე
+    assert look < decide < page.index("ატვირთვა მაინც</button>") and decide < page.index("ხელახლა შედარება</button>")
+    assert 'href="#ai"' in page[look:decide] and "ხელფასი თვალით შეამოწმე." in page[look:decide]
+    assert page.index("ნაბიჯი 2 · გადაწყვიტე") < page.index('<details class="more"')        # დეტალები — ბოლოში, დაკეცილი
 
     groups = page.split('<details class="card pgroup"')[1:]
-    assert len(groups) == 2 and "ციფრები განსხვავდება" in groups[0] and "ხელნაწერის ეჭვი" in groups[1]
+    assert len(groups) == 2 and "ციფრი სხვანაირად წერია" in groups[0] and "გვერდზე ხელით რაღაც წერია" in groups[1]
     assert groups[0].startswith(" open") and not groups[1].startswith(" open")        # ციფრი ღიაა, 14 ბეჭედი — დაკეცილი
     assert "14 ადგილი · 14 გვერდზე" in groups[1]
     assert groups[1].count("რა ვქნა") == 1 and groups[1].count('class="prob"') == 14   # საერთო ახსნა ერთხელ, ბარათი თითო ადგილზე
@@ -802,7 +803,7 @@ def test_mhr_pages_show_ai_review(client):
     import time
     repo.set_control("worker_heartbeat", str(time.time()))
     page = c.get(f"/mhr/{doc}").text
-    assert "AI ანალიზი (Opus) რიგშია" in page and "ქვემოთ ჩამოთვლილი პრობლემები ქაღალდზე ვნახე" in page
+    assert "AI ანალიზი (Opus) რიგშია" in page and "ქაღალდზე ყველაფერი სწორად წერია" in page
 
     repo.mhr_set_ai_review(doc, {"verdict": "upload", "confidence": "high", "summary": "ხელფასი სწორად იკითხება, დოკუმენტი სწორია.",
                                  "items": [{"topic": "ხელფასი", "status": "ok", "explanation": "2200 სხვაგან ჩანს"}],
@@ -863,8 +864,8 @@ def test_missing_original_is_a_warning_with_working_manual_upload(client, tmp_pa
 
     page = c.get(f"/mhr/{doc}").text
     assert "ჯერ MHR-ში დააგენერირე" in page                                  # გაფრთხილება ჩანს
-    assert "ხელით ატვირთვა — შედარების გარეშე" in page and f'action="/doc/{doc}/manual-upload"' in page
-    assert "შედარება არ მომხდარა" in page and "ატვირთვა მაინც" in page       # ორივე გზა ღიაა
+    assert "პროგრამამ ტექსტი ვერ შეადარა" in page and "ატვირთვა მაინც" in page   # ქაღალდის ნახვის შემდეგ — ერთი ატვირთვის გზა
+    assert f'action="/doc/{doc}/manual-upload"' not in page                   # მეორე, თითქმის იგივე ღილაკი აბნევდა
     assert "MHR-ში ხელშეკრულება ვერ მოიძებნა" in c.get(f"/doc/{doc}").text   # დოკუმენტის გვერდზე სწორი სათაური
     home = c.get("/").text                                                    # „ვერ გაიარა“ კი არა — MHR-ში აკლია, ცალკე სიით
     assert "1 თანამშრომელს MHR-ში რაღაც აკლია" in home and "ნახე სია" in home and "ვერ გაიარა MHR-ის შემოწმება" not in home

@@ -658,7 +658,7 @@ def test_failed_file_page_says_where_what_why_and_what_to_do(world, ui):
     assert '<mark class="s">მესამე თვის</mark>' in page and '<mark class="o">პირველი კვირის</mark>' in page
     assert "რა ვქნა" in page and "ატვირთვა მაინც" in page
     assert "გვერდ-გვერდ" in page and f"/mhr/{child(world, 'G2')}/page/2" in page
-    assert "თანამდებობრივი ინსტრუქცია" in page.split("</h1>")[0]
+    assert "თანამდებობრივი ინსტრუქცია" in page.split('<p class="sub">')[1].split("</p>")[0]
 
 
 def test_missing_signature_names_the_side_and_marks_the_place(world, ui):
@@ -726,7 +726,7 @@ def test_old_saved_results_without_places_still_open(world, ui):
     add_scan(world, doc_id="doc_old", job="job_8")
     world.repo.mhr_transition("doc_old", ("pending",), "failed", validation=v)
     page = ui.get("/mhr/doc_old").text
-    assert "ძველი" in page and "ახალი" in page and "სიტყვა შეცვლილია" in page
+    assert "ძველი" in page and "ახალი" in page and "სიტყვა სხვანაირად წერია" in page
     assert ui.get("/mhr/doc_old/page/1").status_code == 200
 
 
