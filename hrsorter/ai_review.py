@@ -74,7 +74,12 @@ _INSTRUCTIONS = """შენ HR-ის ექსპერტი-რევიზ�
 1. გადაამოწმე, რომ დოკუმენტი მართლა ამ ტიპისაა და მართლა ამ თანამშრომელს ეკუთვნის (სახელი, გვარი, პირადი ნომერი ტექსტში).
 2. ყოველი შემოწმება და ყოველი ნაპოვნი სხვაობა შეაფასე: ნამდვილი პრობლემაა, OCR-ის ხმაურია, თუ გაურკვეველი.
    ციფრების (ხელფასი, თარიღი, პირადი ნომერი) სხვაობას სერიოზულად მოეკიდე — მაგრამ თუ ტექსტში სხვაგან სწორი ციფრი ჩანს,
-   ეს OCR-ის შეცდომაა. ხელმოწერის არქონა თითქმის ყოველთვის ნამდვილი პრობლემაა.
+   ეს OCR-ის შეცდომაა.
+   ხელმოწერა და ბეჭედი სურათზეა: ამოკითხულ ტექსტში ისინი მხოლოდ ნიშნად ჩანს — გვერდის სათაურში „ხელმოწერები: … არის/აკლია“
+   ან ტექსტში „[ხელნაწერი: ხელმოწერა]“, „[ბეჭედი: …]“. ცარიელი ხაზი ან „/ /“ ტექსტში ხელმოწერის არქონას არ ნიშნავს.
+   ხელმოწერა მოწმდება მხოლოდ იქ, სადაც „ხელმოწერის წესი“ ამბობს. ბლანკის თავში ყოველ გვერდზე განმეორებადი ხაზი
+   (მაგ. „დამტკიცებულია … დირექტორის მიერ / /“) ხელმოწერის ადგილი არ არის — მასზე შენიშვნას ნუ დაწერ. თუ წესის ადგილას
+   ხელმოწერა ნიშნით „აკლია“, ეს ნამდვილი პრობლემაა.
 3. მიეცი გადაწყვეტილება: "upload" — დოკუმენტი სწორია და ატვირთვა შეიძლება; "check" — ოპერატორმა თვალით უნდა ნახოს
    (მიუთითე, რა და რომელ გვერდზე); "reject" — დოკუმენტი ამ თანამშრომელს არ ეკუთვნის ან სულ სხვა დოკუმენტია.
 4. ყველაფერი ახსენი მარტივი ქართულით, არაპროგრამისტი HR-თანამშრომლისთვის. ტექნიკური ტერმინები („OCR“, „diff“) ნუ
@@ -113,12 +118,14 @@ def _trunc(text: str, limit: int) -> str:
     return text[:cut] + f"\n… [ტექსტი შემოკლებულია, {len(text) - cut} სიმბოლო გამოტოვებულია]"
 
 
-def _pages_text(pages: list[dict[str, Any]], max_chars: int) -> str:
+def _pages_text(pages: list[dict[str, Any]], max_chars: int, signature_pages: set[int] | None = None) -> str:
+    """`signature_pages` — გვერდები (1-დან), სადაც ხელმოწერა მოწმდება; სხვა გვერდის „აკლია“ (მაგ. ბლანკის თავის ხაზი
+    „… დირექტორის მიერ / /“, რომელსაც მკითხველი ხელმოწერის ზონად თვლის) AI-ს არ ეჩვენება — ის ამას პრობლემად თვლიდა."""
     out = []
     for i, pt in enumerate(pages, 1):
         marks = []
         sp = pt.get("signature_parties") or {}
-        if sp:
+        if sp and (signature_pages is None or i in signature_pages):
             marks.append("ხელმოწერები: " + ", ".join(f"{k} — {'არის' if v else 'აკლია'}" for k, v in sp.items()))
         if readermarks.handwriting_suspected(pt):
             marks.append("ხელნაწერის ეჭვი")
@@ -130,7 +137,12 @@ def _pages_text(pages: list[dict[str, Any]], max_chars: int) -> str:
 
 def build_prompt(doc: dict[str, Any], validation: dict[str, Any], pages: list[dict[str, Any]], *,
                  max_chars: int = 60000, max_noise: int = 200) -> str:
-    """ოპერატორის დოკუმენტი + MHR + წესების შედეგი → პრომპტი. `doc`: type_ka, page_count, fields, signature_status, reasons."""
+    """ოპერატორის დოკუმენტი + MHR + წესების შედეგი → პრომპტი. `doc`: type_ka, page_count, fields, signature_status, reasons,
+    signature_every_page (ხელშეკრულება — ყველა გვერდზე; სხვა — მხოლოდ ბოლოზე; None — წესი უცნობია, ყველა ნიშანი ჩანს)."""
+    every = doc.get("signature_every_page")
+    sig_pages = None if every is None else set(range(1, len(pages) + 1)) if every else {len(pages)}
+    rule = (None if every is None else "ყველა გვერდზე, ორივე მხარე" if every else
+            "მხოლოდ ბოლო გვერდზე, ორივე მხარე (სხვა გვერდებზე ხელმოწერა არ მოითხოვება)")
     emp = validation.get("employee") or {}
     checks = validation.get("checks") or []
     diffs = validation.get("diffs") or []
@@ -141,6 +153,7 @@ def build_prompt(doc: dict[str, Any], validation: dict[str, Any], pages: list[di
              "## დოკუმენტი (პროგრამის ამოცნობით)",
              json.dumps({"ტიპი": doc.get("type_ka"), "გვერდები": doc.get("page_count"),
                          "ამოღებული ველები": doc.get("fields"), "ხელმოწერა": doc.get("signature_status"),
+                         **({"ხელმოწერის წესი": rule} if rule else {}),
                          "გადასამოწმებლის მიზეზები": doc.get("reasons")}, ensure_ascii=False, indent=1),
              "## თანამშრომელი MHR-ში",
              json.dumps({k: v for k, v in emp.items() if k != "raw" and v not in (None, "", [], {})},
@@ -165,7 +178,7 @@ def build_prompt(doc: dict[str, Any], validation: dict[str, Any], pages: list[di
              "\n".join(f"- გვ. {d.get('page')}: «{d.get('original')}» → «{d.get('scanned')}»" if d.get("original") or d.get("scanned")
                        else f"- გვ. {d.get('page')}: {d.get('reason') or d.get('kind')}" for d in noise[:max_noise]) or "- (არ არის)",
              "## დოკუმენტის ამოკითხული ტექსტი",
-             _pages_text(pages, max_chars)]
+             _pages_text(pages, max_chars, sig_pages)]
     return "\n\n".join(parts)
 
 
@@ -268,7 +281,11 @@ def review_document(repo, cfg: Config, document_id: str, *, runner: Runner | Non
     pages = document_pages(repo, row, meta)
     doc = {"type_ka": part.get("title") or (t.name_ka if t else row["type_id"]), "page_count": len(pages),
            "fields": fields, "signature_status": meta.get("signature_status"),
-           "reasons": json.loads(row["review_reasons"] or "[]")}
+           "reasons": json.loads(row["review_reasons"] or "[]"),
+           # იგივე წესი, რითაც ვალიდაცია ამოწმებს (validation._validate): ხელშეკრულება — ყველა გვერდზე, სხვა — ბოლოზე
+           "signature_every_page": (bool(cfg.section("mhr").get("signature_every_page", True))
+                                    if row["type_id"] in (cfg.section("mhr").get("contract_type_ids") or [])
+                                    else False if t is not None and t.signature_expected else None)}
     validation = json.loads(m["validation"] or "{}")
     prompt = build_prompt(doc, validation, pages, max_chars=int(s.get("max_chars") or 60000),
                           max_noise=int(s.get("max_noise") or 200))
