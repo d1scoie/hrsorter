@@ -13,7 +13,7 @@ from PIL import Image
 from hrsorter import validation
 from hrsorter.config import make_config
 from hrsorter.db import Repository
-from hrsorter.mhr_models import MhrDocRef, MhrEmployee, MhrError, MhrUnavailable
+from hrsorter.mhr_models import STATEMENT_TITLE, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable
 from hrsorter.models import PageText
 from hrsorter.validation import docx_text, parse_amount, pick_original, validate_document
 from tools.mock_mhr import DOCX_CT, make_docx
@@ -628,6 +628,45 @@ def test_original_marked_signed_in_mhr_counts_as_already_uploaded(repo, cfg):
     client.docs[0].raw = {"signed_at": "2024-03-20 11:00:00"}
     r = validate_document(repo, cfg, doc, client)
     assert r.status == "passed" and any("ხელმოწერილად მოინიშნა" in s and "2024-03-20" in s for s in r.summary)
+
+
+# --- განთავისუფლების განცხადება: MHR-ში მენეჯერის ფოტოა, სკანი მისი ქაღალდის ორიგინალია ---------------------------
+def statement_ref(doc_id="S1", created="2026-11-12T13:35:00Z", **raw) -> MhrDocRef:
+    return MhrDocRef(doc_id, "application", STATEMENT_TITLE, created, "a1b2c3.png",
+                     raw={"kind": "uploaded", "employee_id": "E1", "external_id": None, "signed_copy_of": None, **raw})
+
+
+def test_dismissal_statement_scan_links_to_managers_photo(repo, cfg):
+    doc = add_doc(repo, type_id="application")
+    client = FakeClient(employee=employee(), docs=[statement_ref()])
+    r = validate_document(repo, cfg, doc, client)
+    assert r.status == "passed", r.summary
+    assert r.statement.doc_id == "S1" and r.original is None      # ტექსტი არ შედარდა — მხოლოდ მიბმა
+    assert any("ქაღალდის ორიგინალად მიებმება" in s and "2026-11-12" in s for s in r.summary)
+    assert not any(c.startswith("download") for c in client.calls)
+
+
+def test_dismissal_statement_prefers_unlinked_and_flags_second_scan(repo, cfg):
+    doc = add_doc(repo, type_id="application")
+    linked_scan = MhrDocRef("U1", "application", "განცხადება — ქაღალდის ორიგინალი", "2026-11-12T15:00:00Z", "u1.pdf",
+                            raw={"kind": "uploaded", "signed_copy_of": "S2", "external_id": "doc_other"})
+    client = FakeClient(employee=employee(), docs=[statement_ref("S1", "2026-11-10T09:00:00Z"), statement_ref("S2"), linked_scan])
+    r = validate_document(repo, cfg, doc, client)
+    assert r.status == "passed" and r.statement.doc_id == "S1"   # უახლესს (S2) სკანი უკვე აქვს → მიუბმელი S1
+    # ერთადერთ განცხადებას სკანი უკვე აქვს → იგივე ფურცელი მეორედ: „ყველას ატვირთვა" ჩერდება, „ატვირთვა მაინც" ღიაა
+    client.docs = [statement_ref("S2"), linked_scan]
+    r = validate_document(repo, cfg, doc, client)
+    assert r.status == "failed" and r.statement.doc_id == "S2" and any("უკვე ატვირთულია" in s for s in r.summary)
+
+
+def test_plain_uploaded_application_is_not_a_statement(repo, cfg):
+    doc = add_doc(repo, type_id="application")
+    other = [MhrDocRef("A1", "application", "განცხადება — ხელმოწერილი სკანი", "2026-11-12T10:00:00Z", "a.pdf",
+                       raw={"kind": "uploaded"}),                                 # სხვა სათაური — ჩვეულებრივი სკანი
+             MhrDocRef("A2", "contract", STATEMENT_TITLE, "2026-11-12T10:00:00Z", "b.png", raw={"kind": "uploaded"})]   # სხვა კატეგორია
+    r = validate_document(repo, cfg, doc, FakeClient(employee=employee(), docs=other))
+    assert r.status == "passed" and r.statement is None
+    assert not any(c.field == "dismissal_statement" for c in r.checks)
 
 
 # --- ორიგინალი არ არის → თანამდებობის შაბლონი (`${key-ლეიბლი}` ცვლადებით) -------------------------------------

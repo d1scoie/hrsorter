@@ -29,7 +29,7 @@ import httpx
 from . import secrets
 from .config import DEFAULTS, PROJECT_DIR, Config
 from .employee_api import _get_path, _str_or_none
-from .mhr_models import MhrDocRef, MhrEmployee, MhrError, MhrUnavailable
+from .mhr_models import MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, is_statement
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024        # API-ის ლიმიტი (413 file_too_large)
 METADATA_MAX_CHARS = 20000
@@ -207,8 +207,10 @@ class MockMhr:
         docs = self._load("documents.json")
         original = None
         if fields.get("signed_copy_of"):
+            # ნამდვილი MHR-ის იდენტურად: გენერირებული ორიგინალი ან განთავისუფლების განცხადება (მენეჯერის ფოტო)
             original = next((d for d in docs if str(d.get("id")) == fields["signed_copy_of"]
-                             and d.get("kind") == "generated" and str(d.get("employee_id")) == employee_id), None)
+                             and (d.get("kind") == "generated" or is_statement(d))
+                             and str(d.get("employee_id")) == employee_id), None)
             if original is None:
                 raise MhrError("invalid_signed_copy_of")
         remote_id = str(500000 + len(uploads) + 1)

@@ -46,7 +46,8 @@ from .config import Config
 from .db import Repository, now_iso
 from .employee_api import _get_path
 from .features import company_core, surname_lemma
-from .mhr_models import Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, TextDiff, ValidationResult, clean_file_title
+from .mhr_models import (STATEMENT_TITLE, Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, TextDiff, ValidationResult,
+                         clean_file_title)
 from .ocr.base import OcrError
 from .output import PartSpec, adopt_match, split_document
 from .empform import parse_employee_form
@@ -1085,6 +1086,27 @@ def _already_uploaded(refs: list[MhrDocRef], original: MhrDocRef | None, documen
     return None
 
 
+def _link_statement(result: ValidationResult, refs: list[MhrDocRef], category: str, document_id: str) -> None:
+    """განთავისუფლების განცხადება: მენეჯერმა MHR-ში მისი ფოტო ატვირთა (STATEMENT_TITLE), ეს სკანი — ქაღალდის ორიგინალია.
+    ხელნაწერი ტექსტი არ შედარდება — მხოლოდ მიბმა (`signed_copy_of`). რამდენიმეა → უახლესი, რომელსაც სკანი ჯერ არ აქვს;
+    ყველას აქვს → უახლესი, და `_already_uploaded` „ყველას ატვირთვას" აჩერებს (ალბათ იგივე ფურცელი მეორედ დასკანერდა)."""
+    found = [r for r in refs if (r.raw or {}).get("kind") == "uploaded" and r.title == STATEMENT_TITLE and r.category == category]
+    if not found:
+        return
+    linked = {str((r.raw or {}).get("signed_copy_of")) for r in refs
+              if (r.raw or {}).get("kind") == "uploaded" and (r.raw or {}).get("external_id") != document_id}
+    newest = sorted(found, key=lambda r: (r.created_at or "", r.doc_id), reverse=True)
+    ref = next((r for r in newest if r.doc_id not in linked), newest[0])
+    result.statement = ref
+    when = (ref.created_at or "")[:10]
+    result.checks.append(Check("dismissal_statement", "განთავისუფლების განცხადება", None, ref.doc_id, "info", False,
+                               note=f"MHR-ში ნაპოვნია მენეჯერის ატვირთული განცხადება{f' ({when})' if when else ''} — სკანი მას "
+                                    "ქაღალდის ორიგინალად მიებმება (ხელნაწერი ტექსტი არ შედარდება)"))
+    uploaded = _already_uploaded(refs, ref, document_id)
+    if uploaded:
+        result.checks.append(uploaded)
+
+
 _CURRENT_STATE_FIELDS = {"position", "salary", "contract_start", "contract_end"}
 
 
@@ -1333,6 +1355,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
             return ValidationResult("skipped", employee=employee, validated_at=now_iso(),
                                     summary=["ამ თანამშრომლის დაგენერირებულ ფაილებს არ ემთხვევა და ტიპიც უცნობია — გადასამოწმებელში რჩება"])
         _field_checks(result, cfg, row, meta, pn, employee, verified)   # სხვა ტიპი, ორიგინალის გარეშე — მხოლოდ ველები
+        _link_statement(result, refs, category, row["id"])     # განცხადება: MHR-ში მენეჯერის ფოტოა → მას მიებმება
         return _finish(result)
 
     checks = result.checks
