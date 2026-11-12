@@ -732,6 +732,19 @@ def test_failed_page_puts_decision_first_and_groups_repeated_problems(client):
     assert groups[0].startswith(" open") and not groups[1].startswith(" open")        # ციფრი ღიაა, 14 ბეჭედი — დაკეცილი
     assert "14 ადგილი · 14 გვერდზე" in groups[1]
     assert groups[1].count("რა ვქნა") == 1 and groups[1].count('class="prob"') == 14   # საერთო ახსნა ერთხელ, ბარათი თითო ადგილზე
+    assert "AI: ცრუ განგაშია" not in page                                              # ძველ ანალიზს თითო ადგილის აზრი არ აქვს
+
+    # AI-ის აზრი თითო ადგილზე — პრობლემის ბარათზევე; დაკეცილ ჯგუფს თავში ჯამური ნიშანი აქვს
+    def key(x):
+        return {k: x.get(k) for k in ("page", "kind", "original", "scanned")}
+    repo.mhr_set_ai_review(doc, {"verdict": "check", "confidence": "medium", "summary": "ხელფასი თვალით შეამოწმე.", "items": [],
+                                 "risks": [], "model": "opus",
+                                 "findings": [{"key": key(salary), "status": "bad", "explanation": "ხელფასი მართლა 1500 წერია."},
+                                              *({"key": key(h), "status": "ok", "explanation": "ეს ბეჭედია."} for h in hand)]})
+    groups = c.get(f"/mhr/{doc}").text.split('<details class="card pgroup"')[1:]
+    assert "AI: ნამდვილი პრობლემაა.</b> ხელფასი მართლა 1500 წერია." in groups[0]
+    assert groups[1].count("AI: ცრუ განგაშია.</b> ეს ბეჭედია.") == 14
+    assert '<span class="chip tone-ok">AI: ცრუ განგაშია</span>' in groups[1].split("</summary>")[0]
 
     row = c.get("/mhr?tab=failed").text
     assert "გვერდი 6: ციფრები განსხვავდება" in row and "გვერდი 1: ხელნაწერის ეჭვი (და კიდევ" not in row

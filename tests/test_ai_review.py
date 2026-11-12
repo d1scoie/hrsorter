@@ -131,6 +131,34 @@ def test_review_document_builds_prompt_from_db_and_normalizes(tmp_path):
     repo.close()
 
 
+def test_findings_are_numbered_in_prompt_and_tied_back_to_each_stop_reason(tmp_path):
+    """AI-ის აზრი თითო გაჩერების მიზეზზე: პრომპტში [გ1], [გ2]…, პასუხში ნომერი → იმავე ველის/სხვაობის key.
+    უცნობი/გამეორებული ნომერი და ცარიელი ახსნა იგნორირდება — ბარათზე სხვისი ახსნა არ უნდა მოხვდეს."""
+    cfg = _cfg(tmp_path, **AI_ON)
+    repo = _seed(tmp_path, cfg)
+    salary = {"field": "salary", "label_ka": "ხელფასი", "document_value": "2000", "mhr_value": "2200", "status": "mismatch", "blocking": True}
+    moved = {"page": 4, "kind": "removed", "original": "ნინო ბერიძე", "scanned": "", "significant": True, "reason": "ამოღებული ტექსტი"}
+    noise = {"page": 1, "kind": "changed", "original": "შპს", "scanned": "შპს.", "significant": False}
+    v = {"status": "failed", "employee": {"first_name": "ნინო"}, "checks": [salary, {"field": "pn", "status": "match", "blocking": True}],
+         "diffs": [noise, moved], "summary": []}
+    repo.conn.execute("UPDATE mhr_items SET validation=? WHERE document_id='doc_1'", (json.dumps(v, ensure_ascii=False),))
+    answer = {"verdict": "check", "confidence": "medium", "summary": "ნახე ხელფასი.", "findings": [
+        {"id": "გ2", "status": "ok", "explanation": "სახელი მარჯვენა სვეტში წერია."},
+        {"id": "[გ1]", "status": "bad", "explanation": "ხელფასი მართლა სხვაა."},
+        {"id": "გ2", "status": "bad", "explanation": "გამეორება"}, {"id": "გ9", "status": "ok", "explanation": "არ არსებობს"},
+        {"id": "გ1", "status": "ok", "explanation": ""}, "garbage"]}
+    run = FakeRun(_claude_json(json.dumps(answer, ensure_ascii=False)))
+    res = ar.review_document(repo, cfg, "doc_1", runner=run)
+    prompt = run.calls[0][1]["input"].decode("utf-8")
+    assert "[გ1] ხელფასი: დოკუმენტში '2000', MHR-ში '2200'" in prompt and "[გ2] გვ. 4: ამოღებული ტექსტი" in prompt
+    assert "[გ3]" not in prompt                                                     # დამთხვეული ველი და ხმაური არ ინომრება
+    assert res.findings == [
+        {"key": {"page": 4, "kind": "removed", "original": "ნინო ბერიძე", "scanned": ""}, "status": "ok",
+         "explanation": "სახელი მარჯვენა სვეტში წერია."},
+        {"key": {"field": "salary"}, "status": "bad", "explanation": "ხელფასი მართლა სხვაა."}]
+    repo.close()
+
+
 def test_review_document_errors_are_returned_not_raised(tmp_path):
     cfg = _cfg(tmp_path, **AI_ON)
     repo = _seed(tmp_path, cfg)
