@@ -11,6 +11,7 @@ from functools import lru_cache
 
 from .classifier import Classifier
 from .config import Company, Config
+from .idcard import document_kind
 from .models import PageFeatures, PageText
 from .textnorm import normalize
 
@@ -396,6 +397,8 @@ def page_features(pt: PageText, classifier: Classifier, cfg: Config) -> PageFeat
     names = sorted({f"{h.first} {h.last}" for h in find_names(text) if h.role == "employee"})
     docnum = find_doc_number(text)
     page_no, page_total = page_marker(lines)
+    if document_kind(pt.text):   # პასპორტის გვერდს თავისი ნაბეჭდი ნომერი აქვს („03“) — ეს სკანის გვერდის ნომერი არ არის
+        page_no = page_total = None
     is_header, header_company = header_block(lines, company_matchers(cfg.companies))
     return PageFeatures(
         page_index=pt.page_index, is_blank=False, marks_only=False,
