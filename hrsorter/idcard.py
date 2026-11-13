@@ -39,7 +39,11 @@ _DATE_LABELS = {"birth_date": re.compile(r"დაბადების\s+თა�
                 "issue_date": re.compile(r"გაცემის\s+თარიღი|date\s+of\s+issue", re.I)}
 _PN_LABEL = re.compile(r"პირადი\s*(n|№|ნომერი)|personal\s*n", re.I)
 # პასპორტის თარიღი: „12 მარ / MAR 1985“ — რიცხვი, თვე (ქართულად და/ან ლათინურად), წელი
-_DATE_WORDS = re.compile(r"(?<!\d)(\d{1,2})\s+([ა-ჰA-Za-z][ა-ჰA-Za-z./\s]{1,24}?)\s+(\d{4})(?!\d)")
+# (ქართული თვე ხშირად ვერ იკითხება: „12 [?] / MAR 1985“ — ლათინური საკმარისია)
+_DATE_WORDS = re.compile(r"(?<!\d)(\d{1,2})\s+([ა-ჰA-Za-z\[][ა-ჰA-Za-z./\s\[\]?]{1,24}?)\s+(\d{4})(?!\d)")
+# უხილავი სიმბოლოები, რომლებსაც მკითხველი ხანდახან გრძელ ხაზში სვამს (ნამდვილ სკანზე მანქანური ზოლის ციფრებს შორის
+# ნულოვანი სიგანის ჰარი იჯდა) — ზოლი ამის გამო ვერ იცნობოდა და ბარათი „ტიპი სავარაუდოა“-ში რჩებოდა
+_INVISIBLE = re.compile(r"[​-‏⁠﻿]")
 _MONTHS_EN = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
 _MONTHS_KA = {m: i for i, m in enumerate(("იან", "თებ", "მარ", "აპრ", "მაი", "ივნ", "ივლ", "აგვ", "სექ", "ოქტ", "ნოე", "დეკ"), 1)}
 # ხაზი „ქართული / LATIN“ ლეიბლია, თუ ამ სიტყვებიდან რომელიმეა („სახელი / GIVEN NAME“); სხვაგვარად — მნიშვნელობა.
@@ -134,8 +138,12 @@ def _date_in(s: str) -> str | None:
         return None
 
 
+def _visible(text: str) -> str:
+    return _INVISIBLE.sub("", text or "")
+
+
 def _mrz_lines(text: str) -> list[str]:
-    flat = [re.sub(r"\s", "", ln).upper() for ln in (text or "").splitlines()]
+    flat = [re.sub(r"\s", "", ln).upper() for ln in _visible(text).splitlines()]
     return [ln for ln in flat if len(ln) >= MRZ_MIN_LEN and "<" in ln]
 
 
@@ -157,7 +165,8 @@ def document_kind(text: str) -> str | None:
 
 def parse_id_card(text: str) -> IdCard:
     """ID ბარათის ან პასპორტის ტექსტი (ერთი ან ორი მხარე) → ველები. ვერ წაკითხული ველი — None; `problems` — რატომ არ ენდობა."""
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    text = _visible(text)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     card = IdCard(kind=document_kind(text))
     for i, ln in enumerate(lines):
         if card.last_name is None and _SURNAME.search(ln):

@@ -139,6 +139,21 @@ def _resolve_dir(d: str | None) -> str | None:
     return str(p if p.is_absolute() else PROJECT_DIR / p)
 
 
+def build_orientation_reader(cfg: Config):
+    """სურათი → ტექსტი, მხოლოდ იმის გასაგებად, რომელი მხარეა „ზემოთ“ (`idimage.rotations`): Tesseract ინგლისურით, ერთ ბლოკად
+    (`--psm 6`). ნაგულისხმევი `--psm 3` გვერდულ ტექსტსაც თვითონ აბრუნებს და ორი მხარე ერთნაირ ქულას იღებდა; ქართულის გარეშე
+    კი მანქანური ზოლი და ლათინური წარწერები უფრო სუფთად იკითხება. None — ადგილობრივი OCR არ არის."""
+    ocr = cfg.data["ocr"]
+    if ocr.get("local_provider", "tesseract") != "tesseract":
+        return None
+    reader = TesseractProvider(cmd=ocr.get("tesseract_cmd") or None, lang="eng", psm=6,
+                               timeout_seconds=float(ocr.get("tesseract_timeout_seconds", 120)),
+                               tessdata_dir=_resolve_dir(ocr.get("tessdata_dir")))
+    if not reader.available():
+        return None
+    return lambda image: reader.recognize(image, "eng").text
+
+
 def build_ocr_chain(cfg: Config) -> OcrChain:
     ocr = cfg.data["ocr"]
     lang = ocr.get("tesseract_lang") or "kat+eng"
