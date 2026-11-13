@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 
 from .config import Config, ConfigError, DocType
+from .idcard import document_kind
 from .models import Classification, PageText, TypeScore
 from .textnorm import normalize, title_zone
 
@@ -27,6 +28,10 @@ BODY_ONLY_RUNNER_UP = 0.5  # margin-ისთვის: სათაურის
 TITLE_MAX_WORDS = 9
 TITLE_SHORT_WORDS = 4
 TITLE_MIN_COVERAGE = 0.5
+# პირადობის დოკუმენტი (ბარათი ან პასპორტი) მანქანური ზოლით (MRZ) იცნობა, არა სათაურით: ახალ ბარათზე ქართული სათაური ხშირად არ
+# იკითხება, პასპორტს კი სხვა სათაური აქვს. ზოლი საერთაშორისო სტანდარტია და სხვა დოკუმენტზე არ გვხვდება
+IDENTITY_CONFIDENCE = 0.95
+IDENTITY_MAX_PAGES = 2   # ბარათის ორი მხარე; უფრო გრძელ სკანში ასლი სხვა დოკუმენტს ახლავს და ტიპს არ ცვლის
 UNKNOWN = "unknown"
 _SENTENCE_END = re.compile(r"[.;:][\"')»]?$")
 _WRAPPED_ABOUT = re.compile(r"[^ა-ჰ]*შესახებ[^ა-ჰ]*")   # გადატანილი სათაურის ბოლო სიტყვა
@@ -104,6 +109,7 @@ class Classifier:
     def __init__(self, cfg: Config):
         self._types = [_compile_type(t) for t in cfg.active_types]
         self._unknown_below = float(cfg.thresholds.get("type_unknown_below", 0.35))
+        self._identity_type = next((t.id for t in cfg.active_types if t.identity), None)
 
     @property
     def type_ids(self) -> list[str]:
@@ -121,7 +127,18 @@ class Classifier:
         if not texts:
             return Classification(UNKNOWN, 0.0, 0.0, [], ["no text pages"])
         bodies = [(normalize(t), 1.0 if i == 0 else BODY_PAGE_FACTOR) for i, t in enumerate(texts)]
-        return self._classify(title_lines(texts[0]), bodies)
+        return self._identity_document(self._classify(title_lines(texts[0]), bodies), texts)
+
+    def _identity_document(self, c: Classification, texts: list[str]) -> Classification:
+        """პირველ გვერდზე პირადობის დოკუმენტის მანქანური ზოლია (ბარათი ან პასპორტი) და წესებმა სხვა ტიპი ვერ დაადგინა →
+        ტიპი პირადობაა, მაღალი სანდოობით. მხოლოდ მოკლე სკანზე: ხელშეკრულებას მიკრული ასლი ხელშეკრულებად რჩება."""
+        if self._identity_type is None or c.type_id not in (UNKNOWN, self._identity_type) or len(texts) > IDENTITY_MAX_PAGES:
+            return c
+        kind = document_kind(texts[0])
+        if kind is None:
+            return c
+        return Classification(self._identity_type, max(c.confidence, IDENTITY_CONFIDENCE), 1.0, c.scores,
+                              [*c.evidence, f"identity document: {kind} (machine-readable zone or passport title)"])
 
     def title_hits(self, text: str) -> list[TitleHit]:
         """სათაურის ზონის ხაზობრივი დამთხვევები (`title_only` სიგნალები) — boundary-ის ნიშნებისთვის."""

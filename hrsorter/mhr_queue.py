@@ -418,9 +418,10 @@ def _upload_meta(repo, cfg, row, doc, type_id: str, sha: str) -> dict[str, Any]:
     number = (doc["doc_number"] or "").strip()
     title = f"{name or (t.name_ka if t else type_id)} — ხელმოწერილი სკანი"
     if t is not None and t.identity:   # სხვა კომპიუტერიც სათაურით ხედავს, რომ პირადობა MHR-ს ემთხვევა (validation.verified_identity)
-        from .validation import IDENTITY_TITLE
+        from .validation import IDENTITY_TITLE, PASSPORT_TITLE
         verified = any(c.get("field") == "identity" and c.get("status") == "match" for c in v.get("checks", []))
-        title = IDENTITY_TITLE if verified else t.name_ka
+        passport = (v.get("facts") or {}).get("id_kind") == "passport"
+        title = (PASSPORT_TITLE if passport else IDENTITY_TITLE) if verified else ("პასპორტი" if passport else t.name_ka)
     return {
         "external_id": doc["id"],
         "sha256": sha,

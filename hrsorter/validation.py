@@ -48,9 +48,9 @@ from .employee_api import _get_path
 from .features import company_core, surname_lemma
 from .mhr_models import Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, TextDiff, ValidationResult, clean_file_title
 from .ocr.base import OcrError
-from .output import PartSpec, adopt_match, split_document
+from .output import MATCH_RESOLVED_REASONS, PartSpec, adopt_match, split_document
 from .empform import parse_employee_form
-from .idcard import parse_id_card, same_name
+from .idcard import PASSPORT, parse_id_card, same_name
 from .stages import STAGE_KA, file_stage, strip_stage, text_stage
 from .ocr.chain import build_ocr_chain
 from .pdfio import PdfDocument, validate_pdf
@@ -335,6 +335,8 @@ def missing_original_note(cfg: Config, type_id: str, stage: str | None, generate
 
 # --- პირადობა ------------------------------------------------------------------------------------------------
 IDENTITY_TITLE = "პირადობის მოწმობა — MHR-ს ემთხვევა"   # ატვირთვის სათაური: სხვა კომპიუტერიც ხედავს, რომ დადასტურებულია
+PASSPORT_TITLE = f"{IDENTITY_TITLE} (პასპორტი)"          # იგივე ნიშანი შიგნით აქვს — დადასტურებად ითვლება
+PASSPORT_NOTE = "ეს პასპორტია — პირადობის მოწმობის ნაცვლად ითვლება და ისევე მოწმდება"
 
 
 def identity_type_ids(cfg: Config) -> list[str]:
@@ -367,17 +369,19 @@ def _validate_identity(result: ValidationResult, cfg: Config, row, type_id: str,
     დადასტურდეს (წაკითხვის შეცდომა ავტომატურად არ აიტვირთოს). ყველაფერი ემთხვევა → `identity: match` (დადასტურებულია)."""
     card = parse_id_card("\n".join(p.get("text") or "" for p in scanned))
     checks = result.checks
+    passport = card.kind == PASSPORT   # პასპორტი პირადობის მოწმობის ნაცვლად: იგივე შემოწმება, ოღონდ თავისი სახელით
+    on, out_of = ("პასპორტზე", "პასპორტიდან") if passport else ("პირადობაზე", "პირადობიდან")
 
     def exact(field: str, doc_val: str | None, mhr_val: str | None, same) -> Check:
         label = LABELS_KA[field]
         if not doc_val:
-            return Check(field, label, None, mhr_val, "missing_in_document", True, note=f"{label} პირადობიდან ვერ წაიკითხა")
+            return Check(field, label, None, mhr_val, "missing_in_document", True, note=f"{label} {out_of} ვერ წაიკითხა")
         if not mhr_val:
             return Check(field, label, doc_val, None, "missing_in_mhr", True, note=f"{label} MHR-ში ცარიელია")
         if same(doc_val, mhr_val):
             return Check(field, label, doc_val, mhr_val, "match", False)
         return Check(field, label, doc_val, mhr_val, "mismatch", True,
-                     note=f"პირადობაზე „{doc_val}“, MHR-ში „{mhr_val}“ — თუ MHR-ში შეცდომაა, შეასწორე და „ხელახლა შედარება“")
+                     note=f"{on} „{doc_val}“, MHR-ში „{mhr_val}“ — თუ MHR-ში შეცდომაა, შეასწორე და „ხელახლა შედარება“")
 
     names = [exact("last_name", card.last_name, employee.last_name, same_name),
              exact("first_name", card.first_name, employee.first_name, same_name),
@@ -387,11 +391,12 @@ def _validate_identity(result: ValidationResult, cfg: Config, row, type_id: str,
     for p in card.problems:
         checks.append(Check("id_reading", "წაკითხვა", None, None, "mismatch", True, note=p))
     # დაბადების თარიღი და ვადა სხვა შემოწმებებს სჭირდება (ასაკი, „ვადა გასდის“) — ტექსტის ხელახლა კითხვის გარეშე
-    result.facts = {k: v for k, v in (("birth_date", card.birth_date), ("id_expiry", card.expiry_date)) if v}
-    expiry = hrdates.id_expiry(card.expiry_date, None, hrdates.limits(cfg)[1])
+    result.facts = {k: v for k, v in (("birth_date", card.birth_date), ("id_expiry", card.expiry_date),
+                                      ("id_kind", card.kind)) if v}
+    expiry = hrdates.id_expiry(card.expiry_date, None, hrdates.limits(cfg)[1], passport=passport)
     if expiry and expiry[0] == hrdates.EXPIRED:
         checks.append(Check("id_expiry", "მოქმედების ვადა", card.expiry_date, None, "info", True,
-                            note=f"პირადობის მოწმობას ვადა გაუვიდა ({card.expiry_date}) — ახალი მოითხოვე; თუ მაინც გინდა, „ატვირთვა მაინც“"))
+                            note=f"{expiry[1]}; თუ მაინც გინდა, „ატვირთვა მაინც“"))
     elif expiry:   # მალე გასდის: ატვირთვას არ აჩერებს, მხოლოდ აფრთხილებს
         checks.append(Check("id_expiry", "მოქმედების ვადა", card.expiry_date, None, "info", False, note=expiry[1]))
     category = (cfg.data["mhr"].get("categories") or {}).get(type_id, type_id)
@@ -410,7 +415,37 @@ def _validate_identity(result: ValidationResult, cfg: Config, row, type_id: str,
         res.summary.insert(0, "პირადობა MHR-ს ზუსტად ემთხვევა — დადასტურების გარეშე აიტვირთება")
     elif any(c.field == "identity" for c in checks):
         res.summary.insert(0, "პირადობა MHR-ს ემთხვევა (სახელი დადასტურებულია), მაგრამ ატვირთვა გაჩერდა — მიზეზი ქვემოთაა")
+    if passport:
+        res.summary.insert(0, PASSPORT_NOTE)
     return res
+
+
+def identity_confirmed(validation: dict[str, Any] | None) -> bool:
+    return any(c.get("field") == "identity" and c.get("status") == "match" for c in (validation or {}).get("checks") or [])
+
+
+def settle_confirmed_identities(repo: Repository, cfg: Config) -> int:
+    """პირადობა, რომელიც „გადასამოწმებელში“ მხოლოდ ტიპის/საზღვრის ეჭვით დგას, მაგრამ MHR-ს უკვე ზუსტად დაემთხვა (სახელი,
+    გვარი, პ/ნ): ეჭვი აღარ არის, სიიდან გადის (თუ ატვირთვა სხვა მიზეზით გაჩერდა, ის MHR-ის გვერდზე ჩანს). აბრუნებს რაოდენობას."""
+    ids = identity_type_ids(cfg)
+    if not ids:
+        return 0
+    q = ",".join("?" * len(ids))
+    rows = repo.q(f"SELECT d.*, m.validation AS mhr_validation FROM documents d JOIN mhr_items m ON m.document_id = d.id "
+                  f"WHERE d.active = 1 AND d.status = 'needs_review' AND d.type_id IN ({q}) "
+                  f"AND m.status IN ('ready', 'approved', 'uploading', 'uploaded', 'failed')", tuple(ids))
+    done = 0
+    for row in rows:
+        reasons = set(json.loads(row["review_reasons"] or "[]"))
+        if not reasons <= MATCH_RESOLVED_REASONS or not identity_confirmed(json.loads(row["mhr_validation"] or "{}")):
+            continue   # სხვა მიზეზი (დუბლიკატი, ორი თანამშრომელი) ოპერატორს რჩება
+        try:
+            adopt_match(repo, row, json.loads(row["metadata"]) if row["metadata"] else {}, row["type_id"])
+        except OSError as e:   # sidecar ასლია (ქსელის დისკზე ჩაწერა ვერ მოხერხდა) — ბაზა უკვე სწორია, გავლა არ ჩერდება
+            log.warning("sidecar of %s not updated: %s", row["id"], type(e).__name__)
+        repo.log_event("mhr", f"{row['id']}: review settled (identity confirmed by MHR)")
+        done += 1
+    return done
 
 
 def _name_check(field: str, doc_val: Any, mhr_val: Any, threshold: float, verified: dict[str, Any] | None) -> Check:
@@ -1296,7 +1331,10 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     result.mhr_snapshot = mhr_snapshot(cfg, employee, refs)
     dt = cfg.doc_type(type_id)
     if dt is not None and dt.identity:   # პირადობა: MHR-ის ფაილებთან კი არა — თანამშრომლის სახელთან და პ/ნ-თან, ზუსტად
-        return _validate_identity(result, cfg, row, type_id, scanned, employee, refs)
+        res = _validate_identity(result, cfg, row, type_id, scanned, employee, refs)
+        if row["status"] == "needs_review" and any(c.field == "identity" and c.status == "match" for c in res.checks):
+            adopt_match(repo, row, meta, type_id)   # სახელი, გვარი და პ/ნ ზუსტად ემთხვევა → „ტიპი სავარაუდოა“ აღარ არის ეჭვი
+        return res
     verified = verified_identity(repo, cfg, employee.employee_id, refs)
     if dt is not None and dt.employee_form:   # ხელით შევსებული ანკეტა: MHR-ის ფაილებთან კი არა — თანამშრომლის მონაცემებთან
         return _validate_employee_form(result, cfg, repo, row, type_id, scanned, employee, refs, verified)

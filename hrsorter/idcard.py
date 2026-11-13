@@ -1,8 +1,12 @@
-"""საქართველოს პირადობის მოწმობა (ID ბარათი): გვარის, სახელის, პირადი ნომრისა და თარიღების ამოკითხვა.
+"""საქართველოს პირადობის მოწმობა (ID ბარათი) და პასპორტი: გვარის, სახელის, პირადი ნომრისა და თარიღების ამოკითხვა.
 
 ბარათზე ყოველი ველი ორჯერ წერია: ქართულად და ლათინურად („გვარი / SURNAME“ → „ბერიძე“, „BERIDZE“), უკანა მხარეს კი
 მანქანური ზოლია (MRZ): „BERIDZE<<NINO<<<…“, პირადი ნომერი — პირველ ხაზში. ქართული სახელის ტრანსლიტერაცია ლათინურს/MRZ-ს
 უნდა დაემთხვეს — ასე ვამოწმებთ, რომ ქართული სახელი სწორად წაიკითხა (ავტომატური ატვირთვა მხოლოდ ამის შემდეგ).
+
+პასპორტზე იგივე ველებია, ოღონდ სხვანაირად დაწყობილი: მნიშვნელობა ერთ ხაზზე („ბერიძე / BERIDZE“), თარიღი თვის სახელით
+(„01 იან / JAN 1990“), მანქანური ზოლი კი „P<GEOBERIDZE<<NINO<<<…“. თანამშრომელს ხშირად პასპორტი მოაქვს პირადობის ნაცვლად —
+ორივე ერთი და იგივე პირადობის დოკუმენტია (`document_kind`).
 
 სკანირებული ტექსტი მონაცემია; ის მხოლოდ იკითხება.
 """
@@ -27,14 +31,30 @@ _PN = re.compile(r"(?<!\d)(\d{11})(?!\d)")
 _DATE = re.compile(r"(\d{2})[./-](\d{2})[./-](\d{4})")
 _MRZ_NAME = re.compile(r"^([A-Z]+(?:<[A-Z]+)*)<<([A-Z]+(?:<[A-Z]+)*)<*$")
 _MRZ_DOC = re.compile(r"^I[A-Z<]GEO?[A-Z0-9<]{10,}$")
+_MRZ_PASSPORT = re.compile(r"^P<([A-Z]{3})([A-Z]+(?:<[A-Z]+)*)<<([A-Z]+(?:<[A-Z]+)*)<*$")   # P<GEOBERIDZE<<NINO<<<…
+MRZ_MIN_LEN = 20          # ამაზე მოკლე ხაზი მანქანური ზოლი არ არის (სრული ზოლი 30/44 სიმბოლოა, მკითხველი ბოლოს ხშირად ჭრის)
+_PASSPORT_TITLE = re.compile(r"(?:პასპორტი\s*/?\s*)?passport", re.I)
 _DATE_LABELS = {"birth_date": re.compile(r"დაბადების\s+თარიღი|date\s+of\s+birth", re.I),
-                "expiry_date": re.compile(r"მოქმედების\s+ვადა|date\s+of\s+expiry", re.I),
+                "expiry_date": re.compile(r"მოქმედების\s+ვადა|date\s+of\s+expiry|expiry\s+date", re.I),
                 "issue_date": re.compile(r"გაცემის\s+თარიღი|date\s+of\s+issue", re.I)}
 _PN_LABEL = re.compile(r"პირადი\s*(n|№|ნომერი)|personal\s*n", re.I)
+# პასპორტის თარიღი: „12 მარ / MAR 1985“ — რიცხვი, თვე (ქართულად და/ან ლათინურად), წელი
+_DATE_WORDS = re.compile(r"(?<!\d)(\d{1,2})\s+([ა-ჰA-Za-z][ა-ჰA-Za-z./\s]{1,24}?)\s+(\d{4})(?!\d)")
+_MONTHS_EN = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+_MONTHS_KA = {m: i for i, m in enumerate(("იან", "თებ", "მარ", "აპრ", "მაი", "ივნ", "ივლ", "აგვ", "სექ", "ოქტ", "ნოე", "დეკ"), 1)}
+# ხაზი „ქართული / LATIN“ ლეიბლია, თუ ამ სიტყვებიდან რომელიმეა („სახელი / GIVEN NAME“); სხვაგვარად — მნიშვნელობა.
+# მხოლოდ მთლიანი სიტყვა: გვარი „დათეშიძე / DATESHIDZE“ ან „ვადაჭკორია“ ლეიბლი არ არის
+_LABEL_WORD = re.compile(
+    r"\b(?:surname|given|names?|sex|date|place|personal|citizenship|nationality|issue|issuing|authority|signature|passport|type|"
+    r"code|state|number|birth|expiry|owner|of|no|გვარი|სახელი|სქესი|თარიღი|ადგილი|ვადა|პირადი|ნომერი|გამცემი|ორგანო|მოქალაქეობა|"
+    r"ხელმოწერა|პასპორტი|პასპორტის|ტიპი|კოდი|სახელმწიფოს|დაბადების|გაცემის|მოქმედების|მფლობელის)\b", re.I)
+
+ID_CARD, PASSPORT = "id_card", "passport"
 
 
 @dataclass
 class IdCard:
+    kind: str | None = None                # ID_CARD / PASSPORT — მანქანური ზოლით; None — ზოლი არ იკითხება
     last_name: str | None = None
     first_name: str | None = None
     personal_number: str | None = None
@@ -69,7 +89,16 @@ def _value_after(lines: list[str], i: int, label: re.Pattern[str], georgian: boo
     candidates = ([tail] if tail else []) + lines[i + 1: i + 4]
     for c in candidates:
         c = c.strip(" :/|")
-        if not c or _LABEL.search(c) or any(ch.isdigit() for ch in c):
+        if not c or any(ch.isdigit() for ch in c):
+            continue
+        pair = [p.strip() for p in c.split("/")]
+        if len(pair) == 2 and not any(_LABEL_WORD.search(p) for p in pair):   # პასპორტი: „ბერიძე / BERIDZE“ ერთ ხაზზე
+            geo = [p for p in pair if len(p) >= 2 and georgian_ratio(p) >= 0.9]
+            lat = [p for p in pair if re.fullmatch(r"[A-Za-z][A-Za-z\s-]+", p)]
+            if len(geo) == 1 and len(lat) == 1:
+                return geo[0] if georgian else lat[0].upper()
+            continue
+        if _LABEL.search(c):
             continue
         is_geo = georgian_ratio(c) >= 0.9
         if georgian and is_geo:
@@ -86,10 +115,50 @@ def _iso(d: re.Match[str]) -> str | None:
         return None
 
 
-def parse_id_card(text: str) -> IdCard:
-    """ID ბარათის ტექსტი (ერთი ან ორი მხარე) → ველები. ვერ წაკითხული ველი — None; `problems` — რატომ არ ენდობა."""
+def _date_in(s: str) -> str | None:
+    """ხაზში პირველი თარიღი: „26.10.2036“ (ბარათი) ან „12 მარ / MAR 1985“ (პასპორტი)."""
+    m = _DATE.search(s)
+    if m:
+        return _iso(m)
+    m = _DATE_WORDS.search(s)
+    if not m:
+        return None
+    words = re.findall(r"[ა-ჰ]+|[A-Za-z]+", m.group(2))
+    month = next((_MONTHS_EN[w[:3].lower()] for w in words if w[:3].lower() in _MONTHS_EN), None) or \
+        next((_MONTHS_KA[w[:3]] for w in words if w[:3] in _MONTHS_KA), None)
+    if month is None:
+        return None
+    try:
+        return _dt.date(int(m.group(3)), month, int(m.group(1))).isoformat()
+    except ValueError:
+        return None
+
+
+def _mrz_lines(text: str) -> list[str]:
+    flat = [re.sub(r"\s", "", ln).upper() for ln in (text or "").splitlines()]
+    return [ln for ln in flat if len(ln) >= MRZ_MIN_LEN and "<" in ln]
+
+
+def document_kind(text: str) -> str | None:
+    """გვერდი პირადობის დოკუმენტია? PASSPORT / ID_CARD / None. ნიშანი მანქანური ზოლია (MRZ, ICAO 9303): „P<GEO…<<…“ პასპორტზე,
+    „IDGEO…<<“ ბარათზე — სხვა HR დოკუმენტზე ასეთი ხაზი არ გვხვდება და სათაურის წაკითხვაზე არ არის დამოკიდებული (ახალ ბარათზე
+    ქართული წარწერა წვრილია და ხშირად „[?]“-ად იკითხება). ზოლის გარეშე პასპორტი — სათაურით „პასპორტი PASSPORT“ და ველებით."""
+    mrz = _mrz_lines(text)
+    if any(_MRZ_PASSPORT.match(ln) for ln in mrz):
+        return PASSPORT
+    if any(_MRZ_DOC.match(ln) for ln in mrz):
+        return ID_CARD
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    card = IdCard()
+    if any(_PASSPORT_TITLE.fullmatch(ln) for ln in lines[:8]) and any(_SURNAME.search(ln) for ln in lines) \
+            and any(_GIVEN.search(ln) for ln in lines):
+        return PASSPORT
+    return None
+
+
+def parse_id_card(text: str) -> IdCard:
+    """ID ბარათის ან პასპორტის ტექსტი (ერთი ან ორი მხარე) → ველები. ვერ წაკითხული ველი — None; `problems` — რატომ არ ენდობა."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    card = IdCard(kind=document_kind(text))
     for i, ln in enumerate(lines):
         if card.last_name is None and _SURNAME.search(ln):
             card.last_name = _value_after(lines, i, _SURNAME, georgian=True)
@@ -102,13 +171,16 @@ def parse_id_card(text: str) -> IdCard:
             card.personal_number = m.group(1) if m else None
         for key, rx in _DATE_LABELS.items():
             if getattr(card, key) is None and rx.search(ln):
-                m = _DATE.search(ln) or next((_DATE.search(x) for x in lines[i + 1: i + 3] if _DATE.search(x)), None)
-                setattr(card, key, _iso(m) if m else None)
+                setattr(card, key, next((d for d in map(_date_in, lines[i: i + 3]) if d), None))
     # MRZ (უკანა მხარე): სახელი და პირადი ნომერი — ბარათის ლათინურ ხაზზე უფრო სანდოა
     flat = [re.sub(r"\s", "", ln).upper() for ln in lines]
     for ln in flat:
+        p = _MRZ_PASSPORT.match(ln) if len(ln) >= MRZ_MIN_LEN else None
+        if p:   # პასპორტი: „P<GEO“ ტიპი და ქვეყანაა, სახელი მის შემდეგ იწყება
+            card.latin_last, card.latin_first = p.group(2).replace("<", " "), p.group(3).replace("<", " ")
+            continue
         m = _MRZ_NAME.match(ln)
-        if m and len(ln) >= 20:
+        if m and len(ln) >= MRZ_MIN_LEN:
             card.latin_last, card.latin_first = m.group(1).replace("<", " "), m.group(2).replace("<", " ")
         if _MRZ_DOC.match(ln) and card.personal_number:
             card.mrz_has_pn = card.personal_number in ln

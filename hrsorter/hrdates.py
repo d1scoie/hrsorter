@@ -61,17 +61,18 @@ def signed_late_note(signed: Any, start: Any) -> str | None:
             f"ხელი მუშაობის დაწყებიდან {(s - w).days} დღის შემდეგ მოეწერა")
 
 
-def id_expiry(expiry: Any, today: Any = None, days: int = 30) -> tuple[str, str] | None:
-    """პირადობის ვადა: (EXPIRED | SOON, ტექსტი) ან None — ჯერ შორია."""
+def id_expiry(expiry: Any, today: Any = None, days: int = 30, passport: bool = False) -> tuple[str, str] | None:
+    """პირადობის (ან პასპორტის) ვადა: (EXPIRED | SOON, ტექსტი) ან None — ჯერ შორია."""
     e, t = _d(expiry), _d(today) or dt.date.today()
     if e is None:
         return None
+    what = "პასპორტს" if passport else "პირადობის მოწმობას"
     left = (e - t).days
     if left < 0:
-        return EXPIRED, f"პირადობის მოწმობას ვადა გაუვიდა ({e.isoformat()}) — ახალი მოითხოვე"
+        return EXPIRED, f"{what} ვადა გაუვიდა ({e.isoformat()}) — ახალი მოითხოვე"
     if left <= days:
         when = "დღეს" if left == 0 else f"{left} დღეში"
-        return SOON, f"პირადობის მოწმობას ვადა {when} გასდის ({e.isoformat()}) — ახალი მოითხოვე"
+        return SOON, f"{what} ვადა {when} გასდის ({e.isoformat()}) — ახალი მოითხოვე"
     return None
 
 
@@ -81,7 +82,7 @@ def person_warnings(cfg, facts: dict[str, Any] | None, today: Any = None) -> lis
     adult, days = limits(cfg)
     t = _d(today) or dt.date.today()
     out = []
-    exp = id_expiry(facts.get("id_expiry"), t, days)
+    exp = id_expiry(facts.get("id_expiry"), t, days, passport=facts.get("id_kind") == "passport")
     if exp:
         out.append(exp[1])
     age = age_on(facts.get("birth_date"), t)
