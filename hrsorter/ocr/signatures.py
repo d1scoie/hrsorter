@@ -15,7 +15,8 @@ ASK = ("After the transcription, add one final line in exactly this form: [SIGNA
        "„დამსაქმებელი“ or „დირექტორი“, the company name, the company stamp). 'employee' is the place where the employee "
        "or intern signs (labels such as „დასაქმებული“ or „სტაჟიორი“, the person's name). yes = a handwritten signature is "
        "visibly present at that place (for the employer a stamp also counts); no = that place is on this page but nothing "
-       "is signed there; none = this page has no such place. Judge only what you see in the image.")
+       "is signed there; none = this page has no such place. The signature or stamp does not have to sit exactly on the "
+       "line: slightly above or below it, or over the printed name, still counts as yes. Judge only what you see in the image.")
 
 _LINE = re.compile(r"[ \t]*\[\s*SIGNATURES\s+employer\s*=\s*(yes|no|none)\s*[,;]?\s*employee\s*=\s*(yes|no|none)\s*\][ \t]*", re.IGNORECASE)
 
