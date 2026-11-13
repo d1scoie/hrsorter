@@ -67,6 +67,19 @@ def test_api_reader_asks_the_same_question():
     assert signatures.ASK in SYSTEM
 
 
+def test_signature_slightly_off_the_line_still_counts_everywhere():
+    """მომხმარებლის წესი: ხელმოწერა ან ბეჭედი ხაზს ოდნავ ზემოთ ან ქვემოთ (ან დაბეჭდილ სახელზე) მაინც ადგილზეა — ეს
+    მკითხველსაც ეუბნება, AI ანალიზსაც და ოპერატორსაც. დირექტორის ხელმოწერა/ბეჭედი კი ისევ სავალდებულოა."""
+    from hrsorter import ai_review
+    from hrsorter.ocr.claude_code_vision import PROMPT
+    from hrsorter.ui.app import _problem_todo
+    assert "slightly above or below it, or over the printed name, still counts as yes" in signatures.ASK
+    assert "still counts as yes" in PROMPT and PROMPT.count("{path}") == 1
+    assert "ხაზს ოდნავ ზემოთ ან" in ai_review._INSTRUCTIONS and "ნამდვილი პრობლემაა" in ai_review._INSTRUCTIONS
+    todo = _problem_todo({"kind": "signature"}, "„ატვირთვა მაინც“")
+    assert "თუნდაც ხაზს ოდნავ ზემოთ ან ქვემოთ" in todo and "მოაწერინე" in todo
+
+
 # --- გვერდი -----------------------------------------------------------------------------------------------------
 class _Reader:
     """ონლაინ მკითხველის მსგავსი: ტექსტი კოორდინატების გარეშე + პასუხი ხელმოწერებზე."""
