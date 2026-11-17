@@ -21,9 +21,17 @@ def id_text(last="ბერიძე", first="ნინო", pn=PN, latin_last="
             f"სახელი / GIVEN NAME\n{first}\n{latin_first}\nსქესი / SEX\nქალი / F\nდაბადების თარიღი / DATE OF BIRTH\n01.01.1990\n"
             f"მოქმედების ვადა / DATE OF EXPIRY\n{expiry}\nპირადი N / PERSONAL NO\n{pn}\n\n"
             "გაცემის თარიღი / DATE OF ISSUE\n26.10.2026\nგამცემი ორგანო / ISSUING AUTHORITY\nიუსტიციის სამინისტრო\n")
-    if mrz:
-        text += f"IDGE012AB34565{pn}<<<<\n9001011F3610262GE0<<<<<<<<<<<9\n{latin_last}<<{latin_first}<<<<<<<<<<<<<<<<<<<\n"
+    if mrz:   # ზოლის ვადა წარწერას ემთხვევა (ნამდვილ ბარათზე ასეა) — საკონტროლო ციფრით
+        d, m, y = expiry.split(".")
+        zone = f"{y[2:]}{m}{d}"
+        text += (f"IDGE012AB34565{pn}<<<<\n900101{mrz_check('900101')}F{zone}{mrz_check(zone)}GE0<<<<<<<<<<<9\n"
+                 f"{latin_last}<<{latin_first}<<<<<<<<<<<<<<<<<<<\n")
     return text
+
+
+def mrz_check(digits: str) -> int:
+    """ICAO 9303-ის საკონტროლო ციფრი (წონები 7, 3, 1)."""
+    return sum(int(c) * w for c, w in zip(digits, (7, 3, 1) * 2)) % 10
 
 
 def new_card_text(pn=PN) -> str:

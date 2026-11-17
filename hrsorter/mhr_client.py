@@ -52,6 +52,7 @@ class MhrClient(Protocol):
     def find_by_external_id(self, external_id: str) -> MhrDocRef | None: ...
     def get_contract_template(self, employee_id: str) -> MhrDocRef | None: ...
     def download_template(self, ref: MhrDocRef) -> bytes: ...
+    def update_employee(self, employee_id: str, fields: dict[str, Any], source: str = "") -> None: ...
 
 
 def _template_ref(row: dict[str, Any]) -> MhrDocRef:
@@ -62,6 +63,30 @@ def _template_ref(row: dict[str, Any]) -> MhrDocRef:
 
 # --- map-ები ------------------------------------------------------------------------------
 
+PERSONAL_FIELDS = ("birth_date", "gender")   # რისი ჩაწერაც შეიძლება დადასტურებული პირადობიდან (`update_employee`)
+GENDER_API = {"M": "male", "F": "female"}    # კონტრაქტი: MHR-ში სქესი "male" | "female" | null
+_GENDER_IN = {"m": "M", "male": "M", "კაცი": "M", "მამრობითი": "M", "f": "F", "female": "F", "ქალი": "F", "მდედრობითი": "F"}
+
+
+def gender_code(value: Any) -> str | None:
+    """MHR-ის სქესი → "M" | "F"; უცნობი/ცარიელი → None."""
+    return _GENDER_IN.get(str(value or "").strip().lower())
+
+
+def _has_path(d: Any, path: str) -> bool:
+    for part in (path or "").split("."):
+        if not part or not isinstance(d, dict) or part not in d:
+            return False
+        d = d[part]
+    return True
+
+
+def _iso_date(value: str | None) -> str | None:
+    """„1990-01-01“ ან „1990-01-01T00:00:00Z“ → „1990-01-01“; სხვა ფორმატი → None."""
+    m = re.match(r"\d{4}-\d{2}-\d{2}", value or "")
+    return m.group(0) if m else None
+
+
 def employee_from(raw: dict[str, Any], emap: dict[str, str]) -> MhrEmployee:
     """API ჩანაწერი → MhrEmployee `employee_map`-ის dotted ბილიკებით. პ/ნ ყოველთვის სტრიქონია."""
     def g(key: str) -> str | None:
@@ -69,7 +94,25 @@ def employee_from(raw: dict[str, Any], emap: dict[str, str]) -> MhrEmployee:
     return MhrEmployee(employee_id=g("employee_id") or "", personal_number=g("personal_number"),
                        first_name=g("first_name"), last_name=g("last_name"), company_id=g("company_id"),
                        position=g("position"), salary=g("salary"), contract_start=g("contract_start"),
-                       contract_end=g("contract_end"), status=g("status"), raw=raw)
+                       contract_end=g("contract_end"), status=g("status"), raw=raw,
+                       birth_date=_iso_date(g("birth_date")), gender=gender_code(g("gender")),
+                       provided=[k for k in PERSONAL_FIELDS if _has_path(raw, emap.get(k) or "")])
+
+
+def personal_payload(fields: dict[str, Any]) -> dict[str, str]:
+    """`update_employee`-ის ველები → კონტრაქტის JSON: birth_date „YYYY-MM-DD“, gender „male“/„female“. სხვა ველი ან
+    არასწორი მნიშვნელობა → MhrError (MHR-ში ნაგავი არ იწერება)."""
+    out: dict[str, str] = {}
+    for k, v in fields.items():
+        if k == "birth_date" and _iso_date(str(v)) == str(v):
+            out[k] = str(v)
+        elif k == "gender" and str(v) in GENDER_API:
+            out[k] = GENDER_API[str(v)]
+        else:
+            raise MhrError(f"bad personal field {k}")
+    if not out:
+        raise MhrError("no personal fields")
+    return out
 
 
 def docref_from(raw: dict[str, Any], dmap: dict[str, str]) -> MhrDocRef:
@@ -190,6 +233,17 @@ class MockMhr:
             return (self.dir / "files" / Path(str(ref.filename or "")).name).read_bytes()
         except OSError as e:
             raise MhrError(f"template file missing ({type(e).__name__})") from e
+
+    def update_employee(self, employee_id: str, fields: dict[str, Any], source: str = "") -> None:
+        """დაბადების თარიღი / სქესი თანამშრომლის ჩანაწერში (`employees.json`). თანამშრომელი არ არის → MhrError("not_found")."""
+        self._check()
+        payload = personal_payload(fields)
+        emps = self._load("employees.json")
+        row = next((r for r in emps if str(r.get("id")) == employee_id), None)
+        if row is None:
+            raise MhrError("not_found")
+        row.update(payload)
+        self._dump("employees.json", emps)
 
     def upload(self, employee_id: str, pdf: bytes, filename: str, category: str, meta: dict) -> str:
         self._check()
@@ -424,6 +478,16 @@ class HttpMhr:
         if ref is None or not ref.doc_id:
             raise MhrError("unexpected document response")
         return ref
+
+    def update_employee(self, employee_id: str, fields: dict[str, Any], source: str = "") -> None:
+        """`PATCH employee_update` {"birth_date", "gender", "source_external_id"} — დადასტურებული პირადობიდან. `source` —
+        პირადობის სკანის document_id (MHR-ის აუდიტისთვის). endpoint-ის გარეშე ან 404 → MhrError; 4xx → MhrError(code)."""
+        payload: dict[str, str] = personal_payload(fields)
+        if source:
+            payload["source_external_id"] = source
+        resp = self._send("PATCH", self._url("employee_update", employee_id=employee_id), json=payload)
+        if resp is None:
+            raise MhrError("not_found")
 
     def upload(self, employee_id: str, pdf: bytes, filename: str, category: str, meta: dict) -> str:
         """multipart: file, category, external_id, sha256 (+ title, document_number, document_date, signed_copy_of,

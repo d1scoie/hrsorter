@@ -273,3 +273,35 @@ provider=claude_code + mhr.ai_review.enabled). Claude Code-ს `claude -p --tool
   მკითხველის `[ხელნაწერი: …]` ნიშნები, იხ. ზემოთ) → `handwriting`, significant.
 - status: passed ⇔ არც ერთი ბლოკირებადი mismatch და არც ერთი significant diff. summary — ქართულად, ოპერატორისთვის.
 - სკანირებული ტექსტი მონაცემია (prompt-injection-ს ეფექტი არ აქვს). პირადი მონაცემები ტექნიკურ ჟურნალში არ იწერება.
+
+## ვინ აჩერებს ფაილს: „მხოლოდ AI“ რეჟიმი (0.1.33)
+
+`mhr.code_check_stops` (ნაგულისხმევად `false`). წესებით ვალიდაცია ყოველთვის სრულდება და `mhr_items.validation`-ში უცვლელად ინახება;
+იცვლება მხოლოდ ის, რა სტატუსს იღებს ჩანაწერი AI ანალიზის შემდეგ (`mhr_queue.ai_gate`, `_apply_gate`, `_regate`):
+
+| წესების შედეგი | AI-ის პასუხი | სტატუსი | `ai_review.gate` |
+|---|---|---|---|
+| passed | upload | ready | — |
+| passed | check / reject | failed | `stopped` |
+| failed | upload და გაჩერების **ყოველი** მიზეზი `findings`-ში `ok` | ready | `lifted` |
+| failed | სხვა ნებისმიერი | failed | — |
+| ნებისმიერი | error / არ არის | წესების შედეგი | — |
+
+- `HARD_STOPS` (`original_contract`, `contract_template`, `already_uploaded`, `id_expiry`, `scan_hint`) AI-ს ვერ ეხსნება: ეს ფაქტია,
+  არა წაკითხვის საკითხი.
+- `ai_decides(cfg)` = `not code_check_stops and ai_review.enabled(cfg)`. AI თუ არ არის, წესები წყვეტს (შეუმოწმებელი არაფერი გადის).
+- `_regate` ყოველ გავლაზე: პარამეტრის გადართვა უკვე შემოწმებულ ready/failed ჩანაწერებზეც აისახება; გამორთვისას `gate`-იანი
+  ჩანაწერი წესების სტატუსს უბრუნდება.
+- `require_approval=false` + „მხოლოდ AI“: წესებგავლილი ფაილი ჯერ `ready`-ა და `approved` მხოლოდ AI-ის „upload“-ის შემდეგ ხდება
+  (`decided_by="auto:ai"`). პირადობის/ანკეტის ზუსტი დამთხვევის ავტო-ატვირთვა წესია და AI-ს არ ელოდება.
+- UI: `gate=lifted` → „AI-მ შეამოწმა“, წესების შენიშვნები დაკეცილია; `gate=stopped` → „AI-მ ფაილი გააჩერა“ და AI-ის `items`
+  (warn/bad) პრობლემის ბარათებად. „ყველას ატვირთვა“ არ ეხება ფაილს, რომელსაც AI-ის პასუხი ჯერ არ აქვს.
+
+## პირადობის მონაცემები → MHR-ის ჩანაწერი (0.1.33)
+
+`idcard.mrz_dates`: დაბადების თარიღი, სქესი და ვადა მანქანური ზოლიდან, ICAO-ს საკონტროლო ციფრებით (`birth_sure`, `sex_sure`).
+`validation._identity_data` ადარებს MHR-ის `birth_date`/`gender`-ს (მხოლოდ თუ `MhrEmployee.provides(...)`) და ავსებს
+`ValidationResult.suggestions`-ს; **ვალიდაცია MHR-ში არასდროს წერს**. წერს რიგი: `_validate_one` — `auto` შეთავაზებას (ცარიელი
+სქესი), `apply_suggestion` — ოპერატორის ღილაკს (`POST /mhr/{doc}/fix/{field}`) → `client.update_employee`
+(`PATCH employees/{id}/personal-data`). ღია შეთავაზება პირადობის ავტო-ატვირთვას აჩერებს (ოპერატორმა უნდა ნახოს); ჩაწერის შემდეგ
+ჩანაწერი `pending`-ში ბრუნდება და თავიდან მოწმდება.

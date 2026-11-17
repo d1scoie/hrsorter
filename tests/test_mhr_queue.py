@@ -477,6 +477,7 @@ def ai(repo, doc_id="doc_1"):
 @pytest.mark.parametrize("vstatus", ["passed", "failed"])
 def test_ai_review_runs_after_validation_for_ready_and_failed(repo, cfg, mhr, tmp_path, vstatus):
     cfg.data["ocr"]["online"].update(AI_ON["ocr"]["online"])
+    cfg.data["mhr"]["code_check_stops"] = True   # ძველი რეჟიმი: ფაილს წესები აჩერებს, AI მხოლოდ რჩევას იძლევა
     add_doc(repo, tmp_path)
     rv = FakeReview("check")
     c = q.sweep(repo, cfg, mhr, FakeValidate(vstatus), review_fn=rv)
