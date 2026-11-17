@@ -22,7 +22,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from .config import (DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, EXAMPLE_TYPES_PATH, Config, load_config, merge_new_types)
+from .config import (DEFAULT_CONFIG_PATH, EXAMPLE_CONFIG_PATH, EXAMPLE_TYPES_PATH, Config, load_config, merge_new_types,
+                     update_shipped_types)
 from .db import Repository
 
 
@@ -81,6 +82,9 @@ def cmd_setup(args) -> int:
         added = merge_new_types(types_path)   # ახალ ვერსიაში დამატებული ტიპები; არსებული არ იცვლება
         if added:
             print(f"დაემატა დოკუმენტის ტიპები: {', '.join(added)}")
+        updated = update_shipped_types(types_path)   # გასწორებული ჩაშენებული ტიპები — მხოლოდ ხელით შეუცვლელი
+        if updated:
+            print(f"განახლდა დოკუმენტის ტიპის წესები: {', '.join(updated)}")
     cfg = load_config(cfg_path)
     _ensure_dirs(cfg)
     Repository(cfg.paths.db).close()

@@ -65,6 +65,8 @@ _TITLE_WORDS = {"ბატონ", "ბატონი", "ბატონს", "
 
 # --- დოკუმენტის ნომერი -----------------------------------------------------------------
 DOCNUM_RE = re.compile(r"(?:№|#|\bn|ნომერი)\s*[:.]?\s*(\d{1,6}(?:[/-][0-9ა-ჰa-z]{1,6})*)(?![\d/-])")
+# სერიის ასოებიანი ნომერი („№FIN 1024/11-2026“ — ჯარიმის ბრძანება): ასოები მხოლოდ №/#-ის შემდეგ — „nov 2026“ ნომერი არ არის
+PREFIXED_DOCNUM_RE = re.compile(r"(?:№|#)\s*([a-z]{2,4})\s?(\d{1,6}(?:[/-][0-9ა-ჰa-z]{1,6})*)(?![\d/-])")
 
 # --- თავფურცელი (header block) ----------------------------------------------------------
 HEADER_LINES = 6           # ამდენ ზედა ხაზში ვეძებთ
@@ -250,12 +252,15 @@ _ADDRESS_CUE = re.compile(r"ქუჩ|გამზირ|ჩიხ|შესა�
 
 def find_doc_number(text: str) -> tuple[str, str] | None:
     """პირველი „№ 15"/„n 15/2"/„ბრძანება № 34-კ" → (ნომერი, ხაზი); 9+ ციფრიანი (პ/ნ და მსგ.) და მისამართის
-    ნომერი („… ქუჩა #17", „სტაჟირების ადგილი: … #22") გამორიცხულია."""
-    for m in DOCNUM_RE.finditer(text):
-        v = m.group(1)
-        if sum(ch.isdigit() for ch in v) >= 9:
+    ნომერი („… ქუჩა #17", „სტაჟირების ადგილი: … #22") გამორიცხულია. სერიის ასოები ნომერში რჩება: „№FIN 1024/11-2026“ → „FIN 1024/11-2026“."""
+    # 9+ ციფრი: ჩვეულებრივ ნომერში — ჯამში; სერიისაში („FIN 1017/11-2026“ — ნომერი/თვე-წელი) — ერთ ზედიზედ მწკრივში
+    found = sorted([*((m.start(), m.group(1), sum(ch.isdigit() for ch in m.group(1))) for m in DOCNUM_RE.finditer(text)),
+                    *((m.start(), f"{m.group(1).upper()} {m.group(2)}", max(map(len, re.findall(r"\d+", m.group(2)))))
+                      for m in PREFIXED_DOCNUM_RE.finditer(text))])
+    for start, v, digits in found:
+        if digits >= 9:
             continue
-        line = line_at(text, m.start())
+        line = line_at(text, start)
         if _ADDRESS_CUE.search(line):
             continue
         return v, line
