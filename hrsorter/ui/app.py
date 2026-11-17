@@ -790,13 +790,32 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @app.post("/mhr-approve-all")
     def mhr_approve_all():
         from .. import mhr_queue
+        by_ai = mhr_queue.ai_decides(cfg())
         r = repo()
         try:
             for x in r.mhr_list(("ready",)):
+                if by_ai and not x["ai_review"]:   # „მხოლოდ AI“ რეჟიმი: AI-ს ჯერ არ უნახავს — ერთად ატვირთვაში არ შედის
+                    continue
+                if _open_suggestions(json.loads(x["validation"] or "{}")):   # MHR-ის მონაცემის გასწორება ჯერ ოპერატორმა უნდა ნახოს
+                    continue
                 mhr_queue.approve(r, x["document_id"], "operator")
         finally:
             r.close()
         return RedirectResponse("/mhr?tab=queue", status_code=303)
+
+    @app.post("/mhr/{doc_id}/fix/{field}")
+    def mhr_fix_employee(doc_id: str, field: str):
+        """„MHR-ში გასწორება“: დადასტურებული პირადობიდან წაკითხული დაბადების თარიღი/სქესი იწერება MHR-ის ჩანაწერში."""
+        from .. import mhr_queue
+        if field not in ("birth_date", "gender"):
+            raise HTTPException(404)
+        r = repo()
+        try:
+            code = mhr_queue.apply_suggestion(r, cfg(), doc_id, field)
+        finally:
+            r.close()
+        q = urlencode({"err": _fix_error_text(code)} if code else {"msg": "MHR-ში ჩაიწერა. პირადობა თავიდან შედარდება."})
+        return RedirectResponse(f"/mhr/{doc_id}?{q}", status_code=303)
 
     @app.get("/people", response_class=HTMLResponse)
     def people_list(only: str = ""):
@@ -1353,6 +1372,13 @@ def _mhr_row(c: Config, x, back: str = "") -> str:
     t = c.doc_type(x["type_id"] or "")
     name = _mhr_name(v)
     summary = _main_reason(v) or (_error_text(x["error"]) if x["error"] else "")
+    gate = (_ai_load(x) or {}).get("gate")   # „მხოლოდ AI“ რეჟიმი: AI-მ წესების შედეგი შეცვალა
+    if gate == "lifted" and x["status"] != "failed":
+        summary = "პროგრამის შენიშვნები AI-მ წაკითხვის შეცდომად ჩათვალა"
+    elif gate == "stopped" and x["status"] == "failed":
+        summary = "AI-მ გააჩერა: ნახე, რა შეამჩნია"
+    if _open_suggestions(v):
+        summary = (summary + " · " if summary else "") + "MHR-ის მონაცემის გასწორება გელოდება"
     title = clean_file_title((v.get("original") or {}).get("filename")) or (t.name_ka if t else None)
     meta = " · ".join(y for y in (x["personal_number"], title,   # სახელი უკვე სათაურშია
                                   f'{Path(x["first_path"]).name} · გვ. {x["page_start"] + 1}–{x["page_end"] + 1}' if x["first_path"] else None) if y)
@@ -1389,6 +1415,68 @@ def _ai_load(m) -> dict | None:
     except (IndexError, KeyError):
         return None
     return json.loads(raw) if raw else None
+
+
+def _open_suggestions(v: dict) -> list[dict]:
+    """MHR-ის მონაცემის გასწორების შეთავაზებები, რომლებიც ჯერ არ ჩაწერილა (mhr_queue.open_suggestions)."""
+    return [s for s in v.get("suggestions") or [] if s.get("state") != "applied"]
+
+
+_FIX_ERR_KA = {"unavailable": "MHR ახლა არ პასუხობს — სცადე ცოტა ხანში",
+               "forbidden": "MHR-მა უარი თქვა: ამ პროგრამას MHR-ში მონაცემის შეცვლის უფლება არ აქვს",
+               "not_found": "MHR-მა ჩაწერა არ მიიღო: MHR-ს ეს შესაძლებლობა ჯერ არ აქვს ან თანამშრომელი ვერ იპოვა",
+               "no_suggestion": "გასასწორებელი აღარაფერია"}
+
+
+def _fix_error_text(code: str | None) -> str:
+    code = code or ""
+    if code.startswith("endpoint not configured") or code in ("http_405", "http_404"):
+        return _FIX_ERR_KA["not_found"]
+    return _FIX_ERR_KA.get(code) or f"MHR-ში ჩაწერა ვერ მოხერხდა ({code})"
+
+
+def _suggestions_block(m, v: dict) -> str:
+    """დადასტურებული პირადობიდან: MHR-ში დაბადების თარიღი/სქესი სხვაა ან ცარიელია. ღია შეთავაზება — ორივე მნიშვნელობა და
+    ღილაკი „MHR-ში გასწორება“; უკვე ჩაწერილი — ერთი სტრიქონი, რა ჩაიწერა."""
+    out = []
+    doc_id = e(m["document_id"])
+    for s in v.get("suggestions") or []:
+        label, val = s.get("label_ka") or s.get("field"), s.get("value_ka") or s.get("value")
+        old = s.get("mhr_value_ka") or s.get("mhr_value")
+        if s.get("state") == "applied":
+            how = "პროგრამამ თავად ჩაწერა" if s.get("by") == "auto" else "შენი დაჭერით"
+            out.append(f'<div class="banner tone-ok">{icon("check", 18)}<div><b>{e(label)} MHR-ში ჩაიწერა: {e(val)}.</b> '
+                       + (f'ადრე ეწერა {e(old)}. ' if old else 'ადრე ცარიელი იყო. ') + f'{how}, პირადობის მიხედვით.</div></div>')
+            continue
+        was = f'MHR-ში ახლა წერია <b>{e(old)}</b>' if old else "MHR-ში ეს ველი ცარიელია"
+        err = (f'<div class="help" style="color:var(--bad)">{e(_fix_error_text(s.get("error")))}</div>'
+               if s.get("state") == "failed" or s.get("error") else "")
+        out.append(f'<div class="banner tone-warn">{icon("alert", 18)}<div><b>{e(label)}: პირადობაზე წერია {e(val)}.</b> {was}. '
+                   'პირადობა ამ თანამშრომლისაა (გვარი, სახელი და პირადი ნომერი ემთხვევა). თუ MHR-ში შეცდომაა, გაასწორე ერთი დაჭერით; '
+                   'შემდეგ პროგრამა პირადობას თავიდან შეადარებს.'
+                   f'<form method="post" action="/mhr/{doc_id}/fix/{e(s.get("field"))}" style="margin-top:8px">'
+                   f'<button class="btn sm primary">{icon("check", 14)}MHR-ში გასწორება: {e(val)}</button></form>{err}</div></div>')
+    return "".join(out)
+
+
+def _ai_stop_block(ai: dict | None) -> str:
+    """„მხოლოდ AI“ რეჟიმი, AI-მ გააჩერა: რა შეამჩნია (მისი პუნქტები „ნახე“/„პრობლემაა“ და რისკები) — პრობლემის ბარათებად."""
+    if not ai:
+        return ""
+    cards = []
+    for it in ai.get("items") or []:
+        if it.get("status") not in ("warn", "bad"):
+            continue
+        tone = "bad" if it["status"] == "bad" else "warn"
+        cards.append(f'<div class="prob"><div class="prob-h"><span class="ib tone-{tone}">{icon("alert", 18)}</span><div>'
+                     f'<b>{e(it.get("topic") or "AI-ის შენიშვნა")}</b><div class="m">AI-ის შენიშვნა</div></div></div>'
+                     f'<div class="lines"><div><span class="lbl">რას ამბობს AI</span><div class="val">{e(it.get("explanation"))}</div></div>'
+                     '<div><span class="lbl">რა ვქნა</span><div class="val">ნახე ეს ადგილი ქაღალდზე ან სკანზე. თუ სწორად წერია, '
+                     '„ატვირთვა მაინც“; თუ არა, „უარყოფა“.</div></div></div></div>')
+    risks = "".join(f"<li>{e(r)}</li>" for r in ai.get("risks") or [])
+    return (("".join(f'<div class="card list" style="margin-bottom:12px">{c}</div>' for c in cards))
+            + (f'<div class="card" style="margin-bottom:12px"><b>რას გადაამოწმებ</b><ul style="margin:8px 0 0 18px">{risks}</ul></div>'
+               if risks else ""))
 
 
 def _ai_block(c: Config, m, worker_alive: bool = True) -> str:
@@ -1921,6 +2009,14 @@ def _verdict(v: dict, m) -> str:
     past = _PAST_APPROVAL.get(m["status"])
     if v.get("status") == "split":
         return f'<div class="banner tone-info">{icon("file", 18)}<div>{"<br>".join(e(x) for x in v.get("summary") or [])}</div></div>'
+    gate = (_ai_load(m) or {}).get("gate")   # „მხოლოდ AI“ რეჟიმი: ფაილს AI აჩერებს და არა პროგრამის შენიშვნები
+    if gate == "lifted" and m["status"] != "failed" and m["status"] != "rejected":
+        return (f'<div class="banner tone-ok">{icon("check", 18)}<div><b>AI-მ შეამოწმა: {f"ფაილი {past}" if past else "მზადაა ატვირთვისთვის"}.</b> '
+                f'პროგრამამ {len(lines)} სხვაობა შეამჩნია, მაგრამ AI-ს აზრით ყველა წაკითხვის შეცდომაა. '
+                'ისინი ქვემოთ, დაკეცილ ბლოკშია.</div></div>')
+    if gate == "stopped" and m["status"] == "failed":
+        return (f'<div class="banner tone-warn">{icon("alert", 18)}<div><b>AI-მ ფაილი გააჩერა.</b> პროგრამის შედარებამ სხვაობა ვერ იპოვა, '
+                'მაგრამ AI-მ რაღაც შეამჩნია. ჯერ ნახე ეს ქაღალდზე (ნაბიჯი 1), მერე აირჩიე, რა უყო ფაილს (ნაბიჯი 2).</div></div>')
     if lines and past:
         return (f'<div class="banner tone-info">{icon("file", 18)}<div><b>ფაილი {past} შენი გადაწყვეტილებით.</b> '
                 f'შემოწმებამ {len(lines)} პრობლემა ნახა, თითოეული ქვემოთაა.</div></div>')
@@ -2159,6 +2255,7 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
     if m["error"] and m["error"] != "MhrError":
         out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(_error_text(m["error"]))}</div></div>')
     out.append(_verdict(v, m))
+    out.append(_suggestions_block(m, v))
     old_banner = _old_original_banner(v, m)
     out.append(old_banner)
     notes = _notes_block(v, frozenset({"original_date"}) if old_banner else frozenset())
@@ -2174,6 +2271,15 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
     if suspects:
         problems += ('<h3 class="wsub">კიდევ შეხედე — პატარა სხვაობები, ფაილს არ აჩერებს</h3>'
                      + _grouped_problems(doc_id, suspects, pts, action, purged))
+    ai_gate = (_ai_load(m) or {}).get("gate")
+    look_title = "ნახე, რა შეამჩნია პროგრამამ"
+    if ai_gate == "lifted" and m["status"] != "failed" and problems:
+        # „მხოლოდ AI“: პროგრამის შენიშვნები AI-მ ცრუ განგაშად ჩათვალა — ფაილს არ აჩერებს, ამიტომ დაკეცილია
+        problems = ('<details class="more" style="margin-bottom:12px"><summary>პროგრამის შენიშვნები, რომლებიც AI-მ წაკითხვის შეცდომად '
+                    f'ჩათვალა ({len(sig_diffs) + len(_blocking_checks(v))})</summary><div class="in">{problems}</div></details>')
+    elif ai_gate == "stopped" and m["status"] == "failed":
+        problems = _ai_stop_block(_ai_load(m)) + problems
+        look_title = "ნახე, რა შეამჩნია AI-მ"
     if parts is not None:
         out.append(_mhr_parts_block(parts, m))
     decide = _decision_block(c, m, d, v)
@@ -2181,9 +2287,12 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
         look = problems + _ai_hint(m) + notes   # ჯერ — რა უნდა ნახოს; მერე AI-ის რჩევა და შენიშვნები
         steps = []
         if look:
-            hint = ("წითლად მონიშნული ადგილები ქაღალდზე ან სკანზე ნახე: სწორად წერია თუ არა." if problems else
+            hint = ("AI-მ ეს ადგილები მონიშნა. ნახე ისინი ქაღალდზე ან სკანზე: სწორად წერია თუ არა." if look_title.endswith("AI-მ") else
+                    "პროგრამის შენიშვნები AI-მ გადახედა და ფაილი არ გააჩერა. თუ გინდა, გახსენი სკანი და გადახედე."
+                    if ai_gate == "lifted" and m["status"] != "failed" else
+                    "წითლად მონიშნული ადგილები ქაღალდზე ან სკანზე ნახე: სწორად წერია თუ არა." if problems else
                     "პროგრამამ პრობლემა ვერ იპოვა. თუ გინდა, გახსენი სკანი და გადახედე.")
-            steps.append(("ნახე, რა შეამჩნია პროგრამამ", hint, look))
+            steps.append((look_title, hint, look))
         steps.append(decide)
         out.append('<ol class="wiz">' + "".join(
             f'<li class="wstep"{" id=decide" if i == len(steps) else ""}><span class="wnum" aria-hidden="true">{i}</span>'
@@ -2303,7 +2412,8 @@ def _decision_block(c: Config, m, d, v: dict) -> tuple[str, str, str] | None:
                     "ატვირთვა ჩაიწერება, როგორც შენი გადაწყვეტილება.")
         else:
             title = "ქაღალდზე ყველაფერი სწორად წერია"
-            text = ("AI-მ სხვაობები გადახედა და თვლის, რომ ეს წაკითხვის შეცდომებია. " if ai_ok else
+            text = ("AI-მ რაც შეამჩნია, ქაღალდზე ვნახე და სწორია. " if (ai or {}).get("gate") == "stopped" else
+                    "AI-მ სხვაობები გადახედა და თვლის, რომ ეს წაკითხვის შეცდომებია. " if ai_ok else
                     "მაგ. ბეჭედი ან ხელმოწერა შეცდომით ჩაითვალა ცვლილებად. ") + "ატვირთვა ჩაიწერება, როგორც შენი გადაწყვეტილება."
         opts.append(f'<form method="post" action="/mhr/{doc_id}/override" class="opt"><div class="ot"><b>{e(title)}</b>'
                     f'<span>{e(text)}</span><label class="switch confirm"><input type="checkbox" name="confirm" value="1" required>'
@@ -2709,7 +2819,10 @@ _BOOL_FIELDS = [("processing.trial_mode", "საცდელი რეჟიმ
                 ("employee_api.enabled", "თანამშრომლების API ჩართულია"), ("autostart.enabled", "ავტოგაშვება"),
                 ("mhr.enabled", "MHR ინტეგრაცია"), ("mhr.require_approval", "ატვირთვამდე დადასტურება"),
                 ("cleanup.move_processed", "დამუშავებულის გადატანა"), ("tray.notifications", "Windows-ის შეტყობინებები"),
-                ("mhr.signature_every_page", "ხელმოწერა ყველა გვერდზე"), ("mhr.ai_review.enabled", "AI ანალიზი")]
+                ("mhr.signature_every_page", "ხელმოწერა ყველა გვერდზე"), ("mhr.ai_review.enabled", "AI ანალიზი"),
+                ("mhr.code_check_stops", "კოდით შემოწმება აჩერებს ფაილს"),
+                ("mhr.identity_data.birth_date", "პირადობით დაბადების თარიღის შედარება"),
+                ("mhr.identity_data.gender", "პირადობით სქესის შედარება და ჩაწერა")]
 _CLEANUP_NUM_FIELDS = [
     ("cleanup.processed_days", "დამუშავებული ფაილის წაშლა (დღე)", int,
      "Processed-იდან. ორიგინალის ასლი არქივში რჩება, ამიტომ ეს უსაფრთხოა. 0 = არასდროს. _Failed არასდროს იშლება."),
@@ -2839,7 +2952,21 @@ def _settings_body(c: Config, msg: str, err: str) -> str:
                'დოკუმენტი ავტომატურად აიტვირთება.</span></span></label>'
                f'<label class="switch" style="margin-top:12px"><input type="checkbox" name="mhr.signature_every_page" value="1" {"checked" if mh["signature_every_page"] else ""}>'
                '<span><b>ხელშეკრულებაზე ხელმოწერა ყველა გვერდზე</b><br><span class="muted" style="font-size:13.5px">თუ რომელიმე გვერდზე '
-               'ხელმოწერა ვერ მოიძებნა, ატვირთვას არ შემოგთავაზებს (ცარიელი გვერდი გამონაკლისია).</span></span></label></div>')
+               'ხელმოწერა ვერ მოიძებნა, ატვირთვას არ შემოგთავაზებს (ცარიელი გვერდი გამონაკლისია).</span></span></label>'
+               '<h3 style="margin:18px 0 8px">ვინ აჩერებს ფაილს</h3>'
+               f'<label class="switch"><input type="checkbox" name="mhr.code_check_stops" value="1" {"checked" if mh["code_check_stops"] else ""}>'
+               '<span><b>კოდით შემოწმება აჩერებს ფაილს</b><br><span class="muted" style="font-size:13.5px">გამორთულია (ნაგულისხმევი): '
+               'ფაილს მხოლოდ AI აჩერებს. პროგრამა ქაღალდს ისევ ადარებს MHR-ის ფაილს, მაგრამ თუ AI ამბობს, რომ ნაპოვნი სხვაობები '
+               'წაკითხვის შეცდომებია, ფაილი „მზადაა ატვირთვისთვის“ ხდება; თუ AI ეჭვს ხედავს, ფაილი ჩერდება. ჩართულია: როგორც ადრე, ფაილს '
+               'პროგრამის ნაპოვნი ყოველი სხვაობა აჩერებს და AI მხოლოდ რჩევას იძლევა. AI ანალიზი ზემოთ, „ამოცნობაში“ ირთვება; '
+               'თუ ის გამორთულია, ფაილს ისევ კოდით შემოწმება აჩერებს.</span></span></label>'
+               '<h3 style="margin:18px 0 8px">პირადობა და პასპორტი</h3>'
+               f'<label class="switch"><input type="checkbox" name="mhr.identity_data.birth_date" value="1" {"checked" if mh["identity_data"]["birth_date"] else ""}>'
+               '<span><b>დაბადების თარიღის შედარება MHR-თან</b><br><span class="muted" style="font-size:13.5px">თუ MHR-ში სხვა თარიღია '
+               'ან ცარიელია, პროგრამა გასწორებას შემოგთავაზებს (ერთი ღილაკით).</span></span></label>'
+               f'<label class="switch" style="margin-top:12px"><input type="checkbox" name="mhr.identity_data.gender" value="1" {"checked" if mh["identity_data"]["gender"] else ""}>'
+               '<span><b>სქესის შედარება MHR-თან</b><br><span class="muted" style="font-size:13.5px">თუ MHR-ში სქესი ცარიელია, პროგრამა '
+               'თავად ჩაწერს პირადობის მიხედვით; თუ სხვაა, გასწორებას შემოგთავაზებს.</span></span></label></div>')
 
     # დამატებითი (ექსპერტისთვის)
     adv = []

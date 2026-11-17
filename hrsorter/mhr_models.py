@@ -55,6 +55,13 @@ class MhrEmployee:
     contract_end: str | None = None
     status: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    birth_date: str | None = None      # ISO; None — MHR-ში ცარიელია ან MHR ამ ველს არ აწვდის (`provides`)
+    gender: str | None = None          # "M" | "F"; None — იგივე
+    provided: list[str] = field(default_factory=list)   # birth_date / gender: MHR-ის პასუხში ეს ველი არის (თუნდაც ცარიელი)
+
+    def provides(self, key: str) -> bool:
+        """MHR ამ ველს აწვდის? ძველი MHR დაბადების თარიღს და სქესს არ აწვდის — მაშინ შედარება და ჩაწერა არ ხდება."""
+        return key in self.provided
 
 
 @dataclass
@@ -106,6 +113,10 @@ class ValidationResult:
     error: str | None = None
     mhr_snapshot: str | None = None   # რა ნახა შედარებამ MHR-ში (validation.mhr_snapshot) — „MHR-ში აკლია“-ს თავისით გადამოწმებისთვის
     facts: dict[str, Any] = field(default_factory=dict)   # დოკუმენტიდან ამოღებული ფაქტები სხვა შემოწმებებისთვის (პირადობა: birth_date, id_expiry)
+    # MHR-ის თანამშრომლის მონაცემის გასწორების შეთავაზება დადასტურებული პირადობიდან:
+    # {"field": birth_date|gender, "label_ka", "value" (პირადობაზე), "mhr_value", "auto" (ცარიელ ველში თავისით ჩაიწეროს),
+    #  "state": pending|applied|failed, "error", "applied_at", "by"}. ვალიდაცია მხოლოდ სთავაზობს; წერს რიგი (mhr_queue)
+    suggestions: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

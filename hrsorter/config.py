@@ -147,12 +147,13 @@ DEFAULTS: dict[str, Any] = {
             "companies": "/companies",
             "contract_template": "/employees/{employee_id}/contract-template",   # ორიგინალის არქონისას
             "template_file": "/contract-templates/{template_id}/file",
+            "employee_update": "/employees/{employee_id}/personal-data",   # PATCH {birth_date, gender} — დადასტურებული პირადობიდან
         },
         "employee_map": {"employee_id": "id", "personal_number": "personal_number", "first_name": "first_name",
                          "last_name": "last_name", "company_id": "company.id", "company_tax_id": "company.tax_id",
                          "company_name": "company.name", "position": "position", "salary": "salary.amount",
                          "contract_start": "contract_start", "contract_end": "contract_end", "status": "status",
-                         "employments": "employments"},
+                         "employments": "employments", "birth_date": "birth_date", "gender": "gender"},
         "document_map": {"doc_id": "id", "category": "category", "title": "title", "created_at": "created_at",
                          "filename": "filename", "items_key": "items"},
         "upload": {"file_field": "file", "category_field": "category", "extra_fields": {}, "remote_id_key": "id"},
@@ -164,6 +165,14 @@ DEFAULTS: dict[str, Any] = {
         "require_approval": True,           # ოპერატორის დადასტურება ატვირთვამდე
         "identity_auto_upload": True,       # პირადობა (ტიპი identity) MHR-ს ზუსტად ემთხვევა → დადასტურების გარეშე იტვირთება
         "employee_form_auto_upload": True,  # ანკეტა (ტიპი employee_form): პ/ნ, დაწყების და დაბადების თარიღი ემთხვევა → ასევე
+        "identity_data": {                  # დადასტურებული პირადობის/პასპორტის მონაცემები MHR-ის ჩანაწერს ედარება
+            "birth_date": True,             # დაბადების თარიღი: MHR-ში სხვაა ან ცარიელია → გასწორების შეთავაზება (ოპერატორის ღილაკი)
+            "gender": True,                 # სქესი: MHR-ში ცარიელია → თავისით იწერება; სხვაა → გასწორების შეთავაზება
+        },                                  # მოქმედებს მხოლოდ თუ MHR ამ ველებს აწვდის (lookup-ის პასუხში `birth_date`, `gender`)
+        # წესებით (კოდით) შემოწმება ფაილს აჩერებს? false (ნაგულისხმევი): კოდი ისევ ადარებს, მაგრამ ფაილი ჩერდება მხოლოდ მაშინ,
+        # როცა AI ანალიზი ამბობს „გადაამოწმე“/„არ ატვირთო“; კოდის შენიშვნას, რომელსაც AI ცრუ განგაშად თვლის, ფაილი აღარ უჩერდება.
+        # AI ანალიზი თუ გამორთულია ან ვერ შესრულდა, ისევ კოდის შედეგი მოქმედებს (შეუმოწმებელი არაფერი გადის).
+        "code_check_stops": False,
         "recheck": {                        # წესებმა ტექსტური სხვაობა იპოვა Tesseract-ის გვერდზე → გვერდი ონლაინ OCR-ით
             "enabled": True,                # (Claude) ხელახლა იკითხება და შედარება მეორდება (validation._recheck_diffs);
             "max_pages": 6,                 # მოქმედებს მხოლოდ ocr.online.enabled-ზე. ≤ ამდენი გვერდი ერთ დოკუმენტზე

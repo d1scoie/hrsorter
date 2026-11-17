@@ -155,6 +155,128 @@ def approve_manual(repo, document_id: str, employee: MhrEmployee, personal_numbe
     return None
 
 
+# --- MHR-ის ჩანაწერის გასწორება დადასტურებული პირადობიდან (დაბადების თარიღი, სქესი) ---------------------------------------
+
+def open_suggestions(validation: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """შეთავაზებები, რომლებიც MHR-ში ჯერ არ ჩაწერილა (ელოდება ოპერატორს ან ჩაწერა ვერ მოხერხდა)."""
+    return [s for s in (validation or {}).get("suggestions") or [] if s.get("state") != "applied"]
+
+
+def _write_suggestion(client: MhrClient, employee_id: str, document_id: str, s: dict[str, Any], by: str) -> bool:
+    """ერთი შეთავაზება MHR-ში იწერება; `s` ადგილზე იცვლება (state applied | failed | pending). შეცდომა მხოლოდ კოდად ინახება."""
+    try:
+        client.update_employee(str(employee_id), {s["field"]: s["value"]}, source=document_id)
+    except MhrUnavailable:           # MHR ახლა არ პასუხობს — შეთავაზება რჩება, ოპერატორი ღილაკით გაიმეორებს
+        s.update(state="pending", error="unavailable")
+        return False
+    except MhrError as e:
+        s.update(state="failed", error=str(e)[:100])
+        return False
+    s.update(state="applied", applied_at=now_iso(), by=by, error=None)
+    return True
+
+
+def apply_suggestion(repo, cfg, document_id: str, field: str, client: MhrClient | None = None,
+                     who: str = "operator") -> str | None:
+    """ოპერატორის ღილაკი „MHR-ში გასწორება“: პირადობიდან წაკითხული მნიშვნელობა იწერება MHR-ის თანამშრომლის ჩანაწერში.
+    აბრუნებს შეცდომის კოდს ან None. შეთავაზება მხოლოდ დადასტურებულ პირადობაზე არსებობს (`validation._identity_data`)."""
+    row = repo.mhr_get(document_id)
+    if row is None or not row["employee_id"]:
+        return "not_found"
+    v = json.loads(row["validation"] or "{}")
+    s = next((x for x in open_suggestions(v) if x.get("field") == field), None)
+    if s is None:
+        return "no_suggestion"
+    ok = _write_suggestion(client or build_mhr_client(cfg), row["employee_id"], document_id, s, who)
+    repo.conn.execute("UPDATE mhr_items SET validation=? WHERE document_id=?", (json.dumps(v, ensure_ascii=False), document_id))
+    _event(repo, document_id, f"mhr {field} {'updated' if ok else 'update failed'} ({who})", level="info" if ok else "warning")
+    if ok and not open_suggestions(v):   # MHR გასწორდა — პირადობა თავიდან შედარდება (ახლა უკვე ემთხვევა)
+        repo.mhr_transition(document_id, (S.READY.value, S.FAILED.value), S.PENDING.value,
+                            attempts=0, next_try=None, error=None, ai_review=None)
+    return None if ok else str(s.get("error") or "failed")
+
+
+# --- „მხოლოდ AI“ რეჟიმი (`mhr.code_check_stops=false`) ------------------------------------------------------------------
+# რასაც AI ვერ მოხსნის: ეს წაკითხვის საკითხი კი არა, ფაქტია (MHR-ში ფაილი არ არის, უკვე ატვირთულია, ვადა გასულია)
+HARD_STOPS = frozenset({"original_contract", "contract_template", "already_uploaded", "id_expiry", "scan_hint"})
+GATE_LIFTED, GATE_STOPPED = "lifted", "stopped"
+
+
+def ai_decides(cfg) -> bool:
+    """ფაილს AI აჩერებს და არა წესები: `mhr.code_check_stops` გამორთულია და AI ანალიზი აქტიურია. AI თუ არ არის
+    (გამორთულია, ონლაინ სერვისი აკრძალულია), წესების შედეგი მოქმედებს — შეუმოწმებელი არაფერი გადის."""
+    from . import ai_review
+    return not cfg.section("mhr").get("code_check_stops", False) and ai_review.enabled(cfg)
+
+
+def ai_gate(validation: dict[str, Any], review: dict[str, Any] | None) -> str | None:
+    """„მხოლოდ AI“ რეჟიმში რა სტატუსი უნდა ჰქონდეს ჩანაწერს: ready | failed; None — წესებმა ვერც გაიარა და ვერც ჩააგდო
+    (skipped, split, MHR-ის შეცდომა) და AI-ს აქ სათქმელი არაფერი აქვს.
+    წესებმა გაიარა → AI „ატვირთე“ → ready, სხვა პასუხი → failed. წესებმა გააჩერა → ready მხოლოდ თუ AI ამბობს „ატვირთე“,
+    გაჩერების ყოველი მიზეზი ცალკე ცრუ განგაშად შეაფასა და არცერთი მიზეზი ფაქტი არ არის (`HARD_STOPS`).
+    AI-ის პასუხი არ არის ან შეცდომაა → წესების შედეგი."""
+    from . import ai_review
+    code = {"passed": S.READY.value, "failed": S.FAILED.value}.get(str(validation.get("status")))
+    if code is None or validation.get("error"):
+        return None
+    verdict = (review or {}).get("verdict")
+    if verdict not in ai_review.VERDICTS:
+        return code
+    if code == S.READY.value:
+        return code if verdict == "upload" else S.FAILED.value
+    stops = ai_review.stop_reasons(validation)
+
+    def key(k: Any) -> str:
+        return json.dumps(k, ensure_ascii=False, sort_keys=True)
+    cleared = {key(f.get("key")) for f in (review or {}).get("findings") or [] if f.get("status") == "ok"}
+    lifted = (verdict == "upload" and bool(stops) and not any(x.get("field") in HARD_STOPS for x in stops)
+              and all(key(ai_review.finding_key(x)) in cleared for x in stops))
+    return S.READY.value if lifted else code
+
+
+def _apply_gate(repo, cfg, document_id: str, status: str, validation: dict[str, Any], review: dict[str, Any],
+                counts: dict[str, int]) -> None:
+    """AI-ის პასუხის შემდეგ: სტატუსი `ai_gate`-ის მიხედვით (ready ↔ failed). `review["gate"]` ინახავს, AI-მ რა შეცვალა
+    წესების შედეგთან შედარებით: lifted — წესებმა გააჩერა, AI-მ მოხსნა; stopped — წესებმა გაიარა, AI-მ გააჩერა."""
+    want = ai_gate(validation, review)
+    if want is None:
+        return
+    passed = validation.get("status") == "passed"
+    gate = GATE_STOPPED if passed and want == S.FAILED.value else GATE_LIFTED if not passed and want == S.READY.value else None
+    if review.get("gate") != gate:
+        review["gate"] = gate
+        repo.mhr_set_ai_review(document_id, review)
+    to = want
+    fields: dict[str, Any] = {}
+    if want == S.READY.value and not cfg.section("mhr").get("require_approval", True):
+        to, fields = S.APPROVED.value, {"decided_by": "auto:ai", "attempts": 0, "next_try": None}   # დადასტურება გამორთულია
+    if to != status and repo.mhr_transition(document_id, (status,), to, **fields):
+        counts[to] = counts.get(to, 0) + 1
+        _event(repo, document_id, f"{to} (AI: {review.get('verdict')}{', ' + gate if gate else ''})")
+
+
+def _regate(repo, cfg, counts: dict[str, int]) -> None:
+    """რეჟიმის გადართვა უკვე შემოწმებულ ფაილებზეც მოქმედებს: „მხოლოდ AI“ ჩართულია → ready/failed ჩანაწერს, რომელსაც AI-ის
+    პასუხი უკვე აქვს, სტატუსი `ai_gate`-ით უსწორდება; გამორთულია → რაც AI-მ შეცვალა, წესების შედეგს უბრუნდება."""
+    by_ai = ai_decides(cfg)
+    q = ",".join("?" for _ in AI_REVIEW_STATUSES)
+    for row in repo.q(f"SELECT document_id, status, validation, ai_review FROM mhr_items WHERE status IN ({q})"
+                      " AND ai_review IS NOT NULL AND error IS NULL", AI_REVIEW_STATUSES):
+        try:
+            review, v = json.loads(row["ai_review"]), json.loads(row["validation"] or "{}")
+        except ValueError:
+            continue
+        if by_ai:
+            _apply_gate(repo, cfg, row["document_id"], row["status"], v, review, counts)
+        elif review.get("gate"):
+            review["gate"] = None
+            repo.mhr_set_ai_review(row["document_id"], review)
+            code = {"passed": S.READY.value, "failed": S.FAILED.value}.get(str(v.get("status")))
+            if code and code != row["status"] and repo.mhr_transition(row["document_id"], (row["status"],), code):
+                counts[code] = counts.get(code, 0) + 1
+                _event(repo, row["document_id"], f"{code} (code check decides again)")
+
+
 def upload_now(repo, cfg, document_id: str, client: MhrClient | None = None) -> str:
     """approved ჩანაწერის ატვირთვა ახლავე (worker-ის გავლის ლოდინის გარეშე). აბრუნებს შედეგად მიღებულ სტატუსს:
     uploaded | upload_failed | approved (MHR მიუწვდომელია — worker მოგვიანებით სცდის) | needs_check | …"""
@@ -216,6 +338,8 @@ def sweep(repo, cfg, client: MhrClient | None = None, validate_fn: ValidateFn | 
 
     # (b2) AI ანალიზი — წესების შედეგი უკვე ბაზაშია (UI-ში ჩანს), Opus-ის „მეორე აზრი“ ემატება
     _ai_review_pending(repo, cfg, review_fn, counts)
+    # (b3) ვინ აჩერებს ფაილს (`mhr.code_check_stops`): პარამეტრის შეცვლა უკვე შემოწმებულ ფაილებზეც აისახება
+    _regate(repo, cfg, counts)
 
     # (c) ატვირთვა
     for row in repo.q("SELECT * FROM mhr_items WHERE status=? AND (next_try IS NULL OR next_try <= ?)"
@@ -302,6 +426,8 @@ def _ai_review_pending(repo, cfg, review_fn: ReviewFn | None, counts: dict[str, 
         _event(repo, doc_id, f"ai_review: {data.get('verdict')} ({data.get('confidence')})"
                + (f" — {data.get('error')}" if data.get("error") else ""),
                level="warning" if data.get("verdict") == "error" else "info")
+        if ai_decides(cfg):   # „მხოლოდ AI“ რეჟიმი: ფაილი ჩერდება ან გადის AI-ის პასუხით
+            _apply_gate(repo, cfg, doc_id, m["status"], json.loads(m["validation"] or "{}"), data, counts)
 
 
 def _find_upload(client: MhrClient, row) -> tuple[str, str | None]:
@@ -367,18 +493,30 @@ def _validate_one(repo, cfg, m: dict[str, Any], client: MhrClient, validate_fn: 
     # AI ანალიზი აქამდე მხოლოდ თავისით გადამოწმებისას აღწევს (ოპერატორის „ხელახლა შედარება“ მას წინასწარ შლის):
     # MHR-ში სხვა რამ შეიცვალა და შედეგი იგივე დარჩა → ძველი ანალიზი ძალაშია
     keep_ai = row["ai_review"] if row["ai_review"] and _same_outcome(row["validation"], res) else None
-    fields: dict[str, Any] = {"validation": res.to_dict(), "error": res.error, "ai_review": keep_ai,
+    # დადასტურებული პირადობა: MHR-ში ცარიელი სქესი თავისით იწერება (მომხმარებელმა ასე ითხოვა); სხვა შეთავაზებას ოპერატორი ადასტურებს
+    if res.employee is not None and res.status in ("passed", "failed"):
+        for s in res.suggestions:
+            if s.get("auto") and s.get("state") == "pending":
+                ok = _write_suggestion(client, res.employee.employee_id, doc_id, s, "auto")
+                _event(repo, doc_id, f"mhr {s.get('field')} {'written' if ok else 'write failed'} (auto)", type_id,
+                       level="info" if ok else "warning")
+    validation = res.to_dict()
+    fields: dict[str, Any] = {"validation": validation, "error": res.error, "ai_review": keep_ai,
                               "employee_id": res.employee.employee_id if res.employee else None}
+    by_ai = ai_decides(cfg)
     if res.status == "passed":
         dt = cfg.doc_type(type_id)
 
         def matched(field: str) -> bool:
             return any(c.field == field and c.status == "match" for c in res.checks)
-        # პირადობა MHR-ს „ერთი ერთში“ ემთხვევა / ანკეტა MHR-ს და პირადობას ემთხვევა — მომხმარებელმა ასე ითხოვა: დადასტურების გარეშე
-        auto = ("identity" if dt and dt.identity and m.get("identity_auto_upload", True) and matched("identity") else
+        # პირადობა MHR-ს „ერთი ერთში“ ემთხვევა / ანკეტა MHR-ს და პირადობას ემთხვევა — მომხმარებელმა ასე ითხოვა: დადასტურების გარეშე.
+        # ღია შეთავაზება (MHR-ში სხვა დაბადების თარიღი/სქესი) ოპერატორმა უნდა ნახოს — მაშინ ფაილი დადასტურებას ელოდება
+        auto = ("identity" if dt and dt.identity and m.get("identity_auto_upload", True) and matched("identity")
+                and not open_suggestions(validation) else
                 "employee_form" if dt and dt.employee_form and m.get("employee_form_auto_upload", True) and matched("employee_form")
                 else None)
-        to = S.APPROVED if not m.get("require_approval", True) or auto else S.READY
+        # „მხოლოდ AI“ რეჟიმში დადასტურების გარეშე ატვირთვაც AI-ის პასუხს ელოდება (`_apply_gate` გადაიყვანს approved-ში)
+        to = S.APPROVED if auto or (not m.get("require_approval", True) and not by_ai) else S.READY
         fields.update(attempts=0, next_try=None)
         if auto:
             fields["decided_by"] = f"auto:{auto}"
@@ -389,6 +527,12 @@ def _validate_one(repo, cfg, m: dict[str, Any], client: MhrClient, validate_fn: 
     else:   # unavailable (ან უცნობი სტატუსი) — მოგვიანებით ხელახლა
         to = S.UNAVAILABLE
         fields.update(attempts=row["attempts"] + 1, next_try=retry_at)
+    if by_ai and keep_ai and to in (S.READY, S.FAILED):   # იგივე შედეგი, AI-ის ძველი პასუხი ძალაშია → სტატუსიც მისი
+        want = ai_gate(validation, json.loads(keep_ai))
+        if want == S.READY.value and not m.get("require_approval", True):
+            to, fields["decided_by"] = S.APPROVED, "auto:ai"
+        elif want:
+            to = S(want)
     if repo.mhr_transition(doc_id, pending, to.value, **fields):
         counts[to.value] += 1
         _event(repo, doc_id, to.value, type_id, level="warning" if to == S.UNAVAILABLE else "info")

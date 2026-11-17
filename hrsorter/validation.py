@@ -50,7 +50,7 @@ from .mhr_models import Check, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable,
 from .ocr.base import OcrError
 from .output import MATCH_RESOLVED_REASONS, PartSpec, adopt_match, split_document
 from .empform import parse_employee_form
-from .idcard import PASSPORT, parse_id_card, same_name
+from .idcard import PASSPORT, SEX_KA, parse_id_card, same_name
 from .stages import STAGE_KA, file_stage, strip_stage, text_stage
 from .ocr.chain import build_ocr_chain, build_orientation_reader
 from .pdfio import PdfDocument, validate_pdf
@@ -433,9 +433,11 @@ def _validate_identity(result: ValidationResult, cfg: Config, row, type_id: str,
         checks.append(Check("already_uploaded", "უკვე ატვირთულია", None, other.doc_id, "info", True,
                             note=f"ამ თანამშრომლის პირადობა MHR-ში უკვე ატვირთულია{f' ({when})' if when else ''} — მეორედ არ "
                                  "ავტვირთავთ; თუ ეს ახალი პირადობაა, „ატვირთვა მაინც“"))
-    if all(c.status == "match" for c in names) and not card.problems:
+    verified = all(c.status == "match" for c in names) and not card.problems
+    if verified:
         checks.append(Check("identity", "პირადობა", None, None, "match", False,
                             note="გვარი, სახელი და პირადი ნომერი ზუსტად ემთხვევა MHR-ს — პირადობა დადასტურებულია"))
+    _identity_data(result, cfg, card, employee, verified, out_of)
     res = _finish(result)
     if res.status == "passed":
         res.summary.insert(0, "პირადობა MHR-ს ზუსტად ემთხვევა — დადასტურების გარეშე აიტვირთება")
@@ -444,6 +446,36 @@ def _validate_identity(result: ValidationResult, cfg: Config, row, type_id: str,
     if passport:
         res.summary.insert(0, PASSPORT_NOTE)
     return res
+
+
+def _identity_data(result: ValidationResult, cfg: Config, card, employee: MhrEmployee, verified: bool, out_of: str) -> None:
+    """პირადობის დაბადების თარიღი და სქესი MHR-ის ჩანაწერს ედარება (`mhr.identity_data`). არაფერს აჩერებს: პირადობა მაინც ამ
+    ადამიანისაა. MHR-ში სხვა მნიშვნელობაა ან ცარიელია → გასწორების შეთავაზება (`result.suggestions`), მაგრამ მხოლოდ თუ პირადობა
+    დადასტურებულია (სხვის ჩანაწერში არაფერი იწერება) და მნიშვნელობა სანდოდ წაიკითხა (მანქანური ზოლი). ცარიელი სქესი თავისით
+    ჩაიწერება (`auto`), დანარჩენს ოპერატორი ადასტურებს. აქ MHR-ში არაფერი იწერება — წერს რიგი (`mhr_queue`).
+    MHR თუ ამ ველებს არ აწვდის (ძველი ვერსია), შედარება არ ხდება."""
+    on = cfg.section("mhr").get("identity_data") or {}
+    for field, label, value, sure, in_mhr, show in (
+            ("birth_date", "დაბადების თარიღი", card.birth_date, card.birth_sure, employee.birth_date, lambda v: v),
+            ("gender", "სქესი", card.sex, card.sex_sure, employee.gender, lambda v: SEX_KA.get(v, v))):
+        if not on.get(field, True) or not employee.provides(field):
+            continue
+        mhr_shown = show(in_mhr) if in_mhr else None
+        if not value:
+            result.checks.append(Check(field, label, None, mhr_shown, "info", False,
+                                       note=f"{label} {out_of} ვერ წაიკითხა — MHR-ის ჩანაწერს ვერ შედარდა"))
+        elif value == in_mhr:
+            result.checks.append(Check(field, label, show(value), mhr_shown, "match", False))
+        else:
+            offer = verified and sure
+            note = (f"{label} MHR-ში ცარიელია" if not in_mhr else f"{label} MHR-ში სხვაა") + (
+                "" if offer else " — წაკითხვა ბოლომდე სანდო არ არის, ამიტომ გასწორებას არ გთავაზობ; შეადარე თვალით")
+            result.checks.append(Check(field, label, show(value), mhr_shown, "missing_in_mhr" if not in_mhr else "mismatch",
+                                       False, note=note))
+            if offer:
+                result.suggestions.append({"field": field, "label_ka": label, "value": value, "value_ka": show(value),
+                                           "mhr_value": in_mhr, "mhr_value_ka": mhr_shown,
+                                           "auto": field == "gender" and not in_mhr, "state": "pending"})
 
 
 IDENTITY_REREAD = "identity_reread"   # page_texts-ის გასაღები: ეს გვერდი ამოჭრილი და გადიდებული უკვე წაიკითხა (აღარ მეორდება)

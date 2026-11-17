@@ -54,6 +54,17 @@ _LABEL_WORD = re.compile(
     r"ხელმოწერა|პასპორტი|პასპორტის|ტიპი|კოდი|სახელმწიფოს|დაბადების|გაცემის|მოქმედების|მფლობელის)\b", re.I)
 
 ID_CARD, PASSPORT = "id_card", "passport"
+MALE, FEMALE = "M", "F"
+SEX_KA = {MALE: "მამრობითი", FEMALE: "მდედრობითი"}
+# მანქანური ზოლის თარიღების ბლოკი (ICAO 9303): დაბადება YYMMDD + საკონტროლო ციფრი + სქესი + ვადა YYMMDD + საკონტროლო ციფრი.
+# ბარათზე მეორე ხაზი ამით იწყება („9001011F3501017GEO…“), პასპორტზე ნომრისა და ქვეყნის შემდეგ დგას („…GEO9001011F3501017…“).
+# საკონტროლო ციფრები ამოწმებს, რომ თარიღი სწორად წაიკითხა — ამიტომ ეს უფრო სანდოა, ვიდრე ბარათის წინა მხარის წარწერა
+# (ნამდვილ სკანზე „დაბადების თარიღის“ ქვეშ მოქმედების ვადა წაიკითხა).
+_MRZ_DATES = re.compile(r"(?=(\d{6})(\d)([MF<X])(\d{6})(\d))")
+_SEX_LABEL = re.compile(r"სქესი|(?<![a-z])sex(?![a-z])", re.I)
+_SEX_LATIN = re.compile(r"(?<![A-Za-z])([MF])(?![A-Za-z])")
+_SEX_GEO = {"ქ": FEMALE, "ქალი": FEMALE, "მდ": FEMALE, "მდედრ": FEMALE, "მდედრობითი": FEMALE,
+            "კ": MALE, "კაცი": MALE, "მამ": MALE, "მამრ": MALE, "მამრობითი": MALE}
 
 
 @dataclass
@@ -65,9 +76,12 @@ class IdCard:
     latin_last: str | None = None          # ბარათის ლათინური ხაზი ან MRZ
     latin_first: str | None = None
     mrz_has_pn: bool | None = None         # MRZ-ის პირველ ხაზში ეს პირადი ნომერია (None — MRZ არ იკითხება)
-    birth_date: str | None = None
-    expiry_date: str | None = None
+    birth_date: str | None = None          # მანქანური ზოლიდან, თუ საკონტროლო ციფრი ემთხვევა; სხვაგვარად წარწერიდან
+    expiry_date: str | None = None         # იგივე წესით
     issue_date: str | None = None
+    sex: str | None = None                 # MALE / FEMALE
+    birth_sure: bool = False               # დაბადების თარიღი მანქანურმა ზოლმა დაადასტურა (საკონტროლო ციფრი)
+    sex_sure: bool = False                 # სქესი ზოლიდანაა და წარწერას არ ეწინააღმდეგება, ან წარწერის ქართული და ლათინური ემთხვევა
     problems: list[str] = field(default_factory=list)
 
     @property
@@ -147,6 +161,52 @@ def _mrz_lines(text: str) -> list[str]:
     return [ln for ln in flat if len(ln) >= MRZ_MIN_LEN and "<" in ln]
 
 
+def _check_digit(digits: str) -> int:
+    """ICAO 9303-ის საკონტროლო ციფრი: წონები 7, 3, 1 რიგრიგობით, ჯამი მოდულით 10."""
+    return sum(int(c) * w for c, w in zip(digits, (7, 3, 1) * (len(digits) // 3 + 1))) % 10
+
+
+def _mrz_date(yymmdd: str, past: bool, today: _dt.date | None = None) -> str | None:
+    """ზოლის თარიღი → ISO. საუკუნე: დაბადების თარიღი მომავალში ვერ იქნება (`past`) — მაშინ 19YY; ვადა ყოველთვის 20YY."""
+    try:
+        d = _dt.date(2000 + int(yymmdd[:2]), int(yymmdd[2:4]), int(yymmdd[4:6]))
+        if past and d > (today or _dt.date.today()):
+            d = d.replace(year=d.year - 100)
+    except ValueError:
+        return None
+    return d.isoformat()
+
+
+def mrz_dates(text: str, today: _dt.date | None = None) -> tuple[str, str | None, str] | None:
+    """მანქანური ზოლიდან (დაბადების თარიღი, სქესი, მოქმედების ვადა) — მხოლოდ თუ ორივე თარიღის საკონტროლო ციფრი ემთხვევა.
+    სქესი None-ია, თუ ზოლში მითითებული არ არის („<“/„X“)."""
+    for ln in _mrz_lines(text):
+        for m in _MRZ_DATES.finditer(ln):
+            birth, bc, sex, expiry, ec = m.groups()
+            if _check_digit(birth) != int(bc) or _check_digit(expiry) != int(ec):
+                continue
+            b, x = _mrz_date(birth, True, today), _mrz_date(expiry, False, today)
+            if b and x:
+                return b, sex if sex in (MALE, FEMALE) else None, x
+    return None
+
+
+def _printed_sex(lines: list[str]) -> tuple[str | None, bool]:
+    """ბარათის წარწერა „სქესი / SEX“ → (სქესი, ქართული და ლათინური ორივე წაიკითხა და ემთხვევა). მნიშვნელობა იმავე ან მომდევნო
+    ორ ხაზზეა: „ქ / F“, „მამ / M“, „მდ / F“; ქართული ხშირად არ იკითხება („[?] / F“)."""
+    for i, ln in enumerate(lines):
+        if not _SEX_LABEL.search(ln):
+            continue
+        for c in [_SEX_LABEL.split(ln)[-1], *lines[i + 1: i + 3]]:
+            lat = {m.group(1) for m in _SEX_LATIN.finditer(c)}
+            geo = {_SEX_GEO[w] for w in re.findall(r"[ა-ჰ]+", c) if w in _SEX_GEO}
+            if len(lat | geo) == 1:
+                return (lat | geo).pop(), bool(lat and geo)
+            if lat or geo:        # ქართული და ლათინური ერთმანეთს ეწინააღმდეგება — წაკითხვას არ ვენდობით
+                return None, False
+    return None, False
+
+
 def document_kind(text: str) -> str | None:
     """გვერდი პირადობის დოკუმენტია? PASSPORT / ID_CARD / None. ნიშანი მანქანური ზოლია (MRZ, ICAO 9303): „P<GEO…<<…“ პასპორტზე,
     „IDGEO…<<“ ბარათზე — სხვა HR დოკუმენტზე ასეთი ხაზი არ გვხვდება და სათაურის წაკითხვაზე არ არის დამოკიდებული (ახალ ბარათზე
@@ -197,6 +257,13 @@ def parse_id_card(text: str) -> IdCard:
         pns = {m.group(1) for ln in lines for m in _PN.finditer(ln)}
         if len(pns) == 1:
             card.personal_number = pns.pop()
+    printed_sex, both = _printed_sex(lines)
+    zone = mrz_dates(text)
+    if zone:   # ზოლის თარიღები საკონტროლო ციფრით დადასტურებულია — წარწერაზე სანდოა
+        card.birth_date, card.expiry_date, card.birth_sure = zone[0], zone[2], True
+    zone_sex = zone[1] if zone else None
+    card.sex = zone_sex or printed_sex
+    card.sex_sure = bool(zone_sex and printed_sex in (None, zone_sex)) or bool(not zone_sex and printed_sex and both)
     _self_check(card)
     return card
 
