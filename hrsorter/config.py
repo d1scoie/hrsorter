@@ -168,6 +168,9 @@ DEFAULTS: dict[str, Any] = {
             "enabled": True,                # (Claude) ხელახლა იკითხება და შედარება მეორდება (validation._recheck_diffs);
             "max_pages": 6,                 # მოქმედებს მხოლოდ ocr.online.enabled-ზე. ≤ ამდენი გვერდი ერთ დოკუმენტზე
         },
+        "identity_reread": {                # პირადობაზე/პასპორტზე ქართული სახელი ვერ წაიკითხა ან MHR-ს არ ემთხვევა → ბარათი
+            "enabled": True,                # ფურცლიდან იჭრება, სწორდება, დიდდება და ონლაინ OCR-ით ხელახლა იკითხება (ერთხელ);
+        },                                  # მოქმედებს მხოლოდ ocr.online.enabled-ზე (validation._reread_identity)
         "ai_review": {                      # ვალიდაციის შემდეგ Opus-ის „მეორე აზრი“ (ai_review.py); მოქმედებს მხოლოდ
             "enabled": True,                # ocr.online.enabled + provider=claude_code რეჟიმში. მხოლოდ სთავაზობს, არ ტვირთავს
             "model": "opus",

@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from . import hrdates, readermarks, textquality
+from . import hrdates, idimage, readermarks, textquality
 from .config import Config
 from .db import Repository, now_iso
 from .employee_api import _get_path
@@ -52,7 +52,7 @@ from .output import MATCH_RESOLVED_REASONS, PartSpec, adopt_match, split_documen
 from .empform import parse_employee_form
 from .idcard import PASSPORT, parse_id_card, same_name
 from .stages import STAGE_KA, file_stage, strip_stage, text_stage
-from .ocr.chain import build_ocr_chain
+from .ocr.chain import build_ocr_chain, build_orientation_reader
 from .pdfio import PdfDocument, validate_pdf
 from .preprocess import apply_rotation, enhance
 from .textcompare import _PUNCT, compare_texts, locate, mark_placeholders
@@ -418,6 +418,71 @@ def _validate_identity(result: ValidationResult, cfg: Config, row, type_id: str,
     if passport:
         res.summary.insert(0, PASSPORT_NOTE)
     return res
+
+
+IDENTITY_REREAD = "identity_reread"   # page_texts-ის გასაღები: ეს გვერდი ამოჭრილი და გადიდებული უკვე წაიკითხა (აღარ მეორდება)
+IDENTITY_REREAD_MAX_PAGES = 2         # პირადობა ერთი ფურცელია (ორი მხარე ერთად ან ცალ-ცალკე); გრძელი სკანი სხვა რამეა
+IDENTITY_REREAD_MAX_IMAGES = 4        # ≤ ამდენი ამოჭრილი სურათი ერთ დოკუმენტზე (ხარჯის კონტროლი)
+
+
+def _identity_doubt(card, employee: MhrEmployee) -> bool:
+    """პირველი წაკითხვა საკმარისი არ არის: ქართული სახელი აკლია, ლათინურს არ ემთხვევა, ან MHR-ში სხვანაირად წერია (წვრილ
+    ასოში „თ“/„ტ“ ადვილად ირევა — სანამ ოპერატორს ვეტყვით „MHR-ში შეცდომაა“, ბარათი ახლოდან უნდა წაიკითხოს)."""
+    return (not card.complete or bool(card.problems) or not same_name(card.last_name, employee.last_name)
+            or not same_name(card.first_name, employee.first_name))
+
+
+def _reread_identity(cfg: Config, repo: Repository, row, scanned: list[dict[str, Any]], employee: MhrEmployee) -> None:
+    """პირადობის მოწმობა/პასპორტი, რომლის პირველი წაკითხვა საეჭვოა (`_identity_doubt`): ბარათი ფურცლიდან იჭრება, სწორდება,
+    დიდდება (`idimage`) და ონლაინ OCR-ით ხელახლა იკითხება. ნამდვილი სკანები: ბარათი A4-ზე გვერდულად — ქართული წარწერა სულ
+    „[?]“; პასპორტი თავდაყირა — მკითხველმა მხოლოდ ლათინური დაწერა. ახალი ტექსტი მაშინ მიიღება, თუ სრულია და ქართული სახელი
+    ლათინურს/მანქანურ ზოლს ემთხვევა; ის page_texts-ში ინახება (`scanned` ადგილზე იცვლება). ერთ დოკუმენტზე ერთხელ: გვერდს
+    ნიშანი ედება, „ხელახლა შედარება“ მეორედ აღარ კითხულობს („თავიდან დამუშავება“ ნიშანს შლის)."""
+    rc = cfg.section("mhr").get("identity_reread") or {}
+    if not rc.get("enabled", True) or not scanned or len(scanned) > IDENTITY_REREAD_MAX_PAGES:
+        return
+    if any(p.get(IDENTITY_REREAD) for p in scanned) or not row["output_path"]:
+        return
+    old_texts = [p.get("text") or "" for p in scanned]
+    if not _identity_doubt(parse_id_card("\n".join(old_texts)), employee):
+        return
+    provider = getattr(build_ocr_chain(cfg), "online", None)
+    if provider is None or not provider.available():
+        return
+    recognize = getattr(provider, "recognize_identity", None) or provider.recognize
+    read = build_orientation_reader(cfg)
+    dpi = int(cfg.section("processing").get("dpi", 300))
+    lang = cfg.data["ocr"].get("tesseract_lang") or "kat+eng"
+    new_texts: list[str] = []
+    left = IDENTITY_REREAD_MAX_IMAGES
+    for pt in scanned:
+        text = ""
+        try:
+            with PdfDocument(row["output_path"]) as doc:
+                img = enhance(doc.render(_pdf_index(row, int(pt["page_index"])), dpi=dpi))
+            images = idimage.document_images(img, dpi, read)[:max(0, left)]
+            left -= len(images)
+            text = "\n".join(t for t in (_clean_identity_text(recognize(im, lang).text) for im in images) if t)
+        except (OcrError, OSError, ValueError, KeyError, TypeError, RuntimeError) as e:   # RuntimeError: დაზიანებული PDF (pdfium)
+            log.warning("identity re-read of %s failed: %s", row["id"], type(e).__name__)
+        new_texts.append(text)
+    # ახალი წაკითხვა; თუ მას მანქანური ზოლი აკლია (მეორე მხარე ვერ ამოიჭრა) — ახალი და ძველი ერთად
+    merged = [f"{n}\n{o}".strip() for n, o in zip(new_texts, old_texts)]
+    chosen = next((texts for texts in (new_texts, merged)
+                   if any(texts) and (c := parse_id_card("\n".join(texts))).complete and not c.problems), None)
+    name = getattr(provider, "name", "online")
+    for i, pt in enumerate(scanned):
+        new_pt = dict(pt, **{IDENTITY_REREAD: True})
+        if chosen is not None and chosen[i]:
+            new_pt.update(text=chosen[i], text_source=f"ocr:{name}:identity", provider=name,
+                          ocr_quality=round(float(textquality.score(chosen[i])), 4))
+        scanned[i] = new_pt
+        repo.save_page_text(row["job_id"], int(pt["page_index"]), new_pt)
+    log.info("identity re-read %s: %s", row["id"], "accepted" if chosen is not None else "no better reading")
+
+
+def _clean_identity_text(text: str) -> str:
+    return "\n".join(ln.strip() for ln in (text or "").splitlines() if ln.strip())
 
 
 def identity_confirmed(validation: dict[str, Any] | None) -> bool:
@@ -1331,6 +1396,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     result.mhr_snapshot = mhr_snapshot(cfg, employee, refs)
     dt = cfg.doc_type(type_id)
     if dt is not None and dt.identity:   # პირადობა: MHR-ის ფაილებთან კი არა — თანამშრომლის სახელთან და პ/ნ-თან, ზუსტად
+        _reread_identity(cfg, repo, row, scanned, employee)
         res = _validate_identity(result, cfg, row, type_id, scanned, employee, refs)
         if row["status"] == "needs_review" and any(c.field == "identity" and c.status == "match" for c in res.checks):
             adopt_match(repo, row, meta, type_id)   # სახელი, გვარი და პ/ნ ზუსტად ემთხვევა → „ტიპი სავარაუდოა“ აღარ არის ეჭვი
