@@ -41,7 +41,7 @@ from . import readermarks, textquality
 from .config import Config
 from .models import PageText, SignatureStatus
 from .ocr.chain import OcrChain
-from .pdfio import PdfDocument
+from .pdfio import PDFIUM_LOCK, PdfDocument
 from .preprocess import apply_rotation, deskew, detect_rotation, enhance, ink_ratio
 
 log = logging.getLogger(__name__)
@@ -92,6 +92,11 @@ def _alnum_count(text: str) -> int:
 # --- ტექსტის ნიღაბი -------------------------------------------------------------
 def _text_layer_boxes(doc: PdfDocument, index: int) -> tuple[list[tuple[float, float, float, float]], str, float] | None:
     """სიმბოლოების bbox-ები PDF პუნქტებში (l, b, r, t), ტექსტი ინდექსების მიხედვით, გვერდის სიმაღლე. None თუ ვერ."""
+    with PDFIUM_LOCK:   # PDFium ნაკადებისთვის უსაფრთხო არ არის (იხ. pdfio.PDFIUM_LOCK)
+        return _text_layer_boxes_locked(doc, index)
+
+
+def _text_layer_boxes_locked(doc: PdfDocument, index: int) -> tuple[list[tuple[float, float, float, float]], str, float] | None:
     pdf = getattr(doc, "_pdfium", None)
     own = False
     if pdf is None:
