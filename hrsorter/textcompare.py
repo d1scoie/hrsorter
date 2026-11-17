@@ -93,10 +93,13 @@ class _Tok:
 
 
 _GLUED_LABEL = re.compile(r"^(\d+(?:\.\d+)+)\.?([ა-ჰa-z].+)$")   # OCR: „4.2.ჰიგიენის" — ნომერი სიტყვას ეწება
+# ფრჩხილი სიტყვის ნაწილი არ არის: OCR მის წინ ჰარს ხშირად კარგავს („2100(ორი ათას ასი)“ ორიგინალის „2100 (ორი ათას ასი)“-ის
+# ნაცვლად) — ასეთი მიწებებული ტოკენი რიცხვის ცვლილებად ჩაითვლებოდა
+_BRACKETS = re.compile(r"[()\[\]{}]")
 
 
 def _tokens(text: str, page: int) -> list[_Tok]:
-    t = _HYPHEN_BREAK.sub("", normalize(text))
+    t = _BRACKETS.sub(" ", _HYPHEN_BREAK.sub("", normalize(text)))
     out = []
     for w in t.replace("\n", " ").split():
         w = w.strip(_PUNCT)
