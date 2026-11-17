@@ -140,6 +140,11 @@
           "pattern": "ხელშეკრულება",
           "weight": 3,
           "title_only": true
+        },
+        {
+          "pattern": "(?:\\d{4}-\\d{2}-\\d{2}\\s+წლის\\s+)?(?:თანამდებობრივი\\s+)?ინსტრუქციის\\s+დანართი(?:\\s*[#№n]\\s*\\d+)?",
+          "weight": 6,
+          "title_only": true
         }
       ],
       "fields": [
@@ -150,6 +155,37 @@
       "attachment_policy": "keep_continuation",
       "signature_expected": true,
       "mhr_original": true
+    },
+    {
+      "id": "job_description_annex",
+      "name_ka": "თანამდებობრივი ინსტრუქციის დანართი",
+      "folder": "თანამდებობრივი-ინსტრუქციის-დანართი",
+      "description": "თანამდებობრივი ინსტრუქციის დანართი (MHR-ში დაგენერირებული, მაგ. წონის ან ტვირთამწეობის ლიმიტების ცხრილი)",
+      "positive": [
+        {
+          "pattern": "(?:\\d{4}-\\d{2}-\\d{2}\\s+წლის\\s+)?(?:თანამდებობრივი\\s+)?ინსტრუქციის\\s+დანართი(?:\\s*[#№n]\\s*\\d+)?",
+          "weight": 6,
+          "title_only": true
+        },
+        {
+          "pattern": "თანამდებობრივი\\s+ინსტრუქციის\\s+განუყოფელ",
+          "weight": 2
+        },
+        {
+          "pattern": "აღნიშნულ\\w*\\s+დანართი\\s+განსაზღვრავს",
+          "weight": 1
+        }
+      ],
+      "negative": [],
+      "fields": [
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true,
+      "mhr_original": true,
+      "annex": true
     },
     {
       "id": "id_card",
@@ -510,6 +546,11 @@
           "pattern": "შვებულებ",
           "weight": 3,
           "title_only": true
+        },
+        {
+          "pattern": "შეთანხმება\\s+(?:\\S+\\s+){0,4}ხელშეკრულებ\\S*\\s+შეწყვეტის(?:\\s+შესახებ)?",
+          "weight": 6,
+          "title_only": true
         }
       ],
       "fields": [
@@ -519,6 +560,46 @@
       "auto_save_enabled": false,
       "attachment_policy": "keep_continuation",
       "signature_expected": true
+    },
+    {
+      "id": "termination_agreement",
+      "name_ka": "ხელშეკრულების შეწყვეტის შეთანხმება",
+      "folder": "შეწყვეტის-შეთანხმება",
+      "description": "მხარეთა შეთანხმება შრომითი ან სტაჟირების ხელშეკრულების შეწყვეტის შესახებ (MHR-ში ორიგინალის გარეშე)",
+      "positive": [
+        {
+          "pattern": "შეთანხმება\\s+(?:\\S+\\s+){0,4}ხელშეკრულებ\\S*\\s+შეწყვეტის(?:\\s+შესახებ)?",
+          "weight": 6,
+          "title_only": true
+        },
+        {
+          "pattern": "შეწყვეტილად\\s+ჩაითვალოს",
+          "weight": 2
+        },
+        {
+          "pattern": "ურთიერთშეთანხმების\\s+საფუძველზე",
+          "weight": 1
+        },
+        {
+          "pattern": "პრეტენზი",
+          "weight": 1
+        }
+      ],
+      "negative": [
+        {
+          "pattern": "ბრძანება",
+          "weight": 3,
+          "title_only": true
+        }
+      ],
+      "fields": [
+        "signature_status"
+      ],
+      "active": true,
+      "auto_save_enabled": false,
+      "attachment_policy": "keep_continuation",
+      "signature_expected": true,
+      "termination": true
     },
     {
       "id": "explanation",

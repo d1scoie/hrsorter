@@ -58,6 +58,7 @@ class MhrEmployee:
     birth_date: str | None = None      # ISO; None — MHR-ში ცარიელია ან MHR ამ ველს არ აწვდის (`provides`)
     gender: str | None = None          # "M" | "F"; None — იგივე
     provided: list[str] = field(default_factory=list)   # birth_date / gender: MHR-ის პასუხში ეს ველი არის (თუნდაც ცარიელი)
+    dismissed_at: str | None = None    # ISO; გათავისუფლების თარიღი (status == "dismissed")
 
     def provides(self, key: str) -> bool:
         """MHR ამ ველს აწვდის? ძველი MHR დაბადების თარიღს და სქესს არ აწვდის — მაშინ შედარება და ჩაწერა არ ხდება."""

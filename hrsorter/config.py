@@ -153,11 +153,15 @@ DEFAULTS: dict[str, Any] = {
                          "last_name": "last_name", "company_id": "company.id", "company_tax_id": "company.tax_id",
                          "company_name": "company.name", "position": "position", "salary": "salary.amount",
                          "contract_start": "contract_start", "contract_end": "contract_end", "status": "status",
-                         "employments": "employments", "birth_date": "birth_date", "gender": "gender"},
+                         "employments": "employments", "birth_date": "birth_date", "gender": "gender",
+                         "dismissed_at": "dismissed_at"},
         "document_map": {"doc_id": "id", "category": "category", "title": "title", "created_at": "created_at",
                          "filename": "filename", "items_key": "items"},
         "upload": {"file_field": "file", "category_field": "category", "extra_fields": {}, "remote_id_key": "id"},
-        "categories": {"contract_annex": "annex"},   # type_id → MHR-ის კატეგორია (არ არის = type_id)
+        # type_id → MHR-ის კატეგორია (არ არის = type_id). ხელმოწერილი ასლი ყოველთვის ორიგინალის კატეგორიაში ჯდება; ეს —
+        # ორიგინალის გარეშე ატვირთვისთვის. MHR-ს „შეწყვეტის შეთანხმების“ კატეგორია არ აქვს: ის გათავისუფლების საბუთებთან იდება
+        "categories": {"contract_annex": "annex", "job_description_annex": "annex",
+                       "termination_agreement": "dismissal_order"},
         "upload_type_ids": [],              # რომელი ტიპები იტვირთება (ცარიელი = ყველა, unknown-ის გარდა)
         "contract_type_ids": ["contract"],  # რომელ ტიპებზე ხდება შედარება MHR-ის ორიგინალთან
         "template_fallback": False,         # ორიგინალი (დაგენერირებული ხელშეკრულება) არ არის → true: თანამდებობის შაბლონთან
@@ -285,6 +289,12 @@ class DocType:
     # ხელით შევსებული ანკეტა („ინფორმაცია თანამშრომელზე“): პ/ნ და მუშაობის დაწყების თარიღი MHR-ს ედარება, დაბადების თარიღი —
     # დადასტურებულ პირადობას; ყველაფერი ემთხვევა და ხელმოწერილია → ავტომატური ატვირთვა (mhr.employee_form_auto_upload)
     employee_form: bool = False
+    # MHR-ის ფაილის დანართი საკუთარი სათაურით (მაგ. „თანამდებობრივი ინსტრუქციის დანართი #2“). MHR-ში ასეთ ფაილს მხოლოდ
+    # „… დანართი #2“ ჰქვია — სახელით ის ჩვეულებრივი დანართია; დამთხვევისას სკანის ეს, უფრო ზუსტი ტიპი რჩება
+    annex: bool = False
+    # ხელშეკრულების შეწყვეტის შეთანხმება: MHR-ში ორიგინალი არ აქვს; შეწყვეტის თარიღი MHR-ის გათავისუფლების თარიღს ედარება,
+    # შეთანხმებაში ნახსენები ხელშეკრულების თარიღი — MHR-ის დაწყების თარიღს; ხელმოწერა ბოლო გვერდზე მოწმდება
+    termination: bool = False
 
 
 @dataclass
@@ -525,6 +535,10 @@ SHIPPED_TYPE_VERSIONS: dict[str, frozenset[str]] = {
     # გადატანილი სათაურით უცნობად რჩებოდა, ერთ ხაზზე — ხელშეკრულებად (და ძველი ხელშეკრულების თარიღი ვადის დასასრულად იკითხებოდა)
     "contract": frozenset({"9438ede89db03704c605457f4687ebcee0c45f1943662b40aa68d3395ac6202f"}),
     "contract_annex": frozenset({"5540ac4bc391ccbe7316309c5ca81ea62df24ae8f15e1d9e11acd0e351a28299"}),
+    # 0.1.33-მდე „თანამდებობრივი ინსტრუქციის დანართი #N“ და „შეთანხმება … ხელშეკრულების შეწყვეტის შესახებ“ ცალკე ტიპები არ იყო;
+    # ახლა ეს სათაურები ინსტრუქციას და გათავისუფლების ბრძანებას უარყოფითად ეთვლება (ახალ ტიპებს არ ეცილება)
+    "job_description": frozenset({"519b2ad1083158b0c88684beeefac95340d7ea4f8f68da5e2d47a3c1d1ee6370"}),
+    "dismissal_order": frozenset({"82fe80ff625549e098110214f1928657197027df6aaeaa1c9fdcea5cd9a755c3"}),
 }
 
 

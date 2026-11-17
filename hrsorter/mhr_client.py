@@ -96,7 +96,8 @@ def employee_from(raw: dict[str, Any], emap: dict[str, str]) -> MhrEmployee:
                        position=g("position"), salary=g("salary"), contract_start=g("contract_start"),
                        contract_end=g("contract_end"), status=g("status"), raw=raw,
                        birth_date=_iso_date(g("birth_date")), gender=gender_code(g("gender")),
-                       provided=[k for k in PERSONAL_FIELDS if _has_path(raw, emap.get(k) or "")])
+                       provided=[k for k in PERSONAL_FIELDS if _has_path(raw, emap.get(k) or "")],
+                       dismissed_at=_iso_date(g("dismissed_at")))
 
 
 def personal_payload(fields: dict[str, Any]) -> dict[str, str]:

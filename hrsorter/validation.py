@@ -64,6 +64,7 @@ LABELS_KA = {
     "first_name": "სახელი", "last_name": "გვარი", "personal_number": "პირადი ნომერი", "company": "კომპანია",
     "position": "თანამდებობა", "salary": "ხელფასი", "contract_start": "ხელშეკრულების დაწყება",
     "contract_end": "ხელშეკრულების დასრულება", "original_contract": "ორიგინალი MHR-ში",
+    "termination_date": "შეწყვეტის თარიღი", "terminated_contract": "რომელი ხელშეკრულება წყდება",
 }
 POSITION_SIMILARITY = 0.8
 _FUZZY_MIN_LEN = 5                                   # მსგავსებით შედარება მხოლოდ ამ სიგრძის ფორმებზე
@@ -1404,6 +1405,58 @@ def _place_diffs(result: ValidationResult, pages: list[dict[str, Any]]) -> None:
             d.boxes = locate(pt.get("words") or [], d.scan_parts)
 
 
+def _scan_type_is_more_exact(dt, file_type: str) -> bool:
+    """სკანი MHR-ის ფაილს დაემთხვა, მაგრამ ფაილის სახელი ტიპს მხოლოდ ზოგადად ამბობს: „საწყობი - დანართი #2“ → „დანართი“;
+    სახელი თუ არაფერს ამბობს → „ხელშეკრულება“/„დანართი“ ზომის მიხედვით. სკანის სათაურით ნაცნობი ტიპი (ინსტრუქციის დანართი,
+    შეწყვეტის შეთანხმება) უფრო ზუსტია და რჩება."""
+    if dt is None:
+        return False
+    return (dt.annex and file_type == "contract_annex") or (dt.termination and file_type in ("contract", "contract_annex"))
+
+
+def _termination_checks(result: ValidationResult, cfg: Config, scanned: list[dict[str, Any]], employee: MhrEmployee) -> None:
+    """ხელშეკრულების შეწყვეტის შეთანხმება ↔ MHR-ის ჩანაწერი.
+    - შეწყვეტის თარიღი („შეწყვეტილად ჩაითვალოს …-დან“) ↔ MHR-ის გათავისუფლების თარიღი: სხვაა → აჩერებს (ერთ-ერთი არასწორია);
+      MHR-ში თანამშრომელი ჯერ გათავისუფლებული არ არის → შენიშვნა (ქაღალდი სწორია, MHR-ში გასატარებელია).
+    - რომელი ხელშეკრულება წყდება („… გაფორმებული ხელშეკრულება“) ↔ MHR-ის დასაქმების დაწყების თარიღები: არცერთს არ ემთხვევა →
+      შენიშვნა (ხელშეკრულებას ხელი შეიძლება დაწყებამდე მოეწერა).
+    ვერ წაკითხული თარიღი — შენიშვნა, არაფერი იგონება."""
+    from .termination import parse_termination
+    t = parse_termination("\n".join(p.get("text") or "" for p in scanned))
+    checks = result.checks
+    gone = employee.dismissed_at
+    label = LABELS_KA["termination_date"]
+    if not t.end_date:
+        checks.append(Check("termination_date", label, None, gone, "info", False,
+                            note="შეწყვეტის თარიღი შეთანხმებიდან ვერ წაიკითხა — MHR-ის გათავისუფლების თარიღს ვერ შედარდა"))
+    elif not gone:
+        checks.append(Check("termination_date", label, t.end_date, None, "missing_in_mhr", False,
+                            note=f"შეთანხმებით ხელშეკრულება წყდება {t.end_date}-დან, MHR-ში კი თანამშრომელი ჯერ გათავისუფლებული არ არის — "
+                                 "გაატარე გათავისუფლება MHR-ში"))
+    elif t.end_date == gone:
+        checks.append(Check("termination_date", label, t.end_date, gone, "match", False))
+    else:
+        checks.append(Check("termination_date", label, t.end_date, gone, "mismatch", True,
+                            note=f"შეთანხმებით ხელშეკრულება წყდება {t.end_date}-დან, MHR-ში გათავისუფლების თარიღია {gone} — ერთ-ერთი "
+                                 "გასასწორებელია; თუ MHR-ში შეასწორებ, „ხელახლა შედარება“"))
+    emap = cfg.data["mhr"].get("employee_map") or {}
+    emps = _get_path(employee.raw or {}, emap.get("employments") or "")
+    starts = {s for s in ([_iso(employee.contract_start)]
+                          + [_iso(e.get("start")) for e in (emps if isinstance(emps, list) else []) if isinstance(e, dict)]) if s}
+    label = LABELS_KA["terminated_contract"]
+    shown = ", ".join(sorted(starts)) or None
+    if not t.contract_date:
+        checks.append(Check("terminated_contract", label, None, shown, "info", False,
+                            note="რომელი თარიღის ხელშეკრულება წყდება, შეთანხმებიდან ვერ წაიკითხა"))
+    elif not starts:
+        checks.append(Check("terminated_contract", label, t.contract_date, None, "missing_in_mhr", False))
+    elif t.contract_date in starts:
+        checks.append(Check("terminated_contract", label, t.contract_date, t.contract_date, "match", False))
+    else:
+        checks.append(Check("terminated_contract", label, t.contract_date, shown, "info", False,
+                            note=f"შეთანხმებაში წერია {t.contract_date}-ის ხელშეკრულება, MHR-ში დასაქმება იწყება {shown} — შეადარე თვალით"))
+
+
 def _field_checks(result: ValidationResult, cfg: Config, row, meta: dict[str, Any], pn: str, employee: MhrEmployee,
                   verified: dict[str, Any] | None = None) -> None:
     mhr = cfg.data["mhr"]
@@ -1484,6 +1537,8 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
             ref = found.ref
             biggest = max(len(f.tokens) for f in plan.files.values())
             new_type = _matched_type(cfg, ref, [f.ref for f in plan.files.values()], len(found.tokens) == biggest)
+            if _scan_type_is_more_exact(dt, new_type):
+                new_type = type_id
             if new_type != type_id or row["status"] == "needs_review":
                 adopt_match(repo, row, meta, new_type)
                 type_id = new_type
@@ -1496,6 +1551,10 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
             return ValidationResult("skipped", employee=employee, validated_at=now_iso(),
                                     summary=["ამ თანამშრომლის დაგენერირებულ ფაილებს არ ემთხვევა და ტიპიც უცნობია — გადასამოწმებელში რჩება"])
         _field_checks(result, cfg, row, meta, pn, employee, verified)   # სხვა ტიპი, ორიგინალის გარეშე — მხოლოდ ველები
+        if dt is not None and dt.termination:   # შეწყვეტის შეთანხმება: MHR-ში ორიგინალი არ აქვს — თარიღები და ხელმოწერა მოწმდება
+            _termination_checks(result, cfg, scanned, employee)
+            if mhr.get("signature_every_page", True):
+                result.diffs.extend(last_page_signature_diffs(scanned))
         return _finish(result)
 
     checks = result.checks
@@ -1508,6 +1567,8 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
         if verified:
             checks.append(Check("identity", "პირადობა", None, None, "match", False,
                                 note="თანამშრომლის პირადობა დადასტურებულია — MHR-ში სახელი და გვარი სწორია"))
+        if dt is not None and dt.termination:   # MHR-ში ამ შეთანხმების ფაილიც არის: ტექსტის შედარებას თარიღების შემოწმება ემატება
+            _termination_checks(result, cfg, scanned, employee)
 
     # --- ხელმოწერები (ორიგინალის გარეშეც მოწმდება) ---
     marked = handwriting_diffs(scanned, _name_tokens(employee))
