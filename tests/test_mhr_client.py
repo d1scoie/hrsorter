@@ -192,7 +192,8 @@ def test_defaults_match_contract():
     assert d["enabled"] is False and d["mode"] == "mock" and d["base_url"] == ""
     assert d["auth"]["method"] == "bearer"
     assert d["endpoints"]["employee_lookup"] == "/employees/lookup" and d["endpoints"]["employee_by_pn"] == ""
-    assert d["categories"] == {"contract_annex": "annex"} and d["document_map"]["items_key"] == "items"
+    assert d["categories"] == {"contract_annex": "annex", "job_description_annex": "annex",
+                               "termination_agreement": "dismissal_order"} and d["document_map"]["items_key"] == "items"
 
 
 def test_http_lookup_is_post_json_pn_not_in_url():

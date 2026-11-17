@@ -148,7 +148,10 @@ class PageText:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "PageText":
-        return cls(**d)
+        """შენახული გვერდი → PageText. უცნობი გასაღებები იგნორირდება: ვალიდაცია შენახულ გვერდს საკუთარ ნიშნებს უმატებს
+        (მაგ. `identity_reread` — ბარათი ახლოდან უკვე წაიკითხა) და ასეთი გვერდი აქ შეცდომას იწვევდა."""
+        known = cls.__dataclass_fields__
+        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 @dataclass
