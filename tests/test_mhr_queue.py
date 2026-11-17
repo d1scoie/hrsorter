@@ -12,7 +12,7 @@ from hrsorter import mhr_queue as q
 from hrsorter.config import make_config
 from hrsorter.db import Repository
 from hrsorter.mhr_client import MhrUploadUncertain, MockMhr
-from hrsorter.mhr_models import MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, ValidationResult
+from hrsorter.mhr_models import STATEMENT_TITLE, MhrDocRef, MhrEmployee, MhrError, MhrUnavailable, ValidationResult
 
 
 @pytest.fixture
@@ -52,15 +52,16 @@ def add_doc(repo, tmp_path, doc_id="doc_1", type_id="contract", pn="01001000001"
 
 
 class FakeValidate:
-    def __init__(self, status="passed", exc: BaseException | None = None, original: MhrDocRef | None = None):
-        self.status, self.exc, self.original, self.calls = status, exc, original, []
+    def __init__(self, status="passed", exc: BaseException | None = None, original: MhrDocRef | None = None,
+                 statement: MhrDocRef | None = None):
+        self.status, self.exc, self.original, self.statement, self.calls = status, exc, original, statement, []
 
     def __call__(self, repo, cfg, doc_id, client) -> ValidationResult:
         self.calls.append(doc_id)
         if self.exc:
             raise self.exc
         return ValidationResult(status=self.status, employee=MhrEmployee("E001", personal_number="01001000001"),
-                                original=self.original, summary=["ok"])
+                                original=self.original, statement=self.statement, summary=["ok"])
 
 
 def status(repo, doc_id="doc_1") -> str:
@@ -323,6 +324,29 @@ def test_signed_copy_of_from_generated_original(repo, cfg, mhr, tmp_path):
     # ატვირთული სკანი (kind uploaded) ორიგინალად არ ითვლება → signed_copy_of არ იგზავნება
     add_doc(repo, tmp_path, "doc_2")
     q.sweep(repo, cfg, mhr, FakeValidate(original=MhrDocRef("9310", raw={"kind": "uploaded"})))
+    q.approve(repo, "doc_2")
+    q.sweep(repo, cfg, mhr, FakeValidate())
+    assert status(repo, "doc_2") == "uploaded" and uploads(mhr)[1]["signed_copy_of"] is None
+
+
+def test_signed_copy_of_from_dismissal_statement(repo, cfg, mhr, tmp_path):
+    """განთავისუფლების განცხადება: ქაღალდის ორიგინალის სკანი მენეჯერის ფოტოს (kind uploaded) ებმება."""
+    (mhr.dir / "documents.json").write_text(json.dumps([
+        {"id": "9500", "employee_id": "E001", "category": "application", "kind": "uploaded",
+         "title": STATEMENT_TITLE, "signed_at": None}], ensure_ascii=False), encoding="utf-8")
+    add_doc(repo, tmp_path, type_id="application")
+    statement = MhrDocRef("9500", "application", STATEMENT_TITLE,
+                          raw={"id": "9500", "employee_id": "E001", "kind": "uploaded", "title": STATEMENT_TITLE})
+    q.sweep(repo, cfg, mhr, FakeValidate(statement=statement))
+    q.approve(repo, "doc_1")
+    q.sweep(repo, cfg, mhr, FakeValidate())
+    up = uploads(mhr)[0]
+    assert status(repo) == "uploaded" and up["signed_copy_of"] == "9500" and up["title"].endswith("ქაღალდის ორიგინალი")
+    assert json.loads((mhr.dir / "documents.json").read_text(encoding="utf-8"))[0]["signed_at"]
+    # სხვა თანამშრომლის განცხადება არ მიებმება
+    add_doc(repo, tmp_path, "doc_2", type_id="application")
+    other = MhrDocRef("9501", "application", STATEMENT_TITLE, raw={"employee_id": "E999", "kind": "uploaded"})
+    q.sweep(repo, cfg, mhr, FakeValidate(statement=other))
     q.approve(repo, "doc_2")
     q.sweep(repo, cfg, mhr, FakeValidate())
     assert status(repo, "doc_2") == "uploaded" and uploads(mhr)[1]["signed_copy_of"] is None

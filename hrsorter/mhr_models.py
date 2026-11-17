@@ -11,6 +11,17 @@ from enum import Enum
 from typing import Any
 
 
+# MHR-ში განთავისუფლების დაფიქსირებისას მენეჯერი თანამშრომლის ხელით დაწერილ განცხადებას (ფოტო/სკანი) ტვირთავს — ის ბარათზე
+# ამ სათაურით ჩანს (`kind: uploaded`, კატეგორია `application`). ქაღალდის ორიგინალის სკანი მას `signed_copy_of`-ით ებმება.
+# სათაური MHR-თან კონტრაქტია (App\Support\DismissalStatements::TITLE) — ცვლილება ორივე მხარეს ერთად.
+STATEMENT_TITLE = "თანამშრომლის განცხადება (ხელნაწერი)"
+
+
+def is_statement(raw: dict[str, Any]) -> bool:
+    """MHR-ის დოკუმენტი (API-ს `raw`) — მენეჯერის ატვირთული განთავისუფლების განცხადებაა."""
+    return raw.get("kind") == "uploaded" and raw.get("title") == STATEMENT_TITLE
+
+
 def clean_file_title(filename: str | None) -> str:
     """MHR-ის ფაილის სახელი → სათაური: „ლიფტის წესები.docx.docx" → „ლიფტის წესები"."""
     name = (filename or "").strip()
@@ -100,6 +111,7 @@ class ValidationResult:
     checks: list[Check] = field(default_factory=list)
     diffs: list[TextDiff] = field(default_factory=list)
     original: MhrDocRef | None = None
+    statement: MhrDocRef | None = None   # MHR-ის განთავისუფლების განცხადება (მენეჯერის ფოტო), რომლის ქაღალდის ორიგინალიც ეს სკანია
     summary: list[str] = field(default_factory=list)   # ოპერატორისთვის, ქართულად
     parts: list[dict[str, Any]] = field(default_factory=list)   # status="split": {document_id, title, pages, matched}
     validated_at: str | None = None

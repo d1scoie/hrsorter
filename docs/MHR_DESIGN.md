@@ -38,6 +38,15 @@ endpoint-ები/map-ები = **MHR HR Sorter API** (`docs/api/hr-sorter-op
 (მხოლოდ თუ არის); `signed_copy_of` = ვალიდაციის ორიგინალის id, თუ მისი `raw.kind == "generated"` და იგივე
 თანამშრომლისაა; `metadata` = `{"type_id","source_sha256","validation_status","pipeline_version"}` (compact JSON).
 
+**განთავისუფლების განცხადება (2026-11-12):** MHR-ში მენეჯერი განთავისუფლების დაფიქსირებისას თანამშრომლის ხელნაწერი განცხადების
+ფოტოს ტვირთავს — ბარათზე `kind: uploaded`, კატეგორია `application`, სათაური `STATEMENT_TITLE` („თანამშრომლის განცხადება
+(ხელნაწერი)", MHR-თან კონტრაქტი — `App\Support\DismissalStatements::TITLE`). ორიგინალის (`kind: generated`) არქონისას
+`validation._link_statement` ასეთ ფაილს პოულობს იმავე კატეგორიაში და წერს `ValidationResult.statement`-ში (`original` ცარიელი რჩება —
+ხელნაწერი არ შედარდება, UI „ემთხვევა"-ს არ ამბობს). რამდენიმეა → უახლესი, რომელსაც სკანი (`signed_copy_of`) ჯერ არ აქვს; ყველას აქვს →
+უახლესი + `already_uploaded` (ბლოკირებადი). ატვირთვისას `signed_copy_of` = განცხადების id (იგივე თანამშრომელი), `title` =
+„<ტიპი> — ქაღალდის ორიგინალი". MHR ასეთ მიბმას იღებს (`HrSorterController::isOriginal`) და რეესტრში „ორიგინალი მოვიდა"-ს აჩენს;
+`MockMhr`-იც იგივეს ამოწმებს.
+
 ## საერთო (ინტეგრატორის) ფაილები — არ შეცვალო
 `hrsorter/mhr_models.py` (MhrStatus, MhrEmployee, MhrDocRef, Check, TextDiff, ValidationResult, MhrUnavailable,
 MhrError), `hrsorter/db.py` (`mhr_items` ცხრილი; `mhr_enqueue`, `mhr_transition`, `mhr_get`, `mhr_list`),
