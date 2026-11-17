@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from hrsorter import hrdates
 from hrsorter import mhr_queue as q
@@ -11,7 +12,7 @@ from hrsorter.config import make_config
 from hrsorter.features import page_features
 from hrsorter.idcard import ID_CARD, PASSPORT, document_kind, parse_id_card, same_name, transliterate
 from hrsorter.models import PageText
-from hrsorter.validation import IDENTITY_TITLE, PASSPORT_NOTE, PASSPORT_TITLE, settle_confirmed_identities
+from hrsorter.validation import IDENTITY_REREAD, IDENTITY_TITLE, PASSPORT_NOTE, PASSPORT_TITLE, settle_confirmed_identities
 from tests.test_packets import CONTRACT, PN, add_scan, sweep, validation, world  # noqa: F401  (world — fixture)
 
 
@@ -50,6 +51,38 @@ def passport_text(last="ბერიძე", first="ნინო", pn=PN, latin_
         text += (f"P<GEO{latin_last.replace('-', '<')}<<{latin_first}<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n"   # ზოლში ტირე „<“-ად იწერება
                  "00AA000004GEO9001011F3109155<<<<<<<<<<<<<<02\n")
     return text + "შენიშვნები/REMARKS\n03\n"
+
+
+def unread_card_text(pn=PN) -> str:
+    """ბარათი A4 ფურცელზე გვერდულად: მთელი ფურცლიდან მკითხველმა ლათინური, ციფრები და მანქანური ზოლი წაიკითხა, ქართული კი
+    სულ „[?]“-ია. ზოლის ციფრებს შორის უხილავი სიმბოლოა (ნამდვილ სკანზე ასე იყო)."""
+    return ("GEO\nIDENTITY CARD\n[?]\n[?] / FIRST NAME\n[?]\nNINO\n[?] / LAST NAME\n[?]\nBERIDZE\n[?] / SEX\nGEO\n[?] / F\n"
+            f"[?] / PERSONAL No\n{pn}\n[?] / DATE OF BIRTH\n01.01.1990\n[?] / DATE OF EXPIRY\n26.10.2036\n[?] / SIGNATURE\n"
+            "[ხელნაწერი: ხელმოწერა ბარათზე]\n[?] / CARD No\n00AA00000\n\n[?] / PLACE OF BIRTH\n[?]\nTBILISI\n[?] / DATE OF ISSUE\n"
+            f"26.10.2026\n[?] / ISSUING AUTHORITY\n[?]\nMINISTRY OF JUSTICE\nIDGE000AA000008{pn[:-1]}​{pn[-1]}<<<\n"
+            "9001011F3610262GEO<<<<<<<<<<<0\nBERIDZE<<NINO<<<<<<<<<<<<<<<\n")
+
+
+def zoomed_card_text(last="ბერიძე", first="ნინო", pn=PN, latin_last="BERIDZE", latin_first="NINO", mrz=True) -> str:
+    """იგივე ბარათი ფურცლიდან ამოჭრილი და გასწორებული: ყოველი ველი ორივე დამწერლობით, ჯერ წინა მხარე, მერე უკანა."""
+    text = (f"Georgia\nIDENTITY CARD\nსაქართველო\nსახელი / FIRST NAME\n{first}\n{latin_first}\nგვარი / LAST NAME\n{last}\n{latin_last}\n"
+            f"სქესი / SEX\nმდ / F\nპირადი No / PERSONAL No\n{pn}\nდაბადების თარიღი\nDATE OF BIRTH\n01.01.1990\nმოქმედების ვადა\n"
+            "DATE OF EXPIRY\n26.10.2036\nხელმოწერა\nSIGNATURE\nდაბადების ადგილი / PLACE OF BIRTH\nთბილისი\nTBILISI\n"
+            "გაცემის თარიღი / DATE OF ISSUE\n26.10.2026\nგამცემი ორგანო / ISSUING AUTHORITY\nიუსტიციის სამინისტრო\nMINISTRY OF JUSTICE\n")
+    if mrz:
+        text += f"IDGE000AA000008{pn}<<<<\n9001011F3610262GEO<<<<<<<<<<<0\n{latin_last}<<{latin_first}<<<<<<<<<<<<<<<\n"
+    return text
+
+
+def latin_only_passport_text(pn=PN) -> str:
+    """პასპორტი თავდაყირა: მკითხველმა წარწერა და მნიშვნელობა ერთ ხაზზე დაწერა და ქართული მნიშვნელობა გამოტოვა."""
+    return ("საქართველო\nGeorgia\nტიპი / TYPE: P\nსახელმწიფო კოდი / CODE OF STATE: GEO\nპასპორტი / PASSPORT: 00AA00000\n"
+            "გვარი / SURNAME: BERIDZE\nსახელი / GIVEN NAME: NINO\nმოქალაქეობა / CITIZENSHIP: GEORGIA\n"
+            f"დაბადების თარიღი / DATE OF BIRTH: 01 [?] / JAN 1990\nსქესი / SEX: F\nპირადი ნომერი / PERSONAL NUMBER: {pn}\n"
+            "დაბადების ადგილი / PLACE OF BIRTH: TBILISI\nგაცემის თარიღი / DATE OF ISSUE: 15 [?] / SEP 2021\n"
+            "ვადის გასვლის თარიღი / EXPIRY DATE: 15 [?] / SEP 2031\nგამცემი ორგანო / ISSUING AUTHORITY: MINISTRY OF JUSTICE\n"
+            "მფლობელის ხელმოწერა / OWNER'S SIGNATURE: [ხელნაწერი: ხელმოწერა]\nP<GEOBERIDZE<<NINO<<<<<<<<<<<<<<<<<<<<<<<<<<\n"
+            "00AA000004GE09001011 F3109155<<<<<<<<<<<<<<<02\n03\nშენიშვნები/REMARKS\n")
 
 
 def page(text: str, i: int = 0) -> PageText:
@@ -148,6 +181,27 @@ def test_number_printed_on_a_passport_page_is_not_a_scan_page_number():
     assert page_features(page("ეს ტექსტი წინა გვერდიდან გრძელდება და აქ მთავრდება\n03"), c, cfg).page_number == 3
 
 
+def test_invisible_character_inside_the_machine_line_does_not_hide_the_card():
+    card = parse_id_card(unread_card_text())
+    assert document_kind(unread_card_text()) == ID_CARD and card.kind == ID_CARD and card.mrz_has_pn is True
+    assert (card.last_name, card.first_name, card.latin_last, card.latin_first) == (None, None, "BERIDZE", "NINO")
+    got = Classifier(make_config()).classify_pages([page(unread_card_text())])
+    assert got.type_id == "id_card" and got.confidence >= 0.8
+
+
+def test_passport_read_in_latin_only_keeps_its_dates_and_has_no_georgian_name():
+    card = parse_id_card(latin_only_passport_text())
+    assert card.kind == PASSPORT and (card.last_name, card.first_name) == (None, None) and not card.complete
+    assert (card.latin_last, card.latin_first, card.personal_number) == ("BERIDZE", "NINO", PN)
+    assert (card.birth_date, card.issue_date, card.expiry_date) == ("1990-01-01", "2021-09-15", "2031-09-15")
+
+
+def test_card_cut_out_of_the_sheet_reads_in_full():
+    card = parse_id_card(zoomed_card_text())
+    assert card.complete and card.problems == [] and card.kind == ID_CARD and card.mrz_has_pn is True
+    assert (card.last_name, card.first_name, card.birth_date, card.expiry_date) == ("ბერიძე", "ნინო", "1990-01-01", "2036-10-26")
+
+
 def test_expiry_warning_names_the_passport():
     assert hrdates.id_expiry("2020-01-01", "2026-11-13", passport=True)[1].startswith("პასპორტს ვადა გაუვიდა")
     assert hrdates.id_expiry("2020-01-01", "2026-11-13")[1].startswith("პირადობის მოწმობას ვადა გაუვიდა")
@@ -220,6 +274,110 @@ def test_passport_with_another_name_stops_and_says_passport(world):
     bad = next(c for c in validation(world, "doc_id")["checks"] if c["field"] == "first_name")
     assert world.repo.mhr_get("doc_id")["status"] == "failed" and _uploads(world) == []
     assert bad["note"].startswith("პასპორტზე „ნინა“") and "„ნინო“" in bad["note"]
+
+
+# --- ბარათი ფურცლიდან ამოჭრილი და გადიდებული: მეორე წაკითხვა ------------------------------------------------------
+class ZoomReader:
+    """ონლაინ მკითხველის ნაცვლად: ამოჭრილ სურათზე რიგრიგობით აბრუნებს მოცემულ ტექსტებს."""
+    name = "online:fake"
+
+    def __init__(self, texts):
+        self.texts, self.calls = list(texts), 0
+
+    def available(self) -> bool:
+        return True
+
+    def recognize_identity(self, image, lang):
+        self.calls += 1
+        return SimpleNamespace(text=self.texts.pop(0) if self.texts else "")
+
+
+def zoom(monkeypatch, *texts) -> ZoomReader:
+    reader = ZoomReader(texts)
+    monkeypatch.setattr("hrsorter.validation.build_ocr_chain", lambda cfg: SimpleNamespace(online=reader))
+    monkeypatch.setattr("hrsorter.validation.build_orientation_reader", lambda cfg: None)
+    return reader
+
+
+def _page(w, job="job_1", index=0):
+    return w.repo.load_page_texts(job)[index]
+
+
+def test_card_without_a_georgian_name_is_cut_out_and_read_again(world, monkeypatch):
+    """ნამდვილი შემთხვევა: ბარათი ფურცელზე გვერდულად იდო, ქართული სულ „[?]“ იყო — „გვარი პირადობიდან ვერ წაიკითხა“."""
+    reader = zoom(monkeypatch, zoomed_card_text())
+    add_scan(world, [(unread_card_text(), {})], doc_id="doc_id", type_id="id_card", status="needs_review", reasons=("low_type_confidence",))
+    sweep(world)
+    assert reader.calls == 1 and world.repo.mhr_get("doc_id")["status"] == "uploaded"
+    assert _uploads(world)[0]["title"] == IDENTITY_TITLE and world.repo.get_document("doc_id")["status"] == "proposed"
+    pt = _page(world)
+    assert pt["text_source"] == "ocr:online:fake:identity" and pt[IDENTITY_REREAD] is True and "ბერიძე" in pt["text"]
+
+
+def test_passport_read_in_latin_only_is_cut_out_and_read_again(world, monkeypatch):
+    reader = zoom(monkeypatch, passport_text())
+    add_scan(world, [(latin_only_passport_text(), {})], doc_id="doc_id", type_id="id_card")
+    sweep(world)
+    assert reader.calls == 1 and world.repo.mhr_get("doc_id")["status"] == "uploaded" and _uploads(world)[0]["title"] == PASSPORT_TITLE
+
+
+def test_card_that_read_well_is_not_read_again(world, monkeypatch):
+    reader = zoom(monkeypatch, zoomed_card_text())
+    add_scan(world, [(id_text(), {})], doc_id="doc_id", type_id="id_card")
+    sweep(world)
+    assert reader.calls == 0 and world.repo.mhr_get("doc_id")["status"] == "uploaded" and IDENTITY_REREAD not in _page(world)
+
+
+def test_unreadable_card_is_read_again_only_once(world, monkeypatch):
+    reader = zoom(monkeypatch, unread_card_text(), zoomed_card_text())
+    add_scan(world, [(unread_card_text(), {})], doc_id="doc_id", type_id="id_card")
+    sweep(world)
+    assert q.revalidate(world.repo, "doc_id")   # „ხელახლა შედარება“ მკითხველს მეორედ აღარ იძახებს
+    sweep(world)
+    assert reader.calls == 1 and world.repo.mhr_get("doc_id")["status"] == "failed" and _uploads(world) == []
+    assert any("ვერ წაიკითხა" in s for s in validation(world, "doc_id")["summary"])
+    assert _page(world)["text"] == unread_card_text() and _page(world)[IDENTITY_REREAD] is True
+
+
+def test_name_that_differs_from_mhr_is_first_checked_on_the_cut_out_card(world, monkeypatch):
+    """წვრილ ასოში სახელი ადვილად ირევა: სანამ ოპერატორს „MHR-ში სხვა სახელია“ ეტყვის, ბარათს ახლოდან კითხულობს."""
+    reader = zoom(monkeypatch, zoomed_card_text())
+    add_scan(world, [(id_text(first="ნინა", latin_first="NINA"), {})], doc_id="doc_id", type_id="id_card")
+    sweep(world)
+    assert reader.calls == 1 and world.repo.mhr_get("doc_id")["status"] == "uploaded"
+
+
+def test_name_that_really_differs_still_stops(world, monkeypatch):
+    reader = zoom(monkeypatch, zoomed_card_text(first="ნინა", latin_first="NINA"))
+    add_scan(world, [(id_text(first="ნინა", latin_first="NINA"), {})], doc_id="doc_id", type_id="id_card")
+    sweep(world)
+    bad = next(c for c in validation(world, "doc_id")["checks"] if c["field"] == "first_name")
+    assert reader.calls == 1 and world.repo.mhr_get("doc_id")["status"] == "failed" and _uploads(world) == []
+    assert bad["status"] == "mismatch" and "„ნინა“" in bad["note"]
+
+
+def test_second_reading_that_contradicts_itself_is_not_taken(world, monkeypatch):
+    """ახლოდან წაკითხულ ქართულ გვარს ლათინური/ზოლი არ ადასტურებს — ძველი ტექსტი რჩება, არაფერი იტვირთება."""
+    zoom(monkeypatch, zoomed_card_text(last="ბერიმე"))
+    add_scan(world, [(unread_card_text(), {})], doc_id="doc_id", type_id="id_card")
+    sweep(world)
+    assert world.repo.mhr_get("doc_id")["status"] == "failed" and _uploads(world) == [] and _page(world)["text"] == unread_card_text()
+
+
+def test_front_side_read_again_is_confirmed_by_the_machine_line_of_the_first_reading(world, monkeypatch):
+    """ახლოდან მხოლოდ წინა მხარე წაიკითხა, ლათინურის გარეშე: ქართულ სახელს პირველი წაკითხვის მანქანური ზოლი ადასტურებს."""
+    front = "სახელი\nნინო\nგვარი\nბერიძე\nპირადი No\n" + PN + "\n"
+    zoom(monkeypatch, front)
+    add_scan(world, [(unread_card_text(), {})], doc_id="doc_id", type_id="id_card")
+    sweep(world)
+    assert world.repo.mhr_get("doc_id")["status"] == "uploaded" and _page(world)["text"].startswith(front.strip())
+
+
+def test_long_scan_is_not_cut_into_cards(world, monkeypatch):
+    reader = zoom(monkeypatch, zoomed_card_text())
+    add_scan(world, [(unread_card_text(), {}), ("სხვა ფურცელი", {}), ("კიდევ ერთი ფურცელი", {})], doc_id="doc_id", type_id="id_card")
+    sweep(world)
+    assert reader.calls == 0
 
 
 # --- „გადასამოწმებელი“ სია --------------------------------------------------------------------------------------
