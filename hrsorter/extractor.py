@@ -58,6 +58,7 @@ _AMOUNT_RE = re.compile(
 _CURRENCY = (("დოლარ", "USD"), ("usd", "USD"), ("$", "USD"), ("ევრო", "EUR"), ("eur", "EUR"), ("€", "EUR"),
              ("ლარ", "GEL"), ("₾", "GEL"), ("gel", "GEL"))
 _FINE_CUE_RE = re.compile(r"ჯარიმ|დააკისრ|დაკავ|სახდელ|დაქვით")
+_FINE_AMOUNT_GAP = 16   # ჯარიმის სიტყვიდან თანხამდე ამდენი სიმბოლო („ჯარიმა 12.50", „ჯარიმის ოდენობა 120") — ეს თანხა ჯარიმაა
 # მიზეზის წყაროები პრიორიტეტით: „მიზეზი:" > „...დარღვევისთვის" ფრაზა > „საფუძველი:"
 _REASON_SOURCES: list[tuple[re.Pattern[str], float]] = [
     (re.compile(r"მიზეზი\s*[:\-]\s*(?P<r>.{3,200})"), 0.8),
@@ -352,7 +353,8 @@ def _salary(pages: list[tuple[int, str]]) -> FieldValue:
             if not on_line and (_FINE_CUE_RE.search(ln)
                                 or not any(_SALARY_CUE_RE.search(p) for p in lines[max(0, i - _SALARY_PARA_LINES):i])):
                 continue
-            amts = [m for m in _AMOUNT_RE.finditer(ln)]
+            # „…შრომის ანაზღაურებიდან ჯარიმა 12.50 ლარის ოდენობით“: ჯარიმის/დაქვითვის სიტყვის მომდევნო თანხა ხელფასი არ არის
+            amts = [m for m in _AMOUNT_RE.finditer(ln) if not _FINE_CUE_RE.search(ln[max(0, m.start() - _FINE_AMOUNT_GAP):m.start()])]
             if not amts:
                 continue
             cands = [_amount_str(m.group("amt")) for m in amts[1:]]

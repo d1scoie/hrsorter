@@ -241,6 +241,32 @@ def original_candidates(refs: list[MhrDocRef], doc_number: str | None, doc_date:
     return sorted(pool, key=newest, reverse=True)
 
 
+# სერიის ნომერი („FIN 1046-11-2026“): MHR-ის ფაილის სახელშიც და ქაღალდზეც ერთნაირადაა. ერთ თანამშრომელს ერთი შაბლონის რამდენიმე
+# ბრძანება აქვს (ჯარიმები) — ტექსტით ისინი თითქმის არ განსხვავდება, ამიტომ ორიგინალს ნომერი წყვეტს. ≥3 ციფრი — თარიღი („12/11/2026“) არ ითვლება
+_SERIES_NO = re.compile(r"(?<![a-z])([a-z]{2,4})\s*(\d{3,6})\s*[/-]\s*\d{1,2}\s*[/-]\s*\d{4}", re.I)
+
+
+def series_numbers(text: str) -> set[tuple[str, int]]:
+    """{(სერია, ნომერი)}: „№FIN 1024/11-2026“ → {("FIN", 1024)}."""
+    return {(m.group(1).upper(), int(m.group(2))) for m in _SERIES_NO.finditer(text or "")}
+
+
+def same_series(refs: list[MhrDocRef], scanned_texts: list[str]) -> list[MhrDocRef]:
+    """ქაღალდზე სერიის ნომერია, MHR-ის ფაილს კი იმავე სერიის სხვა ნომერი აქვს → ეს სხვა ბრძანებაა და ორიგინალად არ აიღება
+    (თორემ №1017-ის სკანი №1052-ის ხელმოწერილ ასლად აიტვირთება). ნომრის გარეშე ან სხვა სერიის ფაილი რჩება."""
+    mine = series_numbers("\n".join(scanned_texts))
+    if not mine:
+        return refs
+    series = {s for s, _ in mine}
+    out = []
+    for r in refs:
+        theirs = {x for x in series_numbers(f"{r.title or ''} {r.filename or ''}") if x[0] in series}
+        if theirs and not theirs & mine:
+            continue
+        out.append(r)
+    return out
+
+
 NO_ORIGINAL_NOTE = ("ხელშეკრულების ორიგინალი MHR-ში ვერ მოიძებნა: ამ თანამშრომელს დაგენერირებული ხელშეკრულება არ აქვს — ჯერ MHR-ში "
                     "დააგენერირე, მერე დაბეჭდე, მოაწერინე და დაასკანერე (ატვირთული სკანი ორიგინალად არ ითვლება; ხელახლა აყვანილის "
                     "შემთხვევაში ხელშეკრულება შეიძლება MHR-ის წინა ჩანაწერზე იყოს)")
@@ -1408,6 +1434,7 @@ def _validate(repo: Repository, cfg: Config, row, meta: dict[str, Any], pn: str,
     # თითო ეტაპს (სტაჟიორი / გამოსაცდელი / შრომითი) თავისი ფაილი აქვს: ქაღალდს მხოლოდ მისივე ეტაპის, ბოლო ცვლილების ფაილი ედარება
     stage = scan_stage(repo, row, scanned)
     generated = same_stage(latest_versions(all_generated), stage)
+    generated = same_series(generated, [p.get("text") or "" for p in scanned])   # №1017-ის ქაღალდი №1052-ს არ ედარება
     category = (mhr.get("categories") or {}).get(type_id, type_id)
     pinned = str((meta.get("part") or {}).get("original_id") or "")   # სკანის ნაწილი: ფაილი დაყოფისას უკვე დადგინდა
     pool = [r for r in generated if (r.raw or {}).get("kind") == "generated" or r.category == category]

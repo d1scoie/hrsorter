@@ -506,6 +506,37 @@ def merge_new_types(types_path: Path, example_path: Path = EXAMPLE_TYPES_PATH) -
     return added
 
 
+# ჩაშენებული ტიპები, რომლის წესებიც ახალ ვერსიაში გასწორდა: პროგრამის წინა ვერსიებში მოტანილი განსაზღვრების ანაბეჭდები
+# (`type_fingerprint`). document_types.json-ში ტიპი ზუსტად ასეთია (ხელით არ შეცვლილა) → განახლებისას ახალით იცვლება;
+# ხელით შეცვლილი ტიპი ხელუხლებელი რჩება.
+SHIPPED_TYPE_VERSIONS: dict[str, frozenset[str]] = {
+    # 0.1.30-მდე ჯარიმა „დაჯარიმდეს“-ს, „ჯარიმა … ლარის“-ს და „№FIN …“ ნომერს არ იცნობდა — ასეთი ბრძანება უცნობად რჩებოდა
+    "fine": frozenset({"3f34621c1b33ba9e2880f85cc5d033eb9e1f75167a9b8263594988dd135f63ab"}),
+}
+
+
+def type_fingerprint(t: dict[str, Any]) -> str:
+    """ტიპის განსაზღვრის ანაბეჭდი, ფაილის ფორმატისა და გასაღებების რიგის მიუხედავად."""
+    canon = json.dumps(t, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def update_shipped_types(types_path: Path, example_path: Path = EXAMPLE_TYPES_PATH) -> list[str]:
+    """განახლებისას (`setup`): ტიპი, რომლის წესებიც ახალ ვერსიაში გასწორდა, ახლით იცვლება — მხოლოდ თუ document_types.json-ში
+    ის პროგრამის წინა ვერსიის ზუსტი ასლია (`SHIPPED_TYPE_VERSIONS`). აბრუნებს განახლებული ტიპების id-ებს."""
+    live = json.loads(types_path.read_text(encoding="utf-8"))
+    example = {t["id"]: t for t in json.loads(example_path.read_text(encoding="utf-8")).get("types", [])}
+    updated: list[str] = []
+    for i, t in enumerate(live.get("types", [])):
+        new = example.get(t.get("id"))
+        if new is not None and t != new and type_fingerprint(t) in SHIPPED_TYPE_VERSIONS.get(t["id"], frozenset()):
+            live["types"][i] = new
+            updated.append(t["id"])
+    if updated:
+        _atomic_write_json(types_path, live)
+    return updated
+
+
 def load_config(path: str | Path | None = None) -> Config:
     """config.json-ის ჩატვირთვა DEFAULTS-თან შერწყმით; types ფაილი paths.types_file-დან."""
     cfg_path = Path(path or os.environ.get(DEFAULT_CONFIG_ENV) or DEFAULT_CONFIG_PATH)
