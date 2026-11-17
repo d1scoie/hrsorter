@@ -512,6 +512,10 @@ def merge_new_types(types_path: Path, example_path: Path = EXAMPLE_TYPES_PATH) -
 SHIPPED_TYPE_VERSIONS: dict[str, frozenset[str]] = {
     # 0.1.30-მდე ჯარიმა „დაჯარიმდეს“-ს, „ჯარიმა … ლარის“-ს და „№FIN …“ ნომერს არ იცნობდა — ასეთი ბრძანება უცნობად რჩებოდა
     "fine": frozenset({"3f34621c1b33ba9e2880f85cc5d033eb9e1f75167a9b8263594988dd135f63ab"}),
+    # 0.1.31-მდე „შეთანხმება … ხელშეკრულებაში ანაზღაურების/პოზიციის ცვლილების შესახებ“ დანართად არ იცნობოდა: ორ ხაზზე
+    # გადატანილი სათაურით უცნობად რჩებოდა, ერთ ხაზზე — ხელშეკრულებად (და ძველი ხელშეკრულების თარიღი ვადის დასასრულად იკითხებოდა)
+    "contract": frozenset({"9438ede89db03704c605457f4687ebcee0c45f1943662b40aa68d3395ac6202f"}),
+    "contract_annex": frozenset({"5540ac4bc391ccbe7316309c5ca81ea62df24ae8f15e1d9e11acd0e351a28299"}),
 }
 
 
