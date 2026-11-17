@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,13 @@ from pypdf.errors import PdfReadError
 from .models import ErrorCode
 
 logging.getLogger("pypdf").setLevel(logging.ERROR)
+
+# PDFium ნაკადებისთვის უსაფრთხო არ არის: ორ ნაკადს ერთდროულად მისი გამოძახება არ შეუძლია, სხვადასხვა ფაილზეც კი.
+# ერთ პროცესში ერთდროულად მუშაობს დამმუშავებელი, MHR-ის შემოწმება, საქაღალდის მეთვალყურე და ვებგვერდი (გვერდის სურათები).
+# ერთდროული გამოძახება PDFium-ს სამუდამოდ აფუჭებს: ყოველი შემდეგი გახსნა „Data format error“-ით ვარდება,
+# სანამ პროგრამა თავიდან არ ჩაირთვება (გვერდის სურათები აღარ ჩანს, ახალი სკანი დაზიანებულად ჩაითვლება).
+# ამიტომ PDFium-ის ყოველი გამოძახება ამ საკეტით ხდება.
+PDFIUM_LOCK = threading.RLock()
 
 
 @dataclass
@@ -65,9 +73,12 @@ def validate_pdf(path: str | Path) -> PdfCheck:
     if n == 0:
         return PdfCheck(False, error_code=ErrorCode.PDF_EMPTY.value, retryable=False, detail="no pages")
     try:
-        doc = pdfium.PdfDocument(str(p))
-        n2 = len(doc)
-        doc.close()
+        with PDFIUM_LOCK:
+            doc = pdfium.PdfDocument(str(p))
+            try:
+                n2 = len(doc)
+            finally:
+                doc.close()
     except pdfium.PdfiumError as e:
         msg = str(e).lower()
         code = ErrorCode.PDF_ENCRYPTED if "password" in msg else ErrorCode.PDF_CORRUPT
@@ -83,7 +94,8 @@ class PdfDocument:
 
     def __init__(self, path: str | Path):
         self.path = str(path)
-        self._pdfium = pdfium.PdfDocument(self.path)
+        with PDFIUM_LOCK:
+            self._pdfium = pdfium.PdfDocument(self.path)
         self._reader: PdfReader | None = None
 
     def __enter__(self) -> "PdfDocument":
@@ -94,42 +106,50 @@ class PdfDocument:
 
     def close(self) -> None:
         if self._pdfium is not None:
-            self._pdfium.close()
+            with PDFIUM_LOCK:
+                self._pdfium.close()
             self._pdfium = None
 
     @property
     def page_count(self) -> int:
-        return len(self._pdfium)
+        with PDFIUM_LOCK:
+            return len(self._pdfium)
 
     def text_layer(self, index: int) -> str:
         """PDF-ში ჩაშენებული ტექსტური ფენა (შეიძლება ცარიელი ან უხარისხო იყოს)."""
-        page = self._pdfium[index]
-        try:
-            tp = page.get_textpage()
+        with PDFIUM_LOCK:
+            page = self._pdfium[index]
             try:
-                return tp.get_text_bounded() or ""
+                tp = page.get_textpage()
+                try:
+                    return tp.get_text_bounded() or ""
+                finally:
+                    tp.close()
             finally:
-                tp.close()
-        finally:
-            page.close()
+                page.close()
 
     def render(self, index: int, dpi: int = 300, grayscale: bool = True) -> Image.Image:
         """ერთი გვერდის რენდერი PIL სურათად (სამუშაო ასლი; ორიგინალი არ იცვლება)."""
-        page = self._pdfium[index]
-        try:
-            bitmap = page.render(scale=dpi / 72.0, grayscale=grayscale)
-            img = bitmap.to_pil()
-            bitmap.close()
-            return img.convert("L") if grayscale else img.convert("RGB")
-        finally:
-            page.close()
+        with PDFIUM_LOCK:
+            page = self._pdfium[index]
+            try:
+                bitmap = page.render(scale=dpi / 72.0, grayscale=grayscale)
+                try:
+                    img = bitmap.to_pil()
+                    # საკუთარი ასლი, სანამ bitmap-ის მეხსიერება გათავისუფლდება
+                    return img.convert("L") if grayscale else img.convert("RGB")
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
 
     def page_size_pt(self, index: int) -> tuple[float, float]:
-        page = self._pdfium[index]
-        try:
-            return page.get_size()
-        finally:
-            page.close()
+        with PDFIUM_LOCK:
+            page = self._pdfium[index]
+            try:
+                return page.get_size()
+            finally:
+                page.close()
 
     def page_content_hash(self, index: int) -> str:
         """გვერდის შიგთავსის ჰეში (content stream + გამოსახულებები) — დოკუმენტის დონის ზუსტი დუბლიკატისთვის."""
