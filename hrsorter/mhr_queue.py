@@ -118,7 +118,8 @@ def retry_upload(repo, document_id: str) -> bool:
 
 
 # ხელით ატვირთვა ამ სტატუსებიდან არ იწყება — ატვირთვა უკვე მიდის ან დასრულდა
-MANUAL_BLOCKED = (S.APPROVED.value, S.UPLOADING.value, S.UPLOADED.value, S.NEEDS_CHECK.value, S.SPLIT.value)
+MANUAL_BLOCKED = (S.APPROVED.value, S.UPLOADING.value, S.UPLOADED.value, S.NEEDS_CHECK.value, S.SPLIT.value,
+                  S.DELETED.value)
 _MANUAL_FROM = tuple(s.value for s in S if s.value not in MANUAL_BLOCKED)
 
 

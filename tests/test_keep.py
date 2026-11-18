@@ -268,7 +268,7 @@ def test_gone_scan_page_says_rescan_and_offers_no_upload(client):
     assert "სკანის ფაილი აღარ არსებობს" in page and "თავიდან დაასკანერე" in page
     assert "file unreadable" not in page and "ხელახლა ატვირთვა" not in page
     assert f"/mhr/{DOC}/retry" not in page and "/manual-upload" not in page   # ატვირთვის არცერთი ღილაკი
-    assert f'action="/mhr/{DOC}/reject"' in page and "სიიდან ამოღება" in page
+    assert f'action="/doc/{DOC}/delete"' in page and "წაშლა" in page   # ერთადერთი ღილაკი — ჩანაწერის წაშლა
     assert "სკანის ფაილი აღარ არსებობს" in c.get(f"/doc/{DOC}").text and "file unreadable" not in c.get("/mhr?tab=other").text
     assert c.get(f"/file/output/{DOC}").status_code == 404 and c.get(f"/page/{DOC}/0.png").status_code == 404
     r = c.post(f"/mhr/{DOC}/reject", headers={"origin": LOCAL}, follow_redirects=False)
@@ -282,7 +282,7 @@ def test_stopped_file_without_scan_has_no_upload_anyway_button(client):
     assert "ატვირთვა მაინც" in c.get(f"/mhr/{DOC}").text
     lose(out)
     page = c.get(f"/mhr/{DOC}").text
-    assert "ატვირთვა მაინც" not in page and "სიიდან ამოღება" in page
+    assert "ატვირთვა მაინც" not in page and f'action="/doc/{DOC}/delete"' in page
     repo.close()
 
 

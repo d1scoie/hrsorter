@@ -54,6 +54,8 @@ pending ──validate──► ready ──approve(UI)──► approved ──
 - ყოველი ცვლილება `repo.mhr_transition(doc, from=(...), to, **fields)`-ით — მოსალოდნელი წინა სტატუსიდან (ატომური).
 - `require_approval=false` ⇒ validate-ის შემდეგ პირდაპირ `approved` (ready-ს ნაცვლად).
 - `pending ──validate──► split`: სკანში რამდენიმე MHR-ის ფაილია — საბოლოო სტატუსი; ნაწილები საკუთარ ჩანაწერებად განაგრძობენ.
+- `pending|unavailable|failed|skipped|ready|upload_failed|rejected ──delete(UI)──► deleted ──restore(UI)──► წინა სტატუსი`
+  (`removal.py`): ოპერატორმა სკანი ატვირთვამდე წაშალა. worker `deleted`-ს არ ეხება, MHR-ის სიის ჩანართებში არ ჩანს.
 - **ორმაგი ატვირთვა დაუშვებელია**: `uploading`-ში გაჭედილი (ავარია) ან გაურკვეველი შედეგის ატვირთვა
   (`MhrUploadUncertain`) → `needs_check`, შემდეგ `find_by_external_id(document_id)`: ნაპოვნია → `uploaded`
   (remote_id); ცალსახად არ არის (404) → `approved` (ხელახლა ატვირთვა უსაფრთხოა — სერვერი external_id-ით

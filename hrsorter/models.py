@@ -75,6 +75,7 @@ class DocumentStatus(str, Enum):
     NEEDS_REVIEW = "needs_review"  # NeedsReview/-ში, მიზეზის კოდით
     SPLIT = "split"                # სკანში რამდენიმე MHR-ის ფაილია — მუშავდება ნაწილებად (documents.part_of)
     SUPERSEDED = "superseded"      # ხელახალი დამუშავებით ჩანაცვლებული
+    DELETED = "deleted"            # ოპერატორმა ატვირთვამდე წაშალა (removal.py; შეიძლება დაბრუნდეს)
 
 
 class JobStatus(str, Enum):

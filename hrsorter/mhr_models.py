@@ -32,6 +32,7 @@ class MhrStatus(str, Enum):
     NEEDS_CHECK = "needs_check"      # ავარია ატვირთვისას — შეიძლება ატვირთულია; ავტომატურად აღარ ვცდით
     REJECTED = "rejected"            # ოპერატორმა უარყო
     SPLIT = "split"                  # სკანში რამდენიმე ფაილია — თითოეული ცალკე ჩანაწერია (documents.part_of)
+    DELETED = "deleted"              # ოპერატორმა სკანი ატვირთვამდე წაშალა (removal.py) — worker აღარ ეხება
 
 
 class MhrUnavailable(Exception):
