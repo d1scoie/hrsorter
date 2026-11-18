@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import keep
 from .config import Config
 from .db import Repository
 
@@ -38,7 +39,8 @@ def sweep(repo: Repository, cfg: Config, now: float | None = None) -> dict[str, 
     if int(c["processed_days"]) > 0:
         out["deleted"] = delete_processed(repo, now - int(c["processed_days"]) * DAY)
     if int(c["uploaded_days"]) > 0:
-        out["purged_documents"], out["purged_sources"] = purge_uploaded(repo, now, now - int(c["uploaded_days"]) * DAY)
+        out["purged_documents"], out["purged_sources"] = purge_uploaded(repo, now, now - int(c["uploaded_days"]) * DAY, cfg)
+    out.update(keep.sweep(repo, cfg, now))   # ახალი სკანისა და შედეგის ასლი ამ კომპიუტერზე; ვადაგასული ასლის წაშლა
     if any(out.values()):
         repo.log_event("cleanup", " ".join(f"{k}={v}" for k, v in out.items() if v))
     return out
@@ -83,9 +85,10 @@ def delete_processed(repo: Repository, cutoff: float) -> int:
     return sum(_delete_inbox_copy(repo, r) for r in rows)
 
 
-def purge_uploaded(repo: Repository, now: float, cutoff: float) -> tuple[int, int]:
+def purge_uploaded(repo: Repository, now: float, cutoff: float, cfg: Config | None = None) -> tuple[int, int]:
+    """`cfg` — ამ კომპიუტერზე შენახული ასლიც იშლება (`keep`); ვადით წაშლილი ფაილი ასლად არ უნდა დარჩეს."""
     cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat(timespec="seconds")
-    docs = repo.q("SELECT d.id, d.output_path, d.sidecar_path FROM documents d JOIN mhr_items m ON m.document_id=d.id"
+    docs = repo.q("SELECT d.id, d.output_path, d.sidecar_path, d.output_sha256 FROM documents d JOIN mhr_items m ON m.document_id=d.id"
                   " WHERE d.active=1 AND d.purged_at IS NULL AND m.status='uploaded' AND m.uploaded_at < ?", (cutoff_iso,))
     n_docs = 0
 
@@ -99,14 +102,16 @@ def purge_uploaded(repo: Repository, now: float, cutoff: float) -> tuple[int, in
             except OSError as e:
                 log.warning("purge document failed: %s", type(e).__name__)
                 continue
+            if cfg is not None:
+                keep.forget(cfg, d["output_sha256"])
             repo.conn.execute("UPDATE documents SET purged_at=? WHERE id=?", (_iso(now), d["id"]))
             n_docs += 1
     purge(docs)
     # დაყოფილი სკანის მთლიანი PDF — როცა ყველა ნაწილი უკვე წაიშალა (გადასამოწმებელი ნაწილი რჩება და მთლიანსაც იცავს)
-    purge(repo.q("SELECT d.id, d.output_path, d.sidecar_path FROM documents d WHERE d.active=1 AND d.status='split' AND d.purged_at IS NULL"
+    purge(repo.q("SELECT d.id, d.output_path, d.sidecar_path, d.output_sha256 FROM documents d WHERE d.active=1 AND d.status='split' AND d.purged_at IS NULL"
                  " AND NOT EXISTS (SELECT 1 FROM documents c WHERE c.part_of=d.id AND c.active=1 AND c.purged_at IS NULL)"))
     # წყარო — მხოლოდ თუ ყველა აქტიური დოკუმენტი უკვე წაშლილია და ახალი დამუშავება არ მიმდინარეობს
-    sources = repo.q("SELECT s.id, s.archive_path FROM sources s WHERE s.purged_at IS NULL"
+    sources = repo.q("SELECT s.id, s.archive_path, s.sha256 FROM sources s WHERE s.purged_at IS NULL"
                      " AND EXISTS (SELECT 1 FROM documents d WHERE d.source_id=s.id AND d.active=1)"
                      " AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.source_id=s.id AND d.active=1 AND d.purged_at IS NULL)"
                      " AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.source_id=s.id AND j.status IN ('queued', 'running'))")
@@ -117,6 +122,8 @@ def purge_uploaded(repo: Repository, now: float, cutoff: float) -> tuple[int, in
         except OSError as e:
             log.warning("purge source failed: %s", type(e).__name__)
             continue
+        if cfg is not None:
+            keep.forget(cfg, s["sha256"])
         repo.conn.execute("UPDATE sources SET purged_at=? WHERE id=?", (_iso(now), s["id"]))
         for r in repo.q("SELECT path, size, mtime_ns, moved_to FROM inbox_files"
                         " WHERE source_id=? AND moved_kind='done' AND deleted_at IS NULL", (s["id"],)):

@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from . import naming
+from . import keep, naming
 from .config import Config
 from .db import now_iso
 from .duplicates import text_fingerprint
@@ -206,13 +206,15 @@ def split_document(repo, cfg: Config, row, meta: dict[str, Any], specs: list[Par
     """მთლიანი სკანი რჩება აქტიურად, სტატუსით `split`; ყოველი ნაწილი ცალკე ჩანაწერია საკუთარი PDF-ით (მთლიანი სკანის გვერდით), რომ
     შედარება, ატვირთვა, AI ანალიზი და ხელით ატვირთვა ჩვეულებრივ იმუშაოს. არცერთს რომ არ ემთხვევა — გადასამოწმებელში, MHR-ის რიგის გარეშე."""
     parent_pdf = Path(row["output_path"])
+    parent_src = keep.document_file(cfg, row) or parent_pdf   # ძირითადი საქაღალდიდან გამქრალი — ამ კომპიუტერის ასლიდან
     texts = repo.load_page_texts(row["job_id"])
     parts: list[dict[str, Any]] = []
     for spec in specs:
         doc_id = part_document_id(row["id"], spec.key)
         dest = parent_pdf.with_name(f"{parent_pdf.stem}__{spec.key}.pdf")
         tmp = dest.with_name(dest.name + ".tmp")
-        write_subset(parent_pdf, [p - int(row["page_start"]) for p in spec.pages], tmp)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        write_subset(parent_src, [p - int(row["page_start"]) for p in spec.pages], tmp)
         _replace(tmp, dest)
         matched = spec.original_id is not None
         ext = extract([PageText.from_dict(texts[p]) for p in spec.pages], cfg.doc_type(spec.type_id), cfg)

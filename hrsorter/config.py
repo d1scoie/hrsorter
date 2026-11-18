@@ -224,6 +224,8 @@ DEFAULTS: dict[str, Any] = {
         "move_processed": True,     # დასრულებული ფაილი ინბოქსიდან → Processed (შეცდომიანი → Processed/_Failed)
         "processed_days": 30,       # Processed-ის ფაილის წაშლა N დღის შემდეგ (ორიგინალი არქივში რჩება); 0 = არასდროს
         "uploaded_days": 0,         # არქივის ორიგინალისა და შედეგის PDF-ის წაშლა MHR-ში ატვირთვიდან N დღის შემდეგ; 0 = არასდროს
+        "local_copy_days": 60,      # სკანისა და შედეგის ასლი ამ კომპიუტერზე N დღე (`keep`): ძირითადი საქაღალდიდან გამქრალი ფაილი
+                                    # მაინც იტვირთება და ჩანს; 0 = ასლი არ კეთდება
     },
     "tray": {"notifications": True},   # Windows-ის შეტყობინებები: ახალი გადასამოწმებელი, შეცდომა, worker გაჩერდა
 }
@@ -447,7 +449,7 @@ class Config:
             raise ConfigError("ui.host must be 127.0.0.1 (local only)")
         if int(d["processing"]["concurrency"]) < 1:
             raise ConfigError("processing.concurrency must be >= 1")
-        for key in ("processed_days", "uploaded_days"):
+        for key in ("processed_days", "uploaded_days", "local_copy_days"):
             if int(d["cleanup"][key]) < 0:
                 raise ConfigError(f"cleanup.{key} must be >= 0 (0 = never)")
         processed = self.paths.processed.resolve()

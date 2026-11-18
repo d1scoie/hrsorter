@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import PIPELINE_VERSION, mhr_missing
+from . import PIPELINE_VERSION, keep, mhr_missing
 from .db import now_iso
 from .mhr_client import MhrClient, MhrUploadUncertain, build_mhr_client
 from .mhr_models import MhrEmployee, MhrError, MhrStatus as S, MhrUnavailable, ValidationResult, clean_file_title
@@ -31,6 +31,7 @@ MISSING_LIMIT = 200               # ერთ გავლაზე ამდე
 MISSING_CHECKED_KEY = "mhr_missing_checked"   # control: ბოლოს როდის შეეკითხა MHR-ს (UI-ში „ბოლოს შემოწმდა“)
 STALE_UPLOADING_SECONDS = 600     # ამაზე დიდხანს `uploading` → ავარია → needs_check
 UPLOAD_MAX_ATTEMPTS = 5           # MHR მიუწვდომლობისას ატვირთვის ცდები, შემდეგ upload_failed
+FILE_GONE = "scan_file_gone"      # upload_failed-ის მიზეზი: სკანის PDF არც ძირითად საქაღალდეშია, არც ამ კომპიუტერის ასლში
 
 ValidateFn = Callable[[Any, Any, str, MhrClient], ValidationResult]
 ReviewFn = Callable[[Any, Any, str], Any]          # ai_review.review_document(repo, cfg, doc_id) -> AiReview
@@ -602,8 +603,11 @@ def _upload_one(repo, cfg, m: dict[str, Any], client: MhrClient, row, retry_at: 
         return fail("no employee id")
     if not doc["output_path"]:
         return fail("no output file")
+    path = keep.document_file(cfg, doc)   # ძირითადი საქაღალდე, თორემ ამ კომპიუტერის ასლი
+    if path is None:
+        return fail(FILE_GONE)
     try:
-        pdf = Path(doc["output_path"]).read_bytes()
+        pdf = path.read_bytes()
     except OSError as e:
         return fail(f"file unreadable ({type(e).__name__})")
     sha = hashlib.sha256(pdf).hexdigest()
