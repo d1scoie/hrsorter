@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import PIPELINE_VERSION
+from . import PIPELINE_VERSION, keep
 from .boundary import detect_segments
 from .classifier import Classifier
 from .config import Config
@@ -62,7 +62,8 @@ def _process(repo: Repository, job: sqlite3.Row, cfg: Config) -> None:
     if src is None:
         raise JobError(ErrorCode.INTERNAL.value, f"source {job['source_id']} missing")
     archive_path = src["archive_path"]
-    if not Path(archive_path).exists() or sha256_file(archive_path) != src["sha256"]:
+    # არქივიდან გამქრალი ორიგინალი (ქსელური საცავი ძველ ფაილებს თავად შლის) ამ კომპიუტერის ასლიდან ბრუნდება
+    if keep.restore_source(cfg, src) is None or sha256_file(archive_path) != src["sha256"]:
         raise JobError(ErrorCode.ARCHIVE_HASH_MISMATCH.value, "archived source missing or changed")
     mode = InputMode(job["mode"])
 

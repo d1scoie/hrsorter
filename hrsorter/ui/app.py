@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
-from .. import mhr_missing, mhr_queue, people
+from .. import keep, mhr_missing, mhr_queue, people
 from ..config import Config, ConfigError, load_config
 from ..db import Repository
 from ..mhr_models import clean_file_title
@@ -654,9 +654,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
         flags = "".join(chip(FLAGS.get(fl, fl), "mute") for fl in meta.get("flags", [])
                         if not (mhr_on and fl == "employee_unverified"))
         nxt = _doc_next(c, x, mhr_item, rs, mhr_on)
-        has_pdf = bool(x["output_path"]) and Path(x["output_path"]).exists()
+        has_pdf = keep.document_file(c, x) is not None   # ძირითადი საქაღალდე ან ამ კომპიუტერის ასლი
         viewer = (f'<iframe class="pdf" src="/file/output/{e(doc_id)}" title="დოკუმენტის გადახედვა"></iframe>' if has_pdf else
-                  f'<div class="card pdf nopdf">{empty("file", "mute", "PDF ამ კომპიუტერზე აღარ არის", "ფაილი გადატანილია ან ვადის გასვლის გამო წაიშალა. ორიგინალი სკანი შეიძლება ისევ იყოს „წყაროში“.")}</div>')
+                  f'<div class="card pdf nopdf">{empty("file", "mute", "სკანის ფაილი აღარ არსებობს", "ფაილი წაიშალა: ვადა გაუვიდა ან საერთო საქაღალდიდან გაქრა. თუ დოკუმენტი ჯერ არ ატვირთულა, ქაღალდი თავიდან დაასკანერე.")}</div>')
         skip = {"—", "უცნობია", "", None}
         facts = "".join(f'<div{" class=wide" if k in ("MHR", "AI ანალიზი") else ""}><dt>{e(k)}</dt><dd>{e(v)}</dd></div>'
                         for k, v in kv if k != "წყარო" and v not in skip and not (k == "წელი" and x["document_date"]))
@@ -977,10 +977,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
             pt = r.load_page_texts(x["job_id"]).get(index, {}) if x else {}
         finally:
             r.close()
-        if not x or not src or not (x["page_start"] <= index <= x["page_end"]) or not Path(src["archive_path"]).exists():
+        scan = keep.source_file(cfg(), src) if x and src else None   # არქივი, თორემ ამ კომპიუტერის ასლი
+        if scan is None or not (x["page_start"] <= index <= x["page_end"]):
             raise HTTPException(404)
         import io
-        with PdfDocument(src["archive_path"]) as d:
+        with PdfDocument(scan) as d:
             img = d.render(index, max(40, min(dpi, 200)), grayscale=False)
         if pt.get("rotation_applied"):
             img = apply_rotation(img, int(pt["rotation_applied"]))
@@ -1007,15 +1008,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
             if not x:
                 raise HTTPException(404)
             if kind == "output":
-                path = x["output_path"]
+                path = keep.document_file(cfg(), x)
             elif kind == "source":
                 src = r.get_source(x["source_id"])
-                path = src["archive_path"] if src else None
+                path = keep.source_file(cfg(), src) if src else None
             else:
                 raise HTTPException(404)
         finally:
             r.close()
-        if not path or not Path(path).exists():
+        if path is None:
             raise HTTPException(404, "file not found")
         return FileResponse(path, media_type="application/pdf", content_disposition_type="inline")
 
@@ -1850,9 +1851,27 @@ _TODO_CHECK = {"already_uploaded": "ნახე თანამშრომლ�
 _TODO_FIELD = "შეამოწმე, რომელია სწორი: დოკუმენტი თუ MHR-ის ჩანაწერი. თუ დოკუმენტი სწორია, {action}."
 
 
+FILE_GONE_KA = ("სკანის ფაილი აღარ არსებობს: საერთო საქაღალდიდან წაიშალა და ასლიც არ დარჩა. "
+                "ამ ჩანაწერის ატვირთვა ვეღარ მოხერხდება. ქაღალდი თავიდან დაასკანერე.")
+FILE_MISSED_KA = "ატვირთვის დროს სკანის ფაილი ვერ მოიძებნა"   # სიაში და ბარათზე: იქ არ ვიცით, ფაილი ახლა არის თუ არა
+FILE_BACK_KA = "ბოლო ცდაზე სკანის ფაილი ვერ მოიძებნა. ახლა ფაილი ადგილზეა: დააჭირე „ხელახლა ატვირთვას“."
+
+
+def _is_file_gone_error(error: str | None) -> bool:
+    """ატვირთვა იმიტომ ჩავარდა, რომ PDF აღარ არსებობს. ძველი ჩანაწერები (0.1.34-მდე) ინგლისურ ტექსტს ინახავს."""
+    return bool(error) and (error == mhr_queue.FILE_GONE or error.startswith("file unreadable (FileNotFound"))
+
+
+def _file_gone(c: Config, d) -> bool:
+    """დოკუმენტის PDF არც ძირითად საქაღალდეშია, არც ამ კომპიუტერის ასლში (ვადით წაშლილი ატვირთული დოკუმენტი აქ არ ითვლება)."""
+    return bool(d is not None and d["active"] and not d["purged_at"] and d["output_path"] and keep.document_file(c, d) is None)
+
+
 def _error_text(error: str) -> str:
     """MHR-ის მანქანური კოდი → ადამიანის ენა; უცნობი ისევ ჩანს, ტექნიკური დეტალისთვის."""
     from ..validation import MHR_ERROR_KA
+    if _is_file_gone_error(error):
+        return FILE_MISSED_KA
     if error in MHR_ERROR_KA:
         return f"{MHR_ERROR_KA[error]} (კოდი: {error})"
     if error.startswith(("MHR unavailable", "MhrUnavailable")):
@@ -2252,7 +2271,11 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
                  f'{icon("open", 16)}გახსენი სკანი (PDF)</a><a class="btn sm ghost" href="/doc/{e(d["id"])}">{icon("file", 16)}დოკუმენტის გვერდი</a></div>')
     out = [f'<p><a href="/mhr">← ყველა ფაილი</a></p><div class="chips" style="margin-bottom:8px">{mhr_chip(m["status"])}</div>'
            f'<h1>{e(_mhr_name(v) or "თანამშრომელი")}</h1><p class="sub">{e(sub)}</p>{links}']
-    if m["error"] and m["error"] != "MhrError":
+    if m["status"] in _GONE_STATUSES and _file_gone(c, d):   # ერთი გასაგები წარწერა; ძველი ინგლისური შეცდომა მას არ იმეორებს
+        out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(FILE_GONE_KA)}</div></div>')
+    elif m["status"] == "upload_failed" and _is_file_gone_error(m["error"]):   # ფაილი დაბრუნდა (ასლიდან ან თავიდან დამუშავებით)
+        out.append(f'<div class="banner tone-warn">{icon("alert", 18)}<div>{e(FILE_BACK_KA)}</div></div>')
+    elif m["error"] and m["error"] != "MhrError":
         out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(_error_text(m["error"]))}</div></div>')
     out.append(_verdict(v, m))
     out.append(_suggestions_block(m, v))
@@ -2393,6 +2416,10 @@ _DECIDE = {
 }
 
 
+_REJECTABLE = ("ready", "failed", "upload_failed")                    # `mhr_queue.reject` ამ სტატუსებიდან მუშაობს
+_GONE_STATUSES = (*_REJECTABLE, "pending", "unavailable")             # სადაც ატვირთვის ღილაკი ჩნდება ან გაჩნდება
+
+
 def _decide_opt(title: str, text: str, button: str) -> str:
     return f'<div class="opt"><div class="ot"><b>{e(title)}</b><span>{e(text)}</span></div>{button}</div>'
 
@@ -2402,6 +2429,14 @@ def _decision_block(c: Config, m, d, v: dict) -> tuple[str, str, str] | None:
     და ერთი ღილაკი. გადასაწყვეტი აღარაფერია (უკვე ატვირთულია, რიგშია) → None."""
     ai = _ai_load(m)
     doc_id = e(m["document_id"])
+    if m["status"] in _GONE_STATUSES and _file_gone(c, d):
+        # ასატვირთი აღარაფერია: ატვირთვის ღილაკები მხოლოდ შეცდომამდე მიიყვანდა. რჩება ერთი — ჩანაწერის სიიდან ამოღება
+        drop = (f'<form class="inline" method="post" action="/mhr/{doc_id}/reject"><button class="btn">სიიდან ამოღება</button></form>'
+                if m["status"] in _REJECTABLE else "")
+        return ("სკანის ფაილი აღარ არსებობს", "ატვირთვა ამ ჩანაწერიდან ვეღარ მოხერხდება.",
+                '<div class="opts">' + _decide_opt("ქაღალდი თავიდან დაასკანერე",
+                                                   "ახალ სკანს პროგრამა თავიდან გაარჩევს და შეამოწმებს. ეს ძველი ჩანაწერი შეგიძლია სიიდან ამოიღო.",
+                                                   drop) + "</div>")
     no_compare = _no_compare(v)
     opts = []
     if m["status"] == "failed" and m["employee_id"]:
@@ -2522,7 +2557,7 @@ def _doc_next(c: Config, x, item, reasons_html: str, mhr_on: bool) -> str:
                     (f'<ul style="margin:0 0 12px;padding-left:20px;font-size:14px">{listed}</ul>' if listed else "")
                     + f'<div class="btns"><a class="btn primary" href="/mhr/{e(doc_id)}">{icon("search", 16)}ნახე ადგილი და დეტალები</a></div>{alt}')
     if st in ("upload_failed", "needs_check"):
-        return card("bad" if st == "upload_failed" else "warn", MHR_KA[st][0], item["error"] or "",
+        return card("bad" if st == "upload_failed" else "warn", MHR_KA[st][0], _error_text(item["error"] or ""),
                     f'<div class="btns"><a class="btn primary" href="/mhr/{e(doc_id)}">რა მოხდა</a></div>')
     if x["status"] == "needs_review":
         return card("warn", "გადახედე და გადაწყვიტე", "",
@@ -2570,6 +2605,8 @@ def _manual_block(c: Config, doc, item, back: str) -> str:
     თანამშრომელი — დოკუმენტიდან ამოკითხული პ/ნ-ით; სახელი ვალიდაციის შედეგიდან ჩანს, თუ უკვე ვიცით."""
     from ..mhr_queue import MANUAL_BLOCKED
     if not doc["active"] or not doc["output_path"] or doc["purged_at"] or (item and item["status"] in MANUAL_BLOCKED):
+        return ""
+    if keep.document_file(c, doc) is None:   # ასატვირთი ფაილი აღარ არსებობს — ღილაკი მხოლოდ შეცდომამდე მიიყვანდა
         return ""
     meta = json.loads(doc["metadata"] or "{}")
     f = meta.get("fields") or {}
@@ -2828,6 +2865,8 @@ _CLEANUP_NUM_FIELDS = [
      "Processed-იდან. ორიგინალის ასლი არქივში რჩება, ამიტომ ეს უსაფრთხოა. 0 = არასდროს. _Failed არასდროს იშლება."),
     ("cleanup.uploaded_days", "ორიგინალისა და შედეგის წაშლა MHR-ში ატვირთვიდან (დღე)", int,
      "არქივის ორიგინალი და Sorted/Proposed-ის PDF — მხოლოდ მას შემდეგ, რაც ფაილის ყველა დოკუმენტი MHR-ში აიტვირთა. 0 = არასდროს."),
+    ("cleanup.local_copy_days", "სკანის ასლი ამ კომპიუტერზე (დღე)", int,
+     "ყოველი სკანისა და დოკუმენტის ასლი ამ კომპიუტერზეც ინახება. საერთო საქაღალდიდან ფაილი რომ წაიშალოს, ატვირთვა და ნახვა მაინც იმუშავებს. 0 = ასლი არ კეთდება."),
 ]
 _TEXT_FIELDS = [("default_company.id", "ნაგულისხმევი კომპანია — ID"), ("default_company.name", "ნაგულისხმევი კომპანია — სახელი"),
                 ("default_company.folder", "ნაგულისხმევი კომპანია — საქაღალდე"), ("ocr.tesseract_cmd", "Tesseract-ის ბილიკი"),

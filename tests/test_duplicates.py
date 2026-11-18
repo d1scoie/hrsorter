@@ -85,6 +85,25 @@ def test_possible_duplicate_rescan_with_small_ocr_difference(repo):
     assert "same_personal_number" in m["reasons"]
 
 
+def test_rejected_scan_does_not_hold_back_its_rescan(repo):
+    """ჩანაწერი სიიდან ამოიღეს (ფაილი დაიკარგა) და ქაღალდი თავიდან დაასკანერეს: ახალი სკანი დუბლიკატი არ არის.
+    ატვირთული ასლი კი ისევ ითვლება — უკვე ატვირთული ქაღალდის მეორე სკანი ისევ ჩერდება."""
+    store(repo, "doc_a", BASE_TEXT)
+    store(repo, "doc_b", OTHER_TEXT, content_fp="same")
+    for doc_id in ("doc_a", "doc_b"):
+        repo.mhr_enqueue(doc_id, PN)
+        repo.mhr_transition(doc_id, ("pending",), "rejected")
+    rescan = BASE_TEXT.replace("ხელმოწერისთანავე", "ხელმოწერისთანავე.") + " გვ 1"
+    assert run(repo, rescan).status == "none"
+    assert run(repo, BASE_TEXT).status == "none"                       # იგივე ტექსტი
+    assert run(repo, OTHER_TEXT, content_fp="same").status == "none"   # იგივე გვერდები
+    store(repo, "doc_c", BASE_TEXT, job="job_up", content_fp="cfp_up")
+    repo.mhr_enqueue("doc_c", PN)
+    repo.mhr_transition("doc_c", ("pending",), "uploaded")
+    d = run(repo, rescan)
+    assert d.status == "possible" and [m["document_id"] for m in d.matches] == ["doc_c"]
+
+
 def test_same_employee_and_type_alone_is_not_duplicate(repo):
     store(repo, "doc_a", BASE_TEXT)
     d = run(repo, OTHER_TEXT, doc_number="15", date="2024-03-15")  # ყველა ატრიბუტი ემთხვევა, ტექსტი — არა

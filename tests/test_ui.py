@@ -116,13 +116,14 @@ def test_settings_cleanup_and_tray(client):
     c, cfg_path = client
     page = c.get("/settings").text
     assert 'name="cleanup.processed_days" value="30"' in page and 'name="paths.processed" value="Processed"' in page
+    assert 'name="cleanup.local_copy_days" value="60"' in page
     form = {"types_json": EXAMPLE_TYPES_PATH.read_text(encoding="utf-8"), "processing.trial_mode": "1",
             "paths.processed": "Done", "cleanup.processed_days": "14", "cleanup.uploaded_days": "90",
-            "tray.notifications": "1"}   # move_processed მოხსნილია
+            "cleanup.local_copy_days": "45", "tray.notifications": "1"}   # move_processed მოხსნილია
     r = c.post("/settings", data=form, headers={"origin": LOCAL}, follow_redirects=False)
     assert "err=" not in r.headers["location"]
     cfg = load_config(cfg_path)
-    assert cfg.section("cleanup") == {"move_processed": False, "processed_days": 14, "uploaded_days": 90}
+    assert cfg.section("cleanup") == {"move_processed": False, "processed_days": 14, "uploaded_days": 90, "local_copy_days": 45}
     assert cfg.section("tray")["notifications"] is True and cfg.paths.processed.name == "Done"
     form["cleanup.processed_days"] = "-3"
     r = c.post("/settings", data=form, headers={"origin": LOCAL}, follow_redirects=False)
@@ -794,7 +795,7 @@ def test_document_page_without_pdf_says_so_in_plain_words(client, tmp_path):
     assert '<iframe class="pdf"' in c.get(f"/doc/{doc}").text
     Path(repo.get_document(doc)["output_path"]).unlink()                               # ვადის გასვლის გამო წაიშალა
     page = c.get(f"/doc/{doc}").text
-    assert "PDF ამ კომპიუტერზე აღარ არის" in page and '<iframe class="pdf"' not in page and "PDF ცალკე" not in page
+    assert "სკანის ფაილი აღარ არსებობს" in page and '<iframe class="pdf"' not in page and "PDF ცალკე" not in page
     repo.close()
 
 

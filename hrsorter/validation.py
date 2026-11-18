@@ -37,11 +37,10 @@ import zipfile
 from dataclasses import dataclass, field as dc_field
 from difflib import SequenceMatcher
 from itertools import zip_longest
-from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from . import hrdates, idimage, readermarks, textquality
+from . import hrdates, idimage, keep, readermarks, textquality
 from .config import Config
 from .db import Repository, now_iso
 from .employee_api import _get_path
@@ -500,7 +499,8 @@ def _reread_identity(cfg: Config, repo: Repository, row, scanned: list[dict[str,
     rc = cfg.section("mhr").get("identity_reread") or {}
     if not rc.get("enabled", True) or not scanned or len(scanned) > IDENTITY_REREAD_MAX_PAGES:
         return
-    if any(p.get(IDENTITY_REREAD) for p in scanned) or not row["output_path"]:
+    pdf_path = keep.document_file(cfg, row) if row["output_path"] else None   # ძირითადი საქაღალდე, თორემ ამ კომპიუტერის ასლი
+    if any(p.get(IDENTITY_REREAD) for p in scanned) or pdf_path is None:
         return
     old_texts = [p.get("text") or "" for p in scanned]
     if not _identity_doubt(parse_id_card("\n".join(old_texts)), employee):
@@ -517,7 +517,7 @@ def _reread_identity(cfg: Config, repo: Repository, row, scanned: list[dict[str,
     for pt in scanned:
         text = ""
         try:
-            with PdfDocument(row["output_path"]) as doc:
+            with PdfDocument(pdf_path) as doc:
                 img = enhance(doc.render(_pdf_index(row, int(pt["page_index"])), dpi=dpi))
             images = idimage.document_images(img, dpi, read)[:max(0, left)]
             left -= len(images)
@@ -824,7 +824,7 @@ def _matched_type(cfg: Config, ref: MhrDocRef, refs: list[MhrDocRef], is_largest
 def _split_scan(repo: Repository, cfg: Config, row, meta: dict[str, Any], plan: PagePlan, scanned: list[dict[str, Any]],
                 employee: MhrEmployee, pn: str) -> ValidationResult:
     """სკანი → თითო ჩანაწერი ყოველ დამთხვეულ ფაილზე (საკუთარი გვერდებით); არცერთს რომ არ ემთხვევა, ის გვერდები — გადასამოწმებელში."""
-    if not row["output_path"] or not Path(row["output_path"]).exists():
+    if not row["output_path"] or keep.document_file(cfg, row) is None:
         return ValidationResult("failed", employee=employee, summary=["სკანის PDF აღარ არსებობს — ფაილებად ვერ დაიყო"],
                                 validated_at=now_iso(), error="no_output_file")
     refs = [f.ref for f in plan.files.values()]
@@ -1735,6 +1735,12 @@ def _reading_broke(text: str) -> bool:
     return not words
 
 
+def _scan_pdf(cfg: Config, row) -> str:
+    """დოკუმენტის PDF წასაკითხად: ძირითადი საქაღალდე, თორემ ამ კომპიუტერის ასლი (`keep`). არცერთი რომ არ არის, ბილიკი უცვლელი
+    ბრუნდება და გახსნა ისევე ჩავარდება, როგორც ადრე."""
+    return str(keep.document_file(cfg, row) or row["output_path"])
+
+
 def _online_page_text(cfg: Config, provider, output_path: str, page_index: int, rotation: int) -> str:
     """დოკუმენტის PDF-ის გვერდი → ონლაინ OCR მხოლოდ ბეჭდური ტექსტისთვის (იგივე რენდერი/გაუმჯობესება, რაც ანალიზისას)."""
     dpi = int(cfg.section("processing").get("dpi", 300))
@@ -1793,7 +1799,7 @@ def _recheck_diffs(result: ValidationResult, cfg: Config, repo: Repository, row,
             pt = scanned[p - 1]
             try:
                 for _attempt in range(2):
-                    text = _online_page_text(cfg, provider, row["output_path"], _pdf_index(row, int(pt["page_index"])),
+                    text = _online_page_text(cfg, provider, _scan_pdf(cfg, row), _pdf_index(row, int(pt["page_index"])),
                                              int(pt.get("rotation_applied") or 0))
                     if not _reading_broke(text or ""):
                         break
@@ -1852,7 +1858,7 @@ def _local_second_reading(cfg: Config, repo: Repository, row, scanned: list[dict
     for p in pages:
         pt = scanned[p - 1]
         try:
-            text = _local_page_text(cfg, local, row["output_path"], _pdf_index(row, int(pt["page_index"])), int(pt.get("rotation_applied") or 0))
+            text = _local_page_text(cfg, local, _scan_pdf(cfg, row), _pdf_index(row, int(pt["page_index"])), int(pt.get("rotation_applied") or 0))
         except (OcrError, OSError, ValueError, KeyError, TypeError, RuntimeError) as e:   # RuntimeError: დაზიანებული PDF (pdfium)
             log.warning("second reading of page %s of %s failed: %s", p, row["id"], type(e).__name__)
             continue

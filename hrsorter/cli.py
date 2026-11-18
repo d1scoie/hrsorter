@@ -229,6 +229,16 @@ def cmd_reprocess(args) -> int:
     return 0 if new_id else 1
 
 
+def cmd_keep_import(args) -> int:
+    """გადარჩენა სათადარიგო ასლიდან: საქაღალდის PDF-ები, რომლებიც ბაზის სკანს ან დოკუმენტს ემთხვევა, ამ კომპიუტერის ასლად ინახება."""
+    from . import keep
+    cfg = load_config(args.config)
+    repo = Repository(cfg.paths.db)
+    out = keep.import_folder(repo, cfg, args.folder)
+    print(f"ნანახია {out['seen']} PDF, შენახულია {out['kept']}")
+    return 0
+
+
 def reprocess(repo: Repository, cfg: Config, job_id: str) -> str | None:
     """აშკარა ხელახალი დამუშავება: ახალი job მიმდინარე კონფიგურაციით; წინა შედეგები ჩანაცვლდება."""
     job = repo.get_job(job_id)
@@ -348,6 +358,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("setup", help="ინსტალერისთვის")
     p.add_argument("--root"); p.add_argument("--tesseract-dir")
     p = sub.add_parser("reprocess"); p.add_argument("job_id")
+    p = sub.add_parser("keep-import", help="სათადარიგო საქაღალდიდან დაკარგული სკანების აღდგენა ამ კომპიუტერის ასლში")
+    p.add_argument("folder")
     p = sub.add_parser("secret"); p.add_argument("action", choices=["set", "delete"]); p.add_argument("name")
     p.add_argument("--from-clipboard", action="store_true", help="მნიშვნელობა ბუფერიდან (შემდეგ ბუფერი სუფთავდება)")
     p = sub.add_parser("autostart"); p.add_argument("action", choices=["install", "uninstall", "status"])
@@ -355,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "init": cmd_init, "worker": cmd_worker, "ui": cmd_ui, "run-once": cmd_run_once, "status": cmd_status,
         "pause": lambda a: cmd_pause(a, "1"), "resume": lambda a: cmd_pause(a, "0"),
-        "reprocess": cmd_reprocess, "secret": cmd_secret, "autostart": cmd_autostart,
+        "reprocess": cmd_reprocess, "keep-import": cmd_keep_import, "secret": cmd_secret, "autostart": cmd_autostart,
         "setup": cmd_setup, "open": cmd_open, "ocr-test": cmd_ocr_test, "update": cmd_update,
         "tray": cmd_tray,
     }

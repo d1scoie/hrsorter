@@ -4,6 +4,11 @@
   * სავარაუდო (`possible`): ტექსტის მსგავსება (სიტყვების 5-გრამების Jaccard) + ტიპის, პ/ნ-ის, ნომრისა
     და თარიღის თანხვედრა. მხოლოდ თანამშრომლისა და ტიპის დამთხვევა დუბლიკატად არ ითვლება.
 დუბლიკატი არასდროს იშლება და არ ანაცვლებს არსებულ ფაილს — decision მას გადასამოწმებლად აგზავნის.
+
+ოპერატორის მიერ უარყოფილი დოკუმენტი (MHR-ის რიგში `rejected`) შედარებაში არ მონაწილეობს: უარყოფა ნიშნავს „ეს სკანი
+არ აიტვირთება“, ამიტომ იმავე ქაღალდის ახალი სკანი მისი დუბლიკატი არ არის. ნამდვილი შემთხვევა: სკანის ფაილი ქსელურმა
+საცავმა წაშალა, ჩანაწერი სიიდან ამოიღეს და ქაღალდი თავიდან დაასკანერეს — ახალი სკანი „შესაძლო დუბლიკატად“ ჩერდებოდა
+და MHR-ს აღარ ედარებოდა. ატვირთული დოკუმენტი ისევ ითვლება, ამიტომ უკვე ატვირთული ქაღალდის მეორე სკანი ისევ ჩერდება.
 """
 from __future__ import annotations
 
@@ -59,8 +64,13 @@ def check(repo, *, content_fp: str, text_fp: str, shingles: list[int], type_id: 
           personal_number: str | None, doc_number: str | None, document_date: str | None,
           job_id: str, cfg: Config, document_id: str | None = None, source_id: str | None = None) -> DuplicateInfo:
     """გამორიცხულია: თავად ეს დოკუმენტი (ხელახალი გაშვება) და იმავე წყაროს სხვა job-ის შედეგები
-    (ხელახალი დამუშავების ძველი ვერსიები). document_id-ის გარეშე — მთელი job გამოირიცხება."""
+    (ხელახალი დამუშავების ძველი ვერსიები). document_id-ის გარეშე — მთელი job გამოირიცხება. ოპერატორის მიერ
+    უარყოფილი დოკუმენტიც გამოირიცხება (იხ. მოდულის აღწერა)."""
+    rejected = {r["document_id"] for r in repo.q("SELECT document_id FROM mhr_items WHERE status='rejected'")}
+
     def skip(r) -> bool:
+        if r["id"] in rejected:
+            return True
         if document_id is None:
             return r["job_id"] == job_id
         return r["id"] == document_id or (source_id is not None and r["source_id"] == source_id
