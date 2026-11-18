@@ -13,21 +13,21 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
-from .. import keep, mhr_missing, mhr_queue, people
+from .. import keep, mhr_missing, mhr_queue, people, removal
 from ..config import Config, ConfigError, load_config
 from ..db import Repository
 from ..mhr_models import clean_file_title
 
 STATUS_KA = {"split": "დაიყო ფაილებად", "auto_saved": "დალაგდა", "proposed": "შემოთავაზებული", "needs_review": "გადასამოწმებელი",
              "superseded": "ჩანაცვლებული", "publishing": "იწერება", "queued": "რიგში", "running": "მუშავდება",
-             "done": "დასრულდა", "failed": "შეცდომა", "cancelled": "გაუქმდა"}
+             "done": "დასრულდა", "failed": "შეცდომა", "cancelled": "გაუქმდა", "deleted": "წაშლილი"}
 STATUS_TONE = {"auto_saved": "ok", "proposed": "info", "needs_review": "warn", "superseded": "mute", "publishing": "info",
-               "queued": "mute", "running": "info", "done": "ok", "failed": "bad", "cancelled": "mute"}
+               "queued": "mute", "running": "info", "done": "ok", "failed": "bad", "cancelled": "mute", "deleted": "mute"}
 
 # მიზეზი მარტივი ენით: (სათაური, რა უნდა გააკეთოს ოპერატორმა)
 REASONS = {
@@ -65,6 +65,8 @@ _ICON_PATHS = {
     "check": '<circle cx="12" cy="12" r="10"/><path d="m8 12 3 3 5-6"/>',
     "alert": '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
     "x": '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>',
+    "trash": '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/>',
+    "undo": '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
     "clock": '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
     "pause": '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>',
     "play": '<path d="M6 4v16l14-8z"/>',
@@ -122,7 +124,7 @@ h1{font-size:26px;line-height:1.25;margin:0 0 6px;font-weight:650;letter-spacing
 .dochead h1{font-size:22px;margin:6px 0 2px}.dochead .sub{margin:0}
 .next{padding:16px 18px;margin-bottom:14px;border-radius:14px;border:1px solid var(--border);border-left-width:4px;background:var(--surface);box-shadow:var(--shadow)}
 .next.tone-ok{border-color:var(--ok);background:var(--ok-soft);color:var(--text)}.next.tone-warn{border-left-color:var(--warn);background:var(--surface);color:var(--text)}
-.next.tone-bad{border-left-color:var(--bad);background:var(--surface);color:var(--text)}.next.tone-info{border-left-color:var(--accent);background:var(--surface);color:var(--text)}
+.next.tone-bad{border-left-color:var(--bad);background:var(--surface);color:var(--text)}.next.tone-mute{border-left-color:var(--mute);background:var(--surface);color:var(--text)}.next.tone-info{border-left-color:var(--accent);background:var(--surface);color:var(--text)}
 .next .lbl{font-size:12.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-2);margin-bottom:6px}
 .next .ttl{font-size:16px;font-weight:620;margin-bottom:4px}.next p{margin:0 0 12px;color:var(--text-2);font-size:14px}
 .next .reasons{display:flex;flex-direction:column;gap:8px;margin:4px 0 12px}.next .manual{margin-top:4px}
@@ -661,7 +663,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
         facts = "".join(f'<div{" class=wide" if k in ("MHR", "AI ანალიზი") else ""}><dt>{e(k)}</dt><dd>{e(v)}</dd></div>'
                         for k, v in kv if k != "წყარო" and v not in skip and not (k == "წელი" and x["document_date"]))
         head = (f'<p style="margin:0 0 10px"><a href="javascript:history.back()">← უკან</a></p>{_flash(msg, err)}'
-                f'<div class="dochead"><div><div class="chips">{status_chip(x["status"])}{mhr_chip(mhr_item["status"]) if mhr_item else ""}</div>'
+                f'<div class="dochead"><div><div class="chips">{status_chip(x["status"])}'
+                f'{mhr_chip(mhr_item["status"]) if mhr_item and mhr_item["status"] != x["status"] else ""}</div>'
                 f'<h1>{e((meta.get("part") or {}).get("title") or (t.name_ka if t else "დოკუმენტი"))}{" · " + e(name) if name else ""}</h1>'
                 f'<p class="sub">{e(Path(x["first_path"]).name)} · გვ. {x["page_start"] + 1}–{x["page_end"] + 1} · {e(x["document_date"] or "თარიღი უცნობია")}</p></div>'
                 f'<div class="btns">'
@@ -669,8 +672,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 + f''
                 f'<a class="btn" href="/file/source/{e(doc_id)}#page={x["page_start"] + 1}" target="_blank">{icon("file", 16)}წყარო</a>'
                 f'<a class="btn" href="/doc/{e(doc_id)}/text">{icon("search", 16)}ამოკითხული ტექსტი</a></div></div>')
+        drop = (f'<details class="more" style="margin:0 0 14px"><summary>ეს სკანი არ მჭირდება — წაშლა</summary><div class="in">'
+                f'<div class="opts">{_delete_opt(doc_id, "სკანის წაშლა")}</div></div></details>' if _can_delete(x, mhr_item) else "")
         body = (head + f'<div class="split"><div>{nxt}<dl class="card facts" style="margin:0 0 14px">{facts}</dl>'
-                + (f'<div class="chips" style="margin-bottom:14px">{flags}</div>' if flags else "")
+                + (f'<div class="chips" style="margin-bottom:14px">{flags}</div>' if flags else "") + drop
                 + f'<details style="border:0;padding:0"><summary style="font-size:13.5px;font-weight:500">სხვა მოქმედებები და ტექნიკური დეტალები</summary>'
                 f'<div class="btns" style="margin:12px 0">'
                 + (f'<a class="btn sm" href="/mhr/{e(doc_id)}">{icon("cloud", 16)}MHR შედარება</a>' if mhr_item else "")
@@ -679,6 +684,31 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 f'<pre class="mono" style="white-space:pre-wrap;word-break:break-word">{e(json.dumps(meta, ensure_ascii=False, indent=2))}</pre></details></div>'
                 f'{viewer}</div>')
         return page("დოკუმენტი", body, "/review" if x["status"] == "needs_review" else "/documents", side_info(status_data()))
+
+    @app.post("/doc/{doc_id}/delete")
+    async def doc_delete(doc_id: str, request: Request):
+        """„წაშლა“: ჯერ აუტვირთავი სკანი ყველა სიიდან ქრება (removal.py). ჩამრთველის გარეშე არაფერი იშლება."""
+        if (await form(request)).get("confirm") != "1":
+            q = {"err": "წასაშლელად ჯერ მონიშნე „დიახ, წაიშალოს“."}
+        else:
+            r = repo()
+            try:
+                why = removal.delete(r, cfg(), doc_id, "operator")
+            finally:
+                r.close()
+            q = {"err": DELETE_ERR_KA.get(why, why)} if why else {"msg": "სკანი წაიშალა: სიებში აღარ ჩანს და MHR-ზე არ აიტვირთება."}
+        return RedirectResponse(f"/doc/{quote(doc_id)}?{urlencode(q)}", status_code=303)
+
+    @app.post("/doc/{doc_id}/restore")
+    def doc_restore(doc_id: str):
+        """შეცდომით წაშლილის დაბრუნება წინა მდგომარეობაში."""
+        r = repo()
+        try:
+            why = removal.restore(r, cfg(), doc_id, "operator")
+        finally:
+            r.close()
+        q = {"err": DELETE_ERR_KA.get(why, why)} if why else {"msg": "სკანი დაბრუნდა იქ, სადაც წაშლამდე იყო."}
+        return RedirectResponse(f"/doc/{quote(doc_id)}?{urlencode(q)}", status_code=303)
 
     @app.get("/mhr", response_class=HTMLResponse)
     def mhr_list(tab: str = "ready", msg: str = ""):
@@ -1193,7 +1223,7 @@ _FILE_STATE = {   # (წარწერა, ტონი) — ფაილზე
     "working": ("მუშავდება", "info"), "mhr_ready": ("მზადაა ასატვირთად", "info"),
     "mhr_checking": ("MHR-ში მოწმდება", "info"), "mhr_uploading": ("იტვირთება", "info"),
     "uploaded": ("აიტვირთა MHR-ზე", "ok"), "sorted": ("დალაგდა", "ok"), "proposed": ("შემოთავაზებული", "ok"),
-    "empty": ("ცარიელი", "mute")}
+    "deleted": ("წაიშალა", "mute"), "empty": ("ცარიელი", "mute")}
 
 
 def _recent_files(r: Repository, c: Config, limit: int = 12) -> list[dict]:
@@ -1239,6 +1269,8 @@ def _recent_files(r: Repository, c: Config, limit: int = 12) -> list[dict]:
             key, href = "uploaded", f'/documents?source={f["sid"]}'
         elif docs:
             key, href = ("proposed" if "proposed" in st else "sorted"), f'/documents?source={f["sid"]}'
+        elif gone := r.one("SELECT id FROM documents WHERE job_id=? AND status='deleted' ORDER BY page_start LIMIT 1", (f["jid"],)):
+            key, href = "deleted", f'/doc/{gone["id"]}'   # ოპერატორმა ყველაფერი წაშალა — იქიდან შეიძლება დაბრუნება
         else:
             key, href = "empty", f'/documents?source={f["sid"]}'
         progress = f' · {f["progress_done"]}/{f["progress_total"]} გვერდი' if key == "working" and f["progress_total"] else ""
@@ -1331,7 +1363,7 @@ MHR_KA = {"pending": ("შემოწმებას ელოდება", "m
           "failed": ("გაჩერდა — ნახე", "bad"), "skipped": ("გამოტოვებული", "mute"), "ready": ("მზადაა ატვირთვისთვის", "info"),
           "approved": ("ატვირთვის რიგში", "info"), "uploading": ("იტვირთება", "info"), "uploaded": ("ატვირთულია", "ok"),
           "upload_failed": ("ატვირთვა ვერ მოხერხდა", "bad"), "needs_check": ("საჭიროებს შემოწმებას", "warn"),
-          "rejected": ("უარყოფილი", "mute"), "split": ("დაიყო ფაილებად", "mute")}
+          "rejected": ("უარყოფილი", "mute"), "split": ("დაიყო ფაილებად", "mute"), "deleted": ("წაშლილი", "mute")}
 AI_KA = {"upload": ("AI: ატვირთვა შეიძლება", "ok"), "check": ("AI: გადაამოწმე", "warn"),
          "reject": ("AI: არ ატვირთო", "bad"), "error": ("AI ანალიზი ვერ შესრულდა", "mute")}
 _AI_CONF_KA = {"high": "მაღალი დარწმუნებულობა", "medium": "საშუალო დარწმუნებულობა", "low": "დაბალი დარწმუნებულობა"}
@@ -1867,6 +1899,41 @@ def _file_gone(c: Config, d) -> bool:
     return bool(d is not None and d["active"] and not d["purged_at"] and d["output_path"] and keep.document_file(c, d) is None)
 
 
+# --- სკანის წაშლა ატვირთვამდე (removal.py) ------------------------------------------------------------------------------
+DELETE_ERR_KA = {"not_found": "დოკუმენტი ვერ მოიძებნა ან უკვე წაშლილია.",
+                 "document_split": "სკანი ფაილებად არის დაყოფილი: წაშალე თითოეული ფაილი ცალკე.",
+                 "document_publishing": "დოკუმენტი ჯერ იწერება. სცადე ერთ წუთში.",
+                 "mhr_approved": "ატვირთვა უკვე დაწყებულია, ამიტომ წაშლა აღარ შეიძლება.",
+                 "mhr_uploading": "ატვირთვა უკვე დაწყებულია, ამიტომ წაშლა აღარ შეიძლება.",
+                 "mhr_uploaded": "უკვე ატვირთულია MHR-ზე. აქედან აღარ წაიშლება.",
+                 "mhr_needs_check": "შეიძლება უკვე აიტვირთა. ჯერ თანამშრომლის ბარათი ნახე MHR-ში.",
+                 "mhr_split": "სკანი ფაილებად არის დაყოფილი: წაშალე თითოეული ფაილი ცალკე.",
+                 "mhr_deleted": "უკვე წაშლილია.",
+                 "state_changed": "სტატუსი ამასობაში შეიცვალა. განაახლე გვერდი და სცადე თავიდან.",
+                 "file_locked": "ფაილი სხვა პროგრამაშია გახსნილი ან საქაღალდე მიუწვდომელია. დახურე ფაილი და სცადე თავიდან.",
+                 "not_deleted": "ეს დოკუმენტი წაშლილი არ არის.",
+                 "reprocessed": "სკანი ამასობაში თავიდან დამუშავდა: ეს გვერდები ახალ დოკუმენტებშია, ამიტომ ძველი აღარ ბრუნდება."}
+DELETE_TEXT_KA = ("მაგ. შეცდომით ან ორჯერ დაასკანერე. სკანი ყველა სიიდან ქრება და MHR-ზე არ აიტვირთება. "
+                  "შეცდომით წაშლილს დააბრუნებ.")
+DELETED_KA = "სკანი წაშლილია: სიებში აღარ ჩანს და MHR-ზე არ აიტვირთება. თუ შეცდომით წაშალე, დააბრუნე."
+
+
+def _can_delete(d, m) -> bool:
+    return d is not None and removal.refusal(d, m) is None
+
+
+def _delete_opt(doc_id: str, title: str, text: str = DELETE_TEXT_KA) -> str:
+    """„წაშლა“ — ჩამრთველი და ღილაკი: შემთხვევითი დაჭერა არაფერს შლის."""
+    return (f'<form method="post" action="/doc/{e(doc_id)}/delete" class="opt"><div class="ot"><b>{e(title)}</b><span>{e(text)}</span>'
+            f'<label class="switch confirm"><input type="checkbox" name="confirm" value="1" required><span>დიახ, წაიშალოს</span></label></div>'
+            f'<button class="btn">{icon("trash", 16)}წაშლა</button></form>')
+
+
+def _restore_form(doc_id: str) -> str:
+    return (f'<form class="inline" method="post" action="/doc/{e(doc_id)}/restore"><button class="btn sm">'
+            f'{icon("undo", 16)}დაბრუნება</button></form>')
+
+
 def _error_text(error: str) -> str:
     """MHR-ის მანქანური კოდი → ადამიანის ენა; უცნობი ისევ ჩანს, ტექნიკური დეტალისთვის."""
     from ..validation import MHR_ERROR_KA
@@ -2271,7 +2338,10 @@ def _mhr_detail_body(c: Config, m, d, worker_alive: bool = True, pts: list[dict]
                  f'{icon("open", 16)}გახსენი სკანი (PDF)</a><a class="btn sm ghost" href="/doc/{e(d["id"])}">{icon("file", 16)}დოკუმენტის გვერდი</a></div>')
     out = [f'<p><a href="/mhr">← ყველა ფაილი</a></p><div class="chips" style="margin-bottom:8px">{mhr_chip(m["status"])}</div>'
            f'<h1>{e(_mhr_name(v) or "თანამშრომელი")}</h1><p class="sub">{e(sub)}</p>{links}']
-    if m["status"] in _GONE_STATUSES and _file_gone(c, d):   # ერთი გასაგები წარწერა; ძველი ინგლისური შეცდომა მას არ იმეორებს
+    if m["status"] == "deleted":
+        out.append(f'<div class="banner tone-mute">{icon("trash", 18)}<div>{e(DELETED_KA)}'
+                   f'<div style="margin-top:8px">{_restore_form(doc_id)}</div></div></div>')
+    elif m["status"] in _GONE_STATUSES and _file_gone(c, d):   # ერთი გასაგები წარწერა; ძველი ინგლისური შეცდომა მას არ იმეორებს
         out.append(f'<div class="banner tone-bad">{icon("x", 18)}<div>{e(FILE_GONE_KA)}</div></div>')
     elif m["status"] == "upload_failed" and _is_file_gone_error(m["error"]):   # ფაილი დაბრუნდა (ასლიდან ან თავიდან დამუშავებით)
         out.append(f'<div class="banner tone-warn">{icon("alert", 18)}<div>{e(FILE_BACK_KA)}</div></div>')
@@ -2430,13 +2500,11 @@ def _decision_block(c: Config, m, d, v: dict) -> tuple[str, str, str] | None:
     ai = _ai_load(m)
     doc_id = e(m["document_id"])
     if m["status"] in _GONE_STATUSES and _file_gone(c, d):
-        # ასატვირთი აღარაფერია: ატვირთვის ღილაკები მხოლოდ შეცდომამდე მიიყვანდა. რჩება ერთი — ჩანაწერის სიიდან ამოღება
-        drop = (f'<form class="inline" method="post" action="/mhr/{doc_id}/reject"><button class="btn">სიიდან ამოღება</button></form>'
-                if m["status"] in _REJECTABLE else "")
+        # ასატვირთი აღარაფერია: ატვირთვის ღილაკები მხოლოდ შეცდომამდე მიიყვანდა. რჩება ერთი — ჩანაწერის წაშლა
+        text = "ახალ სკანს პროგრამა თავიდან გაარჩევს და შეამოწმებს. ეს ძველი ჩანაწერი შეგიძლია წაშალო."
         return ("სკანის ფაილი აღარ არსებობს", "ატვირთვა ამ ჩანაწერიდან ვეღარ მოხერხდება.",
-                '<div class="opts">' + _decide_opt("ქაღალდი თავიდან დაასკანერე",
-                                                   "ახალ სკანს პროგრამა თავიდან გაარჩევს და შეამოწმებს. ეს ძველი ჩანაწერი შეგიძლია სიიდან ამოიღო.",
-                                                   drop) + "</div>")
+                '<div class="opts">' + (_delete_opt(m["document_id"], "ქაღალდი თავიდან დაასკანერე", text) if _can_delete(d, m)
+                                        else _decide_opt("ქაღალდი თავიდან დაასკანერე", text, "")) + "</div>")
     no_compare = _no_compare(v)
     opts = []
     if m["status"] == "failed" and m["employee_id"]:
@@ -2465,6 +2533,8 @@ def _decision_block(c: Config, m, d, v: dict) -> tuple[str, str, str] | None:
             opts.append(f'<div class="opt manual-opt"><div class="ot"><b>{title}</b>'
                         f'<span>ქაღალდი ნახე; თუ სწორია, ერთი დაჭერით აიტვირთება თანამშრომლის ბარათზე.</span>'
                         f'{blk.replace("margin-top:16px", "margin-top:8px")}</div></div>')
+    if _can_delete(d, m):   # ბოლო ვარიანტი: სკანი საერთოდ არ არის საჭირო (შეცდომით ან ორჯერ დასკანერებული)
+        opts.append(_delete_opt(m["document_id"], "ეს სკანი საერთოდ არ მჭირდება"))
     if not opts:
         return None
     return ("გადაწყვიტე, რა უყო ფაილს", "აირჩიე ერთი — ის, რაც შენს შემთხვევას შეესაბამება.", f'<div class="opts">{"".join(opts)}</div>')
@@ -2531,6 +2601,9 @@ def _doc_next(c: Config, x, item, reasons_html: str, mhr_on: bool) -> str:
         return (f'<div class="next tone-{tone}"><div class="lbl">შემდეგი ნაბიჯი</div><div class="ttl">{e(title)}</div>'
                 + (f"<p>{e(text)}</p>" if text else "") + inner + "</div>")
 
+    if x["status"] == "deleted":
+        return card("mute", "სკანი წაშლილია", "სიებში აღარ ჩანს და MHR-ზე არ აიტვირთება. თუ შეცდომით წაშალე, დააბრუნე.",
+                    f'<div class="btns">{_restore_form(doc_id)}</div>')
     emp = v.get("employee") or {}
     emp_name = " ".join(x for x in (emp.get("first_name"), emp.get("last_name")) if x)
     alt = (f'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
